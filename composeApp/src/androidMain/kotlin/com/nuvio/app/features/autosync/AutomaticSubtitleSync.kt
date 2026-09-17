@@ -53,6 +53,11 @@ internal object AutomaticSubtitleSync {
     private const val MAX_LOGGED_CANDIDATES = 20
     private const val MAX_LOGGED_MATCH_PAIRS = 50
     private const val MAX_PARALLEL_SUBTITLE_DOWNLOADS = 6
+    private const val MAX_RECOMMENDATION_CACHE_ENTRIES = 16
+
+    private val recommendationCacheLock = Any()
+    private val recommendationCache =
+        mutableMapOf<RecommendationCacheKey, CachedRecommendation>()
 
     suspend fun findBestSubtitleRecommendation(
         sourceKey: String,
@@ -116,14 +121,36 @@ internal object AutomaticSubtitleSync {
         )
 
         val sameLanguageCandidates = if (selectedLanguageKey.isNullOrBlank()) {
-            listOf(selectedCandidate)
+            selectedKnown?.let(::listOf) ?: listOf(selectedCandidate)
         } else {
-            (listOf(selectedCandidate) + knownCandidates)
-                .distinctBy { it.url }
-                .filter { candidate ->
-                    candidate.url == selectedSubtitleUrl ||
-                        subtitleLanguageKey(candidate.language) == selectedLanguageKey
-                }
+            val ordered = knownCandidates.filter { candidate ->
+                subtitleLanguageKey(candidate.language) == selectedLanguageKey
+            }
+            if (ordered.any { it.url == selectedSubtitleUrl }) {
+                ordered
+            } else {
+                ordered + selectedCandidate
+            }
+        }.distinctBy { it.url }
+
+        val candidateOrder = sameLanguageCandidates
+            .mapIndexed { index, candidate -> candidate.url to index }
+            .toMap()
+
+        val cacheKey = RecommendationCacheKey(
+            sourceKey = sourceKey,
+            languageKey = selectedLanguageKey.orEmpty(),
+            candidateFingerprint = sameLanguageCandidates.joinToString("|") { it.url },
+        )
+        synchronized(recommendationCacheLock) {
+            recommendationCache[cacheKey]
+        }?.let { cached ->
+            AutoSyncDebugLog.section("RECOMMENDATION CACHE")
+            AutoSyncDebugLog.info(
+                "HIT name=${cached.displayName} correction=${cached.correctionMs}ms " +
+                    "score=${fmt(cached.score)}",
+            )
+            return cached.toRecommendation(selectedSubtitleUrl)
         }
 
         AutoSyncDebugLog.section("SUBTITLE CANDIDATES")
@@ -243,29 +270,35 @@ internal object AutomaticSubtitleSync {
                     onReferenceReady()
                 }
 
-                val candidateMatches = parsedCandidates.mapNotNull { parsed ->
-                    val bestAlignment = usableTracks
-                        .mapNotNull { track ->
-                            align(
-                                track = track,
-                                target = parsed.cues,
-                                logDetails = false,
-                            )
-                        }
-                        .maxByOrNull { it.score }
-                        ?: return@mapNotNull null
+                val canonicalTrack = chooseCanonicalReferenceTrack(usableTracks)
+                    ?: usableTracks.first()
 
-                    CandidateMatch(
-                        parsed = parsed,
-                        alignment = bestAlignment,
-                    )
+                AutoSyncDebugLog.info(
+                    "canonical reference track=${canonicalTrack.key} " +
+                        "lang=${canonicalTrack.language ?: "<unknown>"} cues=${canonicalTrack.cues.size}",
+                )
+
+                val candidateMatches = parsedCandidates.mapNotNull { parsed ->
+                    align(
+                        track = canonicalTrack,
+                        target = parsed.cues,
+                        logDetails = false,
+                    )?.let { alignment ->
+                        CandidateMatch(
+                            parsed = parsed,
+                            alignment = alignment,
+                        )
+                    }
                 }
 
                 if (candidateMatches.isNotEmpty()) {
                     val ranked = candidateMatches.sortedWith(
                         compareByDescending<CandidateMatch> { it.alignment.score }
+                            .thenByDescending { it.alignment.matches }
+                            .thenBy { it.alignment.residualMs }
                             .thenBy { abs(it.alignment.offsetMs) }
-                            .thenByDescending { it.alignment.matches },
+                            .thenBy { candidateOrder[it.parsed.candidate.url] ?: Int.MAX_VALUE }
+                            .thenBy { it.parsed.candidate.url },
                     )
                     val bestMatch = ranked.first()
 
@@ -281,17 +314,12 @@ internal object AutomaticSubtitleSync {
                         )
                     }
 
-                    val winningTrack = usableTracks.firstOrNull {
-                        it.key == bestMatch.alignment.trackKey
-                    }
-                    if (winningTrack != null) {
-                        AutoSyncDebugLog.section("WINNING SUBTITLE DETAILS")
-                        align(
-                            track = winningTrack,
-                            target = bestMatch.parsed.cues,
-                            logDetails = true,
-                        )
-                    }
+                    AutoSyncDebugLog.section("WINNING SUBTITLE DETAILS")
+                    align(
+                        track = canonicalTrack,
+                        target = bestMatch.parsed.cues,
+                        logDetails = true,
+                    )
 
                     val correctionMs = bestMatch.alignment.offsetMs
                         .toInt()
@@ -307,14 +335,21 @@ internal object AutomaticSubtitleSync {
                         "correction=${correctionMs}ms score=${fmt(bestMatch.alignment.score)}",
                     )
 
-                    return AutoSyncSubtitleRecommendation(
+                    val cachedRecommendation = CachedRecommendation(
                         url = bestMatch.parsed.candidate.url,
                         language = bestMatch.parsed.candidate.language,
                         displayName = bestMatch.parsed.candidate.displayName,
                         correctionMs = correctionMs,
                         score = bestMatch.alignment.score,
-                        isCurrentSubtitle = bestMatch.parsed.candidate.url == selectedSubtitleUrl,
                     )
+                    synchronized(recommendationCacheLock) {
+                        if (recommendationCache.size >= MAX_RECOMMENDATION_CACHE_ENTRIES) {
+                            recommendationCache.clear()
+                        }
+                        recommendationCache[cacheKey] = cachedRecommendation
+                    }
+
+                    return cachedRecommendation.toRecommendation(selectedSubtitleUrl)
                 }
 
                 AutoSyncDebugLog.info("no subtitle candidate passed confidence checks; waiting for more cues")
@@ -345,6 +380,32 @@ internal object AutomaticSubtitleSync {
         includeRepositorySubtitles = false,
         onReferenceReady = onReferenceReady,
     )?.takeIf { it.isCurrentSubtitle }?.correctionMs
+
+    private fun chooseCanonicalReferenceTrack(
+        tracks: List<ReferenceTrack>,
+    ): ReferenceTrack? =
+        tracks.sortedWith(
+            compareByDescending<ReferenceTrack> { track ->
+                track.cues.count(::isDialogueLikeReferenceCue)
+            }.thenByDescending { track ->
+                track.cues.count { it.text.isNotBlank() }
+            }.thenByDescending { track ->
+                track.cues.size
+            }.thenBy { track ->
+                track.key
+            },
+        ).firstOrNull()
+
+    private fun isDialogueLikeReferenceCue(cue: SubtitleSyncCue): Boolean {
+        val text = normalizedCueText(cue.text)
+        if (text.isBlank()) return false
+
+        val parentheticalOnly =
+            (text.startsWith("(") && text.endsWith(")")) ||
+                (text.startsWith("[") && text.endsWith("]"))
+
+        return !parentheticalOnly && text.any { it.isLetterOrDigit() }
+    }
 
     private suspend fun loadSubtitleCandidate(
         candidate: SubtitleCandidate,
@@ -856,6 +917,30 @@ internal object AutomaticSubtitleSync {
         } else {
             normalized
         }
+    }
+
+    private data class RecommendationCacheKey(
+        val sourceKey: String,
+        val languageKey: String,
+        val candidateFingerprint: String,
+    )
+
+    private data class CachedRecommendation(
+        val url: String,
+        val language: String,
+        val displayName: String,
+        val correctionMs: Int,
+        val score: Double,
+    ) {
+        fun toRecommendation(selectedSubtitleUrl: String): AutoSyncSubtitleRecommendation =
+            AutoSyncSubtitleRecommendation(
+                url = url,
+                language = language,
+                displayName = displayName,
+                correctionMs = correctionMs,
+                score = score,
+                isCurrentSubtitle = url == selectedSubtitleUrl,
+            )
     }
 
     private data class CandidateOffset(
