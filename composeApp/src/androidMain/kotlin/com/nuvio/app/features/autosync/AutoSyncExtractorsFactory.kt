@@ -49,7 +49,15 @@ private class ObservingExtractor(
     override fun getSniffFailureDetails(): List<SniffFailure> = delegate.getSniffFailureDetails()
     override fun init(output: ExtractorOutput) = delegate.init(ObservingExtractorOutput(output, sourceKey))
     override fun read(input: ExtractorInput, seekPosition: PositionHolder) = delegate.read(input, seekPosition)
-    override fun seek(position: Long, timeUs: Long) = delegate.seek(position, timeUs)
+
+    override fun seek(position: Long, timeUs: Long) {
+        EmbeddedSubtitleCueStore.beginNewGeneration(
+            sourceKey = sourceKey,
+            targetTimeMs = timeUs.takeIf { it != C.TIME_UNSET }?.div(1_000L),
+        )
+        delegate.seek(position, timeUs)
+    }
+
     override fun release() = delegate.release()
     override fun getUnderlyingImplementation(): Extractor = delegate.getUnderlyingImplementation()
 }

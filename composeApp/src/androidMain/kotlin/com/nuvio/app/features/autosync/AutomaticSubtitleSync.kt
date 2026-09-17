@@ -59,6 +59,21 @@ internal object AutomaticSubtitleSync {
     private const val MIN_SCALE_VALIDATION_SPAN_MS = 20_000L
     private const val MIN_SCALE_PAIR_GAP_MS = 8_000L
     private const val MAX_TIMELINE_SCALE_DEVIATION = 0.008
+    private const val INDEPENDENT_SCALE_WINDOW_CUES = 5
+    private const val MIN_INDEPENDENT_SCALE_ANCHOR_MATCHES = 4
+    private const val MIN_INDEPENDENT_SCALE_ANCHOR_MARGIN = 0.005
+    private const val INDEPENDENT_SCALE_OFFSET_SEARCH_MS = 15_000L
+    private const val MAX_INDEPENDENT_SCALE_ANCHOR_RESIDUAL_MS = 900.0
+    private const val MIN_INDEPENDENT_SCALE_ANCHOR_SPACING = 0.45
+    private const val MAX_INDEPENDENT_SCALE_DISPERSION = 0.015
+
+    private const val MIN_CONSECUTIVE_PATTERN_MATCHES = 6
+    private const val MAX_PATTERN_INDEX_STEP = 3
+    private const val MAX_PATTERN_GAP_ERROR_MS = 1_500L
+    private const val MAX_PATTERN_GAP_ERROR_RATIO = 0.10
+
+    private const val SEEK_DEDUP_WINDOW_MS = 1_500L
+    private const val SEEK_TARGET_TOLERANCE_MS = 1_000L
 
     private const val MIN_FULL_DIALOGUE_CUES = 8
     private const val MIN_FULL_DIALOGUE_DENSITY_PER_MINUTE = 2.0
@@ -152,21 +167,7 @@ internal object AutomaticSubtitleSync {
             .mapIndexed { index, candidate -> candidate.url to index }
             .toMap()
 
-        val cacheKey = RecommendationCacheKey(
-            sourceKey = sourceKey,
-            languageKey = selectedLanguageKey.orEmpty(),
-            candidateFingerprint = sameLanguageCandidates.joinToString("|") { it.url },
-        )
-        synchronized(recommendationCacheLock) {
-            recommendationCache[cacheKey]
-        }?.let { cached ->
-            AutoSyncDebugLog.section("RECOMMENDATION CACHE")
-            AutoSyncDebugLog.info(
-                "HIT name=${cached.displayName} correction=${cached.correctionMs}ms " +
-                    "score=${fmt(cached.score)}",
-            )
-            return cached.toRecommendation(selectedSubtitleUrl)
-        }
+        val candidateFingerprint = sameLanguageCandidates.joinToString("|") { it.url }
 
         AutoSyncDebugLog.section("SUBTITLE CANDIDATES")
         AutoSyncDebugLog.info(
@@ -289,7 +290,8 @@ internal object AutomaticSubtitleSync {
                     frozenCanonicalTrack = canonicalTrack.copy(cues = canonicalTrack.cues.toList())
                     AutoSyncDebugLog.section("FROZEN REFERENCE")
                     AutoSyncDebugLog.info(
-                        "track=${canonicalTrack.key} lang=${canonicalTrack.language ?: "<unknown>"} " +
+                        "track=${canonicalTrack.key} generation=${canonicalTrack.generation} " +
+                            "lang=${canonicalTrack.language ?: "<unknown>"} " +
                             "label=${canonicalTrack.label ?: "<none>"} cues=${canonicalTrack.cues.size} " +
                             "span=${referenceSpanMs(canonicalTrack.cues)}ms " +
                             "density=${"%.2f".format(referenceCueDensityPerMinute(canonicalTrack.cues))}/min",
@@ -312,6 +314,24 @@ internal object AutomaticSubtitleSync {
                 "no usable full-dialogue embedded reference after ${MAX_WAIT_MS}ms",
             )
             return null
+        }
+
+        val referenceFingerprint = referenceFingerprint(canonicalTrack)
+        val cacheKey = RecommendationCacheKey(
+            sourceKey = sourceKey,
+            languageKey = selectedLanguageKey.orEmpty(),
+            candidateFingerprint = candidateFingerprint,
+            referenceFingerprint = referenceFingerprint,
+        )
+        synchronized(recommendationCacheLock) {
+            recommendationCache[cacheKey]
+        }?.let { cached ->
+            AutoSyncDebugLog.section("RECOMMENDATION CACHE")
+            AutoSyncDebugLog.info(
+                "HIT reference=$referenceFingerprint name=${cached.displayName} " +
+                    "correction=${cached.correctionMs}ms score=${fmt(cached.score)}",
+            )
+            return cached.toRecommendation(selectedSubtitleUrl)
         }
 
         val candidateMatches = parsedCandidates.mapNotNull { parsed ->
@@ -550,6 +570,27 @@ internal object AutomaticSubtitleSync {
         return cues.size * 60_000.0 / spanMs
     }
 
+    private fun referenceFingerprint(track: ReferenceTrack): String {
+        var timingHash = 1_125_899_906_842_597L
+        for (cue in track.cues) {
+            timingHash = timingHash * 31L + cue.startTimeMs
+            timingHash = timingHash * 31L + cue.endTimeMs
+        }
+        return buildString {
+            append(track.key)
+            append(":g")
+            append(track.generation)
+            append(":")
+            append(track.cues.size)
+            append(":")
+            append(track.cues.firstOrNull()?.startTimeMs ?: -1L)
+            append(":")
+            append(track.cues.lastOrNull()?.startTimeMs ?: -1L)
+            append(":")
+            append(timingHash)
+        }
+    }
+
     private suspend fun loadSubtitleCandidate(
         candidate: SubtitleCandidate,
     ): ParsedSubtitleCandidate? {
@@ -669,9 +710,16 @@ internal object AutomaticSubtitleSync {
 
         val referenceParticipation = best.matches.toDouble() / reference.size
         val normalParticipation = referenceParticipation >= NORMAL_PARTICIPATION_THRESHOLD
-        val timelineScale = estimateTimelineScale(reference, target, best.pairs)
+        val matchedPairScale = estimateMatchedPairTimelineScale(reference, target, best.pairs)
+        val independentScale = estimateIndependentTimelineScale(
+            reference = reference,
+            target = target,
+            expectedOffsetMs = best.offsetMs,
+        )
+        val timelineScale = independentScale?.scale
         val scaleCompatible = timelineScale != null &&
             abs(timelineScale - 1.0) <= MAX_TIMELINE_SCALE_DEVIATION
+        val consecutivePatternMatches = longestConsecutivePatternRun(reference, target, best.pairs)
 
         val strongAbsoluteEvidence =
             best.matches >= STRONG_ACCEPT_MATCHES &&
@@ -717,12 +765,20 @@ internal object AutomaticSubtitleSync {
                 "margin=${fmt(margin)} >= ${fmt(MIN_OFFSET_MARGIN)}",
             ),
             ConfidenceCheck(
+                "consecutive timing pattern",
+                consecutivePatternMatches >= MIN_CONSECUTIVE_PATTERN_MATCHES,
+                "$consecutivePatternMatches >= $MIN_CONSECUTIVE_PATTERN_MATCHES",
+            ),
+            ConfidenceCheck(
                 "timeline scale / FPS",
                 scaleCompatible,
-                if (timelineScale == null) {
-                    "insufficient matched span for scale validation"
+                if (independentScale == null) {
+                    "insufficient independent anchor evidence for scale validation"
                 } else {
-                    "scale=${"%.6f".format(timelineScale)} deviation=${"%.4f".format(abs(timelineScale - 1.0))} " +
+                    "scale=${"%.6f".format(independentScale.scale)} " +
+                        "deviation=${"%.4f".format(abs(independentScale.scale - 1.0))} " +
+                        "anchors=${independentScale.anchorCount} slopes=${independentScale.slopeCount} " +
+                        "dispersion=${"%.4f".format(independentScale.dispersion)} " +
                         "<= ${"%.4f".format(MAX_TIMELINE_SCALE_DEVIATION)}"
                 },
             ),
@@ -743,8 +799,9 @@ internal object AutomaticSubtitleSync {
                     "medianResidual=${"%.1f".format(best.residualMs)}ms " +
                     "signedResidual=${"%.1f".format(best.signedResidualMs)}ms " +
                     "agreement=${fmt(best.offsetAgreement)} spacing=${fmt(best.spacingScore)} " +
-                    "scale=${timelineScale?.let { "%.6f".format(it) } ?: "<unavailable>"} " +
-                    "score=${fmt(best.score)}",
+                    "independentScale=${timelineScale?.let { "%.6f".format(it) } ?: "<unavailable>"} " +
+                    "matchedPairScale=${matchedPairScale?.let { "%.6f".format(it) } ?: "<unavailable>"} " +
+                    "consecutive=$consecutivePatternMatches score=${fmt(best.score)}",
             )
 
             if (second != null) {
@@ -817,7 +874,161 @@ internal object AutomaticSubtitleSync {
         }
     }
 
-    private fun estimateTimelineScale(
+    private fun estimateIndependentTimelineScale(
+        reference: List<SubtitleSyncCue>,
+        target: List<SubtitleSyncCue>,
+        expectedOffsetMs: Long,
+    ): IndependentScaleResult? {
+        if (reference.size < MIN_REFERENCE_CUES || target.size < MIN_REFERENCE_CUES) return null
+
+        val windowSize = minOf(INDEPENDENT_SCALE_WINDOW_CUES, reference.size)
+        val lastStart = (reference.size - windowSize).coerceAtLeast(0)
+        val starts = listOf(
+            0,
+            lastStart / 2,
+            lastStart,
+        ).distinct()
+
+        val anchors = starts.flatMap { startIndex ->
+            findIndependentScaleAnchors(
+                referenceWindow = reference.subList(startIndex, startIndex + windowSize),
+                target = target,
+                expectedOffsetMs = expectedOffsetMs,
+            )
+        }.distinctBy { "${it.referenceTimeMs}:${it.targetTimeMs}" }
+            .sortedBy { it.referenceTimeMs }
+
+        if (anchors.size < 2) return null
+
+        val slopes = buildList {
+            for (leftIndex in 0 until anchors.lastIndex) {
+                val left = anchors[leftIndex]
+                for (rightIndex in leftIndex + 1 until anchors.size) {
+                    val right = anchors[rightIndex]
+                    val referenceGap = right.referenceTimeMs - left.referenceTimeMs
+                    val targetGap = right.targetTimeMs - left.targetTimeMs
+                    if (referenceGap < MIN_SCALE_VALIDATION_SPAN_MS || targetGap <= 0L) continue
+
+                    val slope = referenceGap.toDouble() / targetGap.toDouble()
+                    if (slope in 0.85..1.15) add(slope)
+                }
+            }
+        }
+
+        if (slopes.isEmpty()) return null
+
+        val scale = median(slopes)
+        val dispersion = median(slopes.map { abs(it - scale) })
+        if (dispersion > MAX_INDEPENDENT_SCALE_DISPERSION) return null
+
+        return IndependentScaleResult(
+            scale = scale,
+            anchorCount = anchors.size,
+            slopeCount = slopes.size,
+            dispersion = dispersion,
+        )
+    }
+
+    private fun findIndependentScaleAnchors(
+        referenceWindow: List<SubtitleSyncCue>,
+        target: List<SubtitleSyncCue>,
+        expectedOffsetMs: Long,
+    ): List<ScaleAnchor> {
+        val candidates = (
+            candidateOffsets(referenceWindow, target)
+                .filter { abs(it.offsetMs - expectedOffsetMs) <= INDEPENDENT_SCALE_OFFSET_SEARCH_MS } +
+                CandidateOffset(expectedOffsetMs, 0)
+            ).distinctBy { it.offsetMs }
+        if (candidates.isEmpty()) return emptyList()
+
+        val evaluations = buildList {
+            for (candidate in candidates) {
+                val initial = evaluate(referenceWindow, target, candidate.offsetMs)
+                add(initial)
+                if (initial.matches >= MIN_REFERENCE_CUES) {
+                    val refinedOffset = candidate.offsetMs + initial.signedResidualMs.roundToLong()
+                    if (
+                        refinedOffset != candidate.offsetMs &&
+                        abs(refinedOffset) <= MAX_OFFSET_MS &&
+                        abs(refinedOffset - expectedOffsetMs) <= INDEPENDENT_SCALE_OFFSET_SEARCH_MS
+                    ) {
+                        add(evaluate(referenceWindow, target, refinedOffset))
+                    }
+                }
+            }
+        }.sortedByDescending { it.score }
+
+        val best = evaluations.firstOrNull() ?: return emptyList()
+        val second = evaluations.firstOrNull {
+            abs(it.offsetMs - best.offsetMs) > MATCH_TOLERANCE_MS * 2L
+        }
+        val margin = if (second == null) {
+            1.0
+        } else {
+            ((best.score - second.score) / max(best.score, 0.001)).coerceIn(0.0, 1.0)
+        }
+
+        if (best.matches < minOf(MIN_INDEPENDENT_SCALE_ANCHOR_MATCHES, referenceWindow.size)) return emptyList()
+        if (best.residualMs > MAX_INDEPENDENT_SCALE_ANCHOR_RESIDUAL_MS) return emptyList()
+        if (best.spacingScore < MIN_INDEPENDENT_SCALE_ANCHOR_SPACING) return emptyList()
+        if (margin < MIN_INDEPENDENT_SCALE_ANCHOR_MARGIN) return emptyList()
+        if (best.pairs.isEmpty()) return emptyList()
+
+        return best.pairs.map { pair ->
+            ScaleAnchor(
+                referenceTimeMs = referenceWindow[pair.referenceIndex].startTimeMs,
+                targetTimeMs = target[pair.targetIndex].startTimeMs,
+            )
+        }
+    }
+
+    private fun longestConsecutivePatternRun(
+        reference: List<SubtitleSyncCue>,
+        target: List<SubtitleSyncCue>,
+        pairs: List<MatchPair>,
+    ): Int {
+        if (pairs.isEmpty()) return 0
+        if (pairs.size == 1) return 1
+
+        var longest = 1
+        var current = 1
+
+        for (index in 1 until pairs.size) {
+            val previous = pairs[index - 1]
+            val next = pairs[index]
+            val referenceStep = next.referenceIndex - previous.referenceIndex
+            val targetStep = next.targetIndex - previous.targetIndex
+
+            val referenceGap =
+                reference[next.referenceIndex].startTimeMs -
+                    reference[previous.referenceIndex].startTimeMs
+            val targetGap =
+                target[next.targetIndex].startTimeMs -
+                    target[previous.targetIndex].startTimeMs
+            val proportionalTolerance =
+                (max(referenceGap, targetGap).coerceAtLeast(0L) * MAX_PATTERN_GAP_ERROR_RATIO)
+                    .roundToLong()
+            val allowedGapError = max(MAX_PATTERN_GAP_ERROR_MS, proportionalTolerance)
+
+            val continues =
+                referenceStep in 1..MAX_PATTERN_INDEX_STEP &&
+                    targetStep in 1..MAX_PATTERN_INDEX_STEP &&
+                    referenceGap > 0L &&
+                    targetGap > 0L &&
+                    abs(referenceGap - targetGap) <= allowedGapError
+
+            if (continues) {
+                current++
+                longest = max(longest, current)
+            } else {
+                current = 1
+            }
+        }
+
+        return longest
+    }
+
+    private fun estimateMatchedPairTimelineScale(
         reference: List<SubtitleSyncCue>,
         target: List<SubtitleSyncCue>,
         pairs: List<MatchPair>,
@@ -1113,6 +1324,7 @@ internal object AutomaticSubtitleSync {
         val sourceKey: String,
         val languageKey: String,
         val candidateFingerprint: String,
+        val referenceFingerprint: String,
     )
 
     private data class CachedRecommendation(
@@ -1169,6 +1381,18 @@ internal object AutomaticSubtitleSync {
         val alignment: AlignmentResult,
     )
 
+    private data class ScaleAnchor(
+        val referenceTimeMs: Long,
+        val targetTimeMs: Long,
+    )
+
+    private data class IndependentScaleResult(
+        val scale: Double,
+        val anchorCount: Int,
+        val slopeCount: Int,
+        val dispersion: Double,
+    )
+
     private data class AlignmentResult(
         val trackKey: String,
         val language: String?,
@@ -1208,6 +1432,7 @@ internal data class ReferenceTrack(
     val label: String? = null,
     val selectionFlags: Int = 0,
     val roleFlags: Int = 0,
+    val generation: Long = 0L,
 )
 
 /** Thread-safe accumulation of the embedded text timing already passing through Media3. */
@@ -1222,16 +1447,58 @@ internal object EmbeddedSubtitleCueStore {
 
     private val lock = Any()
     private val sources = mutableMapOf<String, MutableMap<String, Track>>()
+    private val generations = mutableMapOf<String, Long>()
+    private val lastSeekTargetMs = mutableMapOf<String, Long?>()
+    private val lastSeekWallMs = mutableMapOf<String, Long>()
 
     fun reset(sourceKey: String) {
         if (sourceKey.isBlank()) return
 
+        var generation = 0L
         synchronized(lock) {
+            generation = (generations[sourceKey] ?: 0L) + 1L
             sources.clear()
             sources[sourceKey] = linkedMapOf()
+            generations[sourceKey] = generation
+            lastSeekTargetMs.remove(sourceKey)
+            lastSeekWallMs.remove(sourceKey)
         }
 
-        AutoSyncDebugLog.verbose("embedded store reset")
+        AutoSyncDebugLog.verbose("embedded store reset generation=$generation")
+    }
+
+    fun beginNewGeneration(sourceKey: String, targetTimeMs: Long?) {
+        if (sourceKey.isBlank()) return
+
+        val now = SystemClock.elapsedRealtime()
+        var generation: Long? = null
+        synchronized(lock) {
+            val previousTarget = lastSeekTargetMs[sourceKey]
+            val previousWall = lastSeekWallMs[sourceKey]
+            val duplicateSeek =
+                previousWall != null &&
+                    now - previousWall <= SEEK_DEDUP_WINDOW_MS &&
+                    when {
+                        previousTarget == null && targetTimeMs == null -> true
+                        previousTarget != null && targetTimeMs != null ->
+                            abs(previousTarget - targetTimeMs) <= SEEK_TARGET_TOLERANCE_MS
+                        else -> false
+                    }
+
+            if (!duplicateSeek) {
+                generation = (generations[sourceKey] ?: 0L) + 1L
+                generations[sourceKey] = generation!!
+                sources[sourceKey] = linkedMapOf()
+            }
+            lastSeekTargetMs[sourceKey] = targetTimeMs
+            lastSeekWallMs[sourceKey] = now
+        }
+
+        generation?.let {
+            AutoSyncDebugLog.verbose(
+                "embedded store seek generation=$it target=${targetTimeMs ?: -1L}ms",
+            )
+        }
     }
 
     fun record(
@@ -1286,6 +1553,8 @@ internal object EmbeddedSubtitleCueStore {
     ): List<ReferenceTrack> = synchronized(lock) {
         val preferred = preferredLanguage?.trim()?.lowercase().orEmpty()
 
+        val generation = generations[sourceKey] ?: 0L
+
         sources[sourceKey]
             .orEmpty()
             .map { (key, track) ->
@@ -1296,6 +1565,7 @@ internal object EmbeddedSubtitleCueStore {
                     label = track.label,
                     selectionFlags = track.selectionFlags,
                     roleFlags = track.roleFlags,
+                    generation = generation,
                 )
             }
             .filter { it.cues.size >= 3 }
