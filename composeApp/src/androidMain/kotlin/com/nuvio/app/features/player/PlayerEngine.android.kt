@@ -853,10 +853,10 @@ private fun ExoPlayerSurface(
                             )
                         }
 
-                        val delayLabel = when {
-                            kotlin.math.abs(correctionMs) < 250 -> "no delay needed"
-                            correctionMs > 0 -> "delay +%.1fs".format(correctionMs / 1000.0)
-                            else -> "delay %.1fs".format(correctionMs / 1000.0)
+                        val delayLabel = if (kotlin.math.abs(correctionMs) < 250) {
+                            "0.0s"
+                        } else {
+                            "%+.1fs".format(correctionMs / 1000.0)
                         }
                         val languageLabel = recommendation.language
                             .takeIf { it.isNotBlank() }
@@ -888,6 +888,14 @@ private fun ExoPlayerSurface(
                         val recommendationLabel = subtitleListNumber
                             ?.let { "#$it — ${recommendation.displayName}" }
                             ?: recommendation.displayName
+                        val toastSubtitleLabel = subtitleListNumber
+                            ?.let { "#$it" }
+                            ?: recommendation.displayName.take(24)
+                        val toastActionLabel = if (recommendation.isCurrentSubtitle) {
+                            "current subtitle"
+                        } else {
+                            "select this subtitle"
+                        }
 
                         AutoSyncDebugLog.finishAndCopy(
                             context = context,
@@ -899,7 +907,7 @@ private fun ExoPlayerSurface(
                         )
                         Toast.makeText(
                             context,
-                            "Best $languageLabel subtitle: $recommendationLabel\n$selectionLabel • $delayLabel",
+                            "Auto Sync: $toastSubtitleLabel • $delayLabel\n$toastActionLabel",
                             Toast.LENGTH_LONG,
                         ).show()
                         Log.i(
