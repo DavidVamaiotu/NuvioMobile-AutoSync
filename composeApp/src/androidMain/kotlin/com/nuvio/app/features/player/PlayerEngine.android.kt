@@ -811,6 +811,7 @@ private fun ExoPlayerSurface(
                         ).show()
                         val recommendation = AutomaticSubtitleSync.findBestSubtitleRecommendation(
                             sourceKey = sourceUrl,
+                            sourceHeaders = sanitizedSourceHeaders,
                             selectedSubtitleUrl = url,
                             selectedSubtitleHeaders = subtitleHeaders,
                             streamSubtitles = externalSubtitles,
