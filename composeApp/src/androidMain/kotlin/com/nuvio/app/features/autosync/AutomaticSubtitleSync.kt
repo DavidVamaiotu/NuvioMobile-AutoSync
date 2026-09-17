@@ -11,10 +11,13 @@ import com.nuvio.app.features.player.SUBTITLE_DELAY_MAX_MS
 import com.nuvio.app.features.player.SUBTITLE_DELAY_MIN_MS
 import com.nuvio.app.features.player.SubtitleSyncCue
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.max
@@ -88,10 +91,42 @@ internal object AutomaticSubtitleSync {
     private const val MAX_PARALLEL_SUBTITLE_DOWNLOADS = 6
     private const val MAX_OFFSET_VOTE_REFERENCE_CUES = 48
     private const val MAX_RECOMMENDATION_CACHE_ENTRIES = 16
+    private const val MAX_PARSED_CANDIDATE_CACHE_ENTRIES = 64
+    private const val MAX_LIVE_REFERENCE_CACHE_ENTRIES = 4
+    private const val REFERENCE_MATCH_BATCH_SIZE = 8
+
+    // Only stop scanning additional embedded tracks when the current alignment is essentially exact.
+    // This keeps the same matcher/confidence rules while avoiding dozens of redundant comparisons.
+    private const val EARLY_REFERENCE_ACCEPT_SCORE = 0.9995
+    private const val EARLY_REFERENCE_ACCEPT_MATCHES = 20
+    private const val EARLY_REFERENCE_ACCEPT_RESIDUAL_MS = 2.0
+    private const val EARLY_REFERENCE_ACCEPT_SCALE_DEVIATION = 0.0005
 
     private val recommendationCacheLock = Any()
     private val recommendationCache =
         mutableMapOf<RecommendationCacheKey, CachedRecommendation>()
+
+    private val parsedCandidateCacheLock = Any()
+    private val parsedCandidateCache = object : LinkedHashMap<ParsedCandidateCacheKey, CachedParsedSubtitle>(
+        MAX_PARSED_CANDIDATE_CACHE_ENTRIES,
+        0.75f,
+        true,
+    ) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<ParsedCandidateCacheKey, CachedParsedSubtitle>?,
+        ): Boolean = size > MAX_PARSED_CANDIDATE_CACHE_ENTRIES
+    }
+
+    private val liveReferenceCacheLock = Any()
+    private val liveReferenceCache = object : LinkedHashMap<String, List<ReferenceTrack>>(
+        MAX_LIVE_REFERENCE_CACHE_ENTRIES,
+        0.75f,
+        true,
+    ) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<String, List<ReferenceTrack>>?,
+        ): Boolean = size > MAX_LIVE_REFERENCE_CACHE_ENTRIES
+    }
 
     suspend fun findBestSubtitleRecommendation(
         sourceKey: String,
@@ -204,7 +239,7 @@ internal object AutomaticSubtitleSync {
                 "candidate[$index] name=${parsed.candidate.displayName} " +
                     "lang=${parsed.candidate.language.ifBlank { "<unknown>" }} " +
                     "selected=${parsed.candidate.url == selectedSubtitleUrl} cues=${parsed.cues.size} " +
-                    "download=${parsed.downloadMs}ms parse=${parsed.parseMs}ms",
+                    "download=${parsed.downloadMs}ms parse=${parsed.parseMs}ms cached=${parsed.cacheHit}",
             )
         }
 
@@ -273,6 +308,21 @@ internal object AutomaticSubtitleSync {
             } else {
                 AutoSyncDebugLog.info(
                     "indexed Cues did not contain a usable full-dialogue timeline; falling back to live Media3 capture",
+                )
+            }
+        }
+
+        if (frozenReferenceTracks == null) {
+            val cachedLiveReferences = synchronized(liveReferenceCacheLock) {
+                liveReferenceCache[sourceKey]
+            }
+            if (!cachedLiveReferences.isNullOrEmpty()) {
+                onReferenceReady()
+                frozenReferenceMode = "cached-live-media3"
+                frozenReferenceTracks = cachedLiveReferences
+                AutoSyncDebugLog.info(
+                    "using cached live Media3 reference tracks=${cachedLiveReferences.size} " +
+                        "generation=${cachedLiveReferences.firstOrNull()?.generation ?: -1L}",
                 )
             }
         }
@@ -372,6 +422,7 @@ internal object AutomaticSubtitleSync {
                     track.copy(cues = track.cues.toList())
                 }
                 frozenReferenceTracks = frozen
+                cacheLiveReferenceTracks(sourceKey, frozen)
 
                 AutoSyncDebugLog.section("FROZEN REFERENCES")
                 AutoSyncDebugLog.info(
@@ -421,67 +472,82 @@ internal object AutomaticSubtitleSync {
         }
 
         AutoSyncDebugLog.section("CANDIDATE MATCH SUMMARY")
-        val candidateMatches = parsedCandidates.mapIndexedNotNull { candidateIndex, parsed ->
-            val attempts = referenceTracks.map { track ->
-                track to attemptAlignment(
-                    track = track,
-                    target = parsed.cues,
-                    logDetails = false,
-                )
-            }
+        val timingGroups = groupEquivalentCandidateTimelines(parsedCandidates)
+        AutoSyncDebugLog.info(
+            "timing timelines=${timingGroups.size}/${parsedCandidates.size} " +
+                "duplicatesSaved=${parsedCandidates.size - timingGroups.size}",
+        )
 
-            val acceptedMatches = attempts.mapNotNull { (track, attempt) ->
-                attempt.result?.let { alignment ->
-                    CandidateMatch(
-                        parsed = parsed,
-                        track = track,
-                        alignment = alignment,
+        // The matcher is intentionally CPU-heavy. Keep every comparison off Compose/Main so
+        // pathological streams (many candidates x many embedded tracks) cannot freeze playback UI.
+        val groupResults = withContext(Dispatchers.Default) {
+            buildList {
+                timingGroups.forEach { group ->
+                    add(
+                        CandidateTimingGroupResult(
+                            group = group,
+                            summary = matchCandidateAgainstReferences(
+                                parsed = group.members.first(),
+                                referenceTracks = referenceTracks,
+                            ),
+                        ),
                     )
+                    // Give cancellation/new subtitle selections a prompt hand-off point.
+                    yield()
                 }
             }
+        }
 
-            val bestAccepted = acceptedMatches.sortedWith(
-                compareByDescending<CandidateMatch> { adjustedAlignmentScore(it) }
-                    .thenByDescending { it.alignment.matches }
-                    .thenBy { abs(it.alignment.timelineScale - 1.0) }
-                    .thenBy { it.alignment.residualMs }
-                    .thenBy { abs(it.alignment.offsetMs) }
-                    .thenBy { it.track.key },
-            ).firstOrNull()
+        val candidateIndexByUrl = parsedCandidates
+            .mapIndexed { index, parsed -> parsed.candidate.url to index }
+            .toMap()
+        val candidateMatches = mutableListOf<CandidateMatch>()
 
-            if (bestAccepted != null) {
-                val winningAttempt = attempts.first { (track, _) -> track.key == bestAccepted.track.key }.second
-                AutoSyncDebugLog.info(
-                    "candidate[$candidateIndex] ACCEPT track=${bestAccepted.track.key} " +
-                        "label=${bestAccepted.track.label ?: "<none>"} " +
-                        "score=${fmt(bestAccepted.alignment.score)} " +
-                        "rankScore=${fmt(adjustedAlignmentScore(bestAccepted))} " +
-                        "matches=${bestAccepted.alignment.matches} " +
-                        "offset=${bestAccepted.alignment.offsetMs}ms " +
-                        "scale=${"%.6f".format(bestAccepted.alignment.timelineScale)} " +
-                        "consecutive=${winningAttempt.consecutivePatternMatches}",
-                )
-                bestAccepted
-            } else {
-                val bestAttempt = attempts.sortedWith(
-                    compareBy<Pair<ReferenceTrack, AlignmentAttempt>> { it.second.failedChecks.size }
-                        .thenByDescending { it.second.score }
-                        .thenByDescending { it.second.matches }
-                        .thenBy { it.second.residualMs }
-                        .thenBy { it.first.key },
-                ).first()
-                val track = bestAttempt.first
-                val attemptResult = bestAttempt.second
-                AutoSyncDebugLog.info(
-                    "candidate[$candidateIndex] REJECT bestTrack=${track.key} " +
-                        "label=${track.label ?: "<none>"} score=${fmt(attemptResult.score)} " +
-                        "matches=${attemptResult.matches} " +
-                        "offset=${attemptResult.offsetMs?.let { "${it}ms" } ?: "<none>"} " +
-                        "scale=${attemptResult.timelineScale?.let { "%.6f".format(it) } ?: "<unavailable>"} " +
-                        "consecutive=${attemptResult.consecutivePatternMatches} " +
-                        "failed=${attemptResult.failedChecks.joinToString(",").ifBlank { "unknown" }}",
-                )
-                null
+        groupResults.forEach { groupResult ->
+            val summary = groupResult.summary
+            groupResult.group.members.forEachIndexed { memberIndex, parsed ->
+                val candidateIndex = candidateIndexByUrl[parsed.candidate.url] ?: -1
+                val reusedTiming = memberIndex > 0
+                val bestAccepted = summary.bestAccepted?.let { match ->
+                    CandidateMatch(
+                        parsed = parsed,
+                        track = match.track,
+                        alignment = match.alignment,
+                    )
+                }
+
+                if (bestAccepted != null) {
+                    candidateMatches += bestAccepted
+                    AutoSyncDebugLog.info(
+                        "candidate[$candidateIndex] ACCEPT track=${bestAccepted.track.key} " +
+                            "label=${bestAccepted.track.label ?: "<none>"} " +
+                            "score=${fmt(bestAccepted.alignment.score)} " +
+                            "rankScore=${fmt(adjustedAlignmentScore(bestAccepted))} " +
+                            "matches=${bestAccepted.alignment.matches} " +
+                            "offset=${bestAccepted.alignment.offsetMs}ms " +
+                            "scale=${"%.6f".format(bestAccepted.alignment.timelineScale)} " +
+                            "consecutive=${summary.winningAttempt?.consecutivePatternMatches ?: 0} " +
+                            "references=${summary.attempts.size}/${referenceTracks.size} " +
+                            "reusedTiming=$reusedTiming",
+                    )
+                } else {
+                    val bestAttempt = summary.bestRejectedAttempt
+                    if (bestAttempt != null) {
+                        val track = bestAttempt.first
+                        val attemptResult = bestAttempt.second
+                        AutoSyncDebugLog.info(
+                            "candidate[$candidateIndex] REJECT bestTrack=${track.key} " +
+                                "label=${track.label ?: "<none>"} score=${fmt(attemptResult.score)} " +
+                                "matches=${attemptResult.matches} " +
+                                "offset=${attemptResult.offsetMs?.let { "${it}ms" } ?: "<none>"} " +
+                                "scale=${attemptResult.timelineScale?.let { "%.6f".format(it) } ?: "<unavailable>"} " +
+                                "consecutive=${attemptResult.consecutivePatternMatches} " +
+                                "references=${summary.attempts.size}/${referenceTracks.size} " +
+                                "reusedTiming=$reusedTiming " +
+                                "failed=${attemptResult.failedChecks.joinToString(",").ifBlank { "unknown" }}",
+                        )
+                    }
+                }
             }
         }
 
@@ -520,11 +586,13 @@ internal object AutomaticSubtitleSync {
         }
 
         AutoSyncDebugLog.section("WINNING SUBTITLE DETAILS")
-        attemptAlignment(
-            track = bestMatch.track,
-            target = bestMatch.parsed.cues,
-            logDetails = true,
-        )
+        withContext(Dispatchers.Default) {
+            attemptAlignment(
+                track = bestMatch.track,
+                target = bestMatch.parsed.cues,
+                logDetails = true,
+            )
+        }
 
         val correctionMs = bestMatch.alignment.offsetMs
             .toInt()
@@ -577,6 +645,136 @@ internal object AutomaticSubtitleSync {
         onReferenceReady = onReferenceReady,
         sourceHeaders = sourceHeaders,
     )?.takeIf { it.isCurrentSubtitle }?.correctionMs
+
+    private fun cacheLiveReferenceTracks(
+        sourceKey: String,
+        tracks: List<ReferenceTrack>,
+    ) {
+        if (sourceKey.isBlank() || tracks.isEmpty()) return
+        val immutableCopy = tracks.map { track -> track.copy(cues = track.cues.toList()) }
+        synchronized(liveReferenceCacheLock) {
+            liveReferenceCache[sourceKey] = immutableCopy
+        }
+    }
+
+    private fun groupEquivalentCandidateTimelines(
+        parsedCandidates: List<ParsedSubtitleCandidate>,
+    ): List<CandidateTimingGroup> {
+        val buckets = linkedMapOf<CandidateTimingFingerprint, MutableList<CandidateTimingGroup>>()
+        parsedCandidates.forEach { parsed ->
+            val fingerprint = candidateTimingFingerprint(parsed.cues)
+            val bucket = buckets.getOrPut(fingerprint) { mutableListOf() }
+            val exactGroup = bucket.firstOrNull { group ->
+                sameCandidateTiming(group.members.first().cues, parsed.cues)
+            }
+            if (exactGroup != null) {
+                exactGroup.members += parsed
+            } else {
+                bucket += CandidateTimingGroup(
+                    fingerprint = fingerprint,
+                    members = mutableListOf(parsed),
+                )
+            }
+        }
+        return buckets.values.flatten()
+    }
+
+    private fun candidateTimingFingerprint(
+        cues: List<SubtitleSyncCue>,
+    ): CandidateTimingFingerprint {
+        var timingHash = 1_125_899_906_842_597L
+        for (cue in cues) {
+            timingHash = timingHash * 31L + cue.startTimeMs
+            timingHash = timingHash * 31L + cue.endTimeMs
+        }
+        return CandidateTimingFingerprint(
+            cueCount = cues.size,
+            firstStartMs = cues.firstOrNull()?.startTimeMs ?: -1L,
+            lastStartMs = cues.lastOrNull()?.startTimeMs ?: -1L,
+            timingHash = timingHash,
+        )
+    }
+
+    private fun sameCandidateTiming(
+        left: List<SubtitleSyncCue>,
+        right: List<SubtitleSyncCue>,
+    ): Boolean {
+        if (left.size != right.size) return false
+        return left.indices.all { index ->
+            left[index].startTimeMs == right[index].startTimeMs &&
+                left[index].endTimeMs == right[index].endTimeMs
+        }
+    }
+
+    private fun matchCandidateAgainstReferences(
+        parsed: ParsedSubtitleCandidate,
+        referenceTracks: List<ReferenceTrack>,
+    ): CandidateReferenceSummary {
+        val attempts = mutableListOf<Pair<ReferenceTrack, AlignmentAttempt>>()
+        var bestAccepted: CandidateMatch? = null
+        var winningAttempt: AlignmentAttempt? = null
+
+        for (batch in referenceTracks.chunked(REFERENCE_MATCH_BATCH_SIZE)) {
+            for (track in batch) {
+                val attempt = attemptAlignment(
+                    track = track,
+                    target = parsed.cues,
+                    logDetails = false,
+                )
+                attempts += track to attempt
+                val alignment = attempt.result ?: continue
+                val match = CandidateMatch(
+                    parsed = parsed,
+                    track = track,
+                    alignment = alignment,
+                )
+                val previousBest = bestAccepted
+                if (previousBest == null || candidateMatchComparator.compare(match, previousBest) < 0) {
+                    bestAccepted = match
+                    winningAttempt = attempt
+                }
+            }
+
+            val currentBest = bestAccepted
+            if (currentBest != null && canStopReferenceSearch(currentBest)) {
+                break
+            }
+        }
+
+        val bestRejectedAttempt = if (bestAccepted == null && attempts.isNotEmpty()) {
+            attempts.sortedWith(
+                compareBy<Pair<ReferenceTrack, AlignmentAttempt>> { it.second.failedChecks.size }
+                    .thenByDescending { it.second.score }
+                    .thenByDescending { it.second.matches }
+                    .thenBy { it.second.residualMs }
+                    .thenBy { it.first.key },
+            ).first()
+        } else {
+            null
+        }
+
+        return CandidateReferenceSummary(
+            bestAccepted = bestAccepted,
+            winningAttempt = winningAttempt,
+            bestRejectedAttempt = bestRejectedAttempt,
+            attempts = attempts,
+        )
+    }
+
+    private val candidateMatchComparator: Comparator<CandidateMatch> =
+        compareByDescending<CandidateMatch> { adjustedAlignmentScore(it) }
+            .thenByDescending { it.alignment.matches }
+            .thenBy { abs(it.alignment.timelineScale - 1.0) }
+            .thenBy { it.alignment.residualMs }
+            .thenBy { abs(it.alignment.offsetMs) }
+            .thenBy { it.track.key }
+
+    private fun canStopReferenceSearch(match: CandidateMatch): Boolean =
+        !isSdhReferenceTrack(match.track) &&
+            adjustedAlignmentScore(match) >= EARLY_REFERENCE_ACCEPT_SCORE &&
+            match.alignment.matches >= EARLY_REFERENCE_ACCEPT_MATCHES &&
+            match.alignment.residualMs <= EARLY_REFERENCE_ACCEPT_RESIDUAL_MS &&
+            abs(match.alignment.timelineScale - 1.0) <= EARLY_REFERENCE_ACCEPT_SCALE_DEVIATION
 
     private fun orderReferenceTracks(
         tracks: List<ReferenceTrack>,
@@ -747,6 +945,19 @@ internal object AutomaticSubtitleSync {
     private suspend fun loadSubtitleCandidate(
         candidate: SubtitleCandidate,
     ): ParsedSubtitleCandidate? {
+        val cacheKey = parsedCandidateCacheKey(candidate)
+        synchronized(parsedCandidateCacheLock) {
+            parsedCandidateCache[cacheKey]
+        }?.let { cached ->
+            return ParsedSubtitleCandidate(
+                candidate = candidate,
+                cues = cached.cues,
+                downloadMs = 0L,
+                parseMs = 0L,
+                cacheHit = true,
+            )
+        }
+
         val downloadStarted = SystemClock.elapsedRealtime()
         val subtitleText = try {
             httpGetTextWithHeaders(candidate.url, candidate.headers)
@@ -763,10 +974,12 @@ internal object AutomaticSubtitleSync {
 
         val parseStarted = SystemClock.elapsedRealtime()
         val cues = try {
-            PlayerSubtitleCueParser.parse(
-                text = subtitleText,
-                sourceUrl = candidate.url,
-            )
+            withContext(Dispatchers.Default) {
+                PlayerSubtitleCueParser.parse(
+                    text = subtitleText,
+                    sourceUrl = candidate.url,
+                )
+            }
         } catch (cancel: CancellationException) {
             throw cancel
         } catch (error: Exception) {
@@ -786,11 +999,31 @@ internal object AutomaticSubtitleSync {
             return null
         }
 
+        val immutableCues = cues.toList()
+        synchronized(parsedCandidateCacheLock) {
+            parsedCandidateCache[cacheKey] = CachedParsedSubtitle(immutableCues)
+        }
+
         return ParsedSubtitleCandidate(
             candidate = candidate,
-            cues = cues,
+            cues = immutableCues,
             downloadMs = downloadMs,
             parseMs = parseMs,
+            cacheHit = false,
+        )
+    }
+
+    private fun parsedCandidateCacheKey(candidate: SubtitleCandidate): ParsedCandidateCacheKey {
+        var headerHash = 1
+        candidate.headers.entries
+            .sortedBy { it.key.lowercase() }
+            .forEach { (key, value) ->
+                headerHash = 31 * headerHash + key.lowercase().hashCode()
+                headerHash = 31 * headerHash + value.hashCode()
+            }
+        return ParsedCandidateCacheKey(
+            url = candidate.url,
+            headerHash = headerHash,
         )
     }
 
@@ -1565,6 +1798,40 @@ internal object AutomaticSubtitleSync {
         val cues: List<SubtitleSyncCue>,
         val downloadMs: Long,
         val parseMs: Long,
+        val cacheHit: Boolean,
+    )
+
+    private data class ParsedCandidateCacheKey(
+        val url: String,
+        val headerHash: Int,
+    )
+
+    private data class CachedParsedSubtitle(
+        val cues: List<SubtitleSyncCue>,
+    )
+
+    private data class CandidateTimingFingerprint(
+        val cueCount: Int,
+        val firstStartMs: Long,
+        val lastStartMs: Long,
+        val timingHash: Long,
+    )
+
+    private data class CandidateTimingGroup(
+        val fingerprint: CandidateTimingFingerprint,
+        val members: MutableList<ParsedSubtitleCandidate>,
+    )
+
+    private data class CandidateReferenceSummary(
+        val bestAccepted: CandidateMatch?,
+        val winningAttempt: AlignmentAttempt?,
+        val bestRejectedAttempt: Pair<ReferenceTrack, AlignmentAttempt>?,
+        val attempts: List<Pair<ReferenceTrack, AlignmentAttempt>>,
+    )
+
+    private data class CandidateTimingGroupResult(
+        val group: CandidateTimingGroup,
+        val summary: CandidateReferenceSummary,
     )
 
     private data class CandidateMatch(
