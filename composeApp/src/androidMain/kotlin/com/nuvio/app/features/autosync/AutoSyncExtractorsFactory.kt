@@ -146,10 +146,14 @@ private class ObservingTextTrackOutput(
     private fun record(startUs: Long, endUs: Long, text: String) {
         val startMs = startUs / 1_000L
         val endMs = if (endUs == C.TIME_UNSET || endUs <= startUs) startMs + 5_000L else max(startMs + 1, endUs / 1_000L)
+        val currentFormat = format
         EmbeddedSubtitleCueStore.record(
             sourceKey = sourceKey,
             trackKey = "media3:$trackId",
-            language = format?.language,
+            language = currentFormat?.language,
+            label = currentFormat?.label,
+            selectionFlags = currentFormat?.selectionFlags ?: 0,
+            roleFlags = currentFormat?.roleFlags ?: 0,
             cue = SubtitleSyncCue(startTimeMs = startMs, endTimeMs = endMs, text = text),
         )
     }

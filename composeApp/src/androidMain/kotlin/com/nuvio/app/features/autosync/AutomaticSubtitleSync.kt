@@ -1,6 +1,7 @@
 package com.nuvio.app.features.autosync
 
 import android.os.SystemClock
+import androidx.media3.common.C
 import com.nuvio.app.features.addons.httpGetTextWithHeaders
 import com.nuvio.app.features.player.PlayerSubtitleCueParser
 import com.nuvio.app.features.player.SubtitleRepository
@@ -48,6 +49,20 @@ internal object AutomaticSubtitleSync {
     private const val CANDIDATE_BUCKET_MS = 500L
     private const val MATCH_TOLERANCE_MS = 1_800L
     private const val STRONG_RESIDUAL_MS = 750L
+    private const val MIN_OFFSET_MARGIN = 0.025
+
+    private const val CONTIGUOUS_SEGMENT_MAX_GAP_MS = 30_000L
+    private const val MIN_FROZEN_REFERENCE_CUES = 8
+    private const val MIN_FROZEN_REFERENCE_SPAN_MS = 30_000L
+
+    private const val MIN_SCALE_VALIDATION_MATCHES = 8
+    private const val MIN_SCALE_VALIDATION_SPAN_MS = 20_000L
+    private const val MIN_SCALE_PAIR_GAP_MS = 8_000L
+    private const val MAX_TIMELINE_SCALE_DEVIATION = 0.008
+
+    private const val MIN_FULL_DIALOGUE_CUES = 8
+    private const val MIN_FULL_DIALOGUE_DENSITY_PER_MINUTE = 2.0
+    private const val MIN_FULL_DIALOGUE_TEXT_RATIO = 0.45
 
     private const val MAX_LOGGED_CUE_SAMPLES = 20
     private const val MAX_LOGGED_CANDIDATES = 20
@@ -201,21 +216,22 @@ internal object AutomaticSubtitleSync {
 
         var waitedMs = 0L
         var lastReferenceSignature = ""
-        var referenceReadyNotified = false
         var attempt = 0
+        var frozenCanonicalTrack: ReferenceTrack? = null
 
         while (waitedMs <= MAX_WAIT_MS) {
             val rawTracks = EmbeddedSubtitleCueStore.candidateTracks(
                 sourceKey = sourceKey,
                 preferredLanguage = preferredLanguage,
             )
-            val allTracks = rawTracks.map { track ->
-                track.copy(cues = deduplicateReferenceCues(track.cues))
+            val preparedTracks = rawTracks.map { track ->
+                val deduplicated = deduplicateReferenceCues(track.cues)
+                track.copy(cues = largestContiguousReferenceSegment(deduplicated))
             }
 
-            val usableTracks = allTracks.filter { track ->
-                track.cues.size >= MIN_REFERENCE_CUES &&
-                    track.cues.last().startTimeMs - track.cues.first().startTimeMs >= MIN_REFERENCE_SPAN_MS
+            val usableTracks = preparedTracks.filter { track ->
+                track.cues.size >= MIN_FROZEN_REFERENCE_CUES &&
+                    referenceSpanMs(track.cues) >= MIN_FROZEN_REFERENCE_SPAN_MS
             }
 
             val signature = rawTracks.joinToString("|") { track ->
@@ -228,26 +244,27 @@ internal object AutomaticSubtitleSync {
 
                 AutoSyncDebugLog.section("REFERENCE SNAPSHOT #$attempt")
                 AutoSyncDebugLog.info(
-                    "waited=${waitedMs}ms tracks=${allTracks.size} usable=${usableTracks.size}",
+                    "waited=${waitedMs}ms tracks=${preparedTracks.size} usable=${usableTracks.size}",
                 )
 
-                if (allTracks.isEmpty()) {
+                if (preparedTracks.isEmpty()) {
                     AutoSyncDebugLog.info("no embedded text tracks captured yet")
                 }
 
-                allTracks.forEachIndexed { trackIndex, track ->
-                    val rawCueCount = rawTracks.getOrNull(trackIndex)?.cues?.size ?: track.cues.size
-                    val removedDuplicates = (rawCueCount - track.cues.size).coerceAtLeast(0)
-                    val span = if (track.cues.size >= 2) {
-                        track.cues.last().startTimeMs - track.cues.first().startTimeMs
-                    } else {
-                        0L
-                    }
+                preparedTracks.forEachIndexed { trackIndex, track ->
+                    val raw = rawTracks.getOrNull(trackIndex)
+                    val rawCueCount = raw?.cues?.size ?: track.cues.size
+                    val dedupedCueCount = raw?.let { deduplicateReferenceCues(it.cues).size } ?: track.cues.size
+                    val segmentCueCount = track.cues.size
+                    val span = referenceSpanMs(track.cues)
+                    val density = referenceCueDensityPerMinute(track.cues)
 
                     AutoSyncDebugLog.info(
                         "track[$trackIndex] key=${track.key} lang=${track.language ?: "<unknown>"} " +
-                            "rawCues=$rawCueCount cues=${track.cues.size} deduped=$removedDuplicates " +
-                            "span=${span}ms usable=${track in usableTracks}",
+                            "label=${track.label ?: "<none>"} selectionFlags=${track.selectionFlags} roleFlags=${track.roleFlags} " +
+                            "rawCues=$rawCueCount dedupedCues=$dedupedCueCount segmentCues=$segmentCueCount " +
+                            "span=${span}ms density=${"%.2f".format(density)}/min " +
+                            "fullDialogue=${isLikelyFullDialogueTrack(track)} usable=${track in usableTracks}",
                     )
 
                     track.cues
@@ -265,103 +282,120 @@ internal object AutomaticSubtitleSync {
             }
 
             if (usableTracks.isNotEmpty()) {
-                if (!referenceReadyNotified) {
-                    referenceReadyNotified = true
-                    onReferenceReady()
-                }
-
                 val canonicalTrack = chooseCanonicalReferenceTrack(usableTracks)
-                    ?: usableTracks.first()
+                if (canonicalTrack != null) {
+                    onReferenceReady()
+
+                    frozenCanonicalTrack = canonicalTrack.copy(cues = canonicalTrack.cues.toList())
+                    AutoSyncDebugLog.section("FROZEN REFERENCE")
+                    AutoSyncDebugLog.info(
+                        "track=${canonicalTrack.key} lang=${canonicalTrack.language ?: "<unknown>"} " +
+                            "label=${canonicalTrack.label ?: "<none>"} cues=${canonicalTrack.cues.size} " +
+                            "span=${referenceSpanMs(canonicalTrack.cues)}ms " +
+                            "density=${"%.2f".format(referenceCueDensityPerMinute(canonicalTrack.cues))}/min",
+                    )
+                    break
+                }
 
                 AutoSyncDebugLog.info(
-                    "canonical reference track=${canonicalTrack.key} " +
-                        "lang=${canonicalTrack.language ?: "<unknown>"} cues=${canonicalTrack.cues.size}",
+                    "embedded tracks are usable but none looks like a full-dialogue reference; waiting",
                 )
-
-                val candidateMatches = parsedCandidates.mapNotNull { parsed ->
-                    align(
-                        track = canonicalTrack,
-                        target = parsed.cues,
-                        logDetails = false,
-                    )?.let { alignment ->
-                        CandidateMatch(
-                            parsed = parsed,
-                            alignment = alignment,
-                        )
-                    }
-                }
-
-                if (candidateMatches.isNotEmpty()) {
-                    val ranked = candidateMatches.sortedWith(
-                        compareByDescending<CandidateMatch> { it.alignment.score }
-                            .thenByDescending { it.alignment.matches }
-                            .thenBy { it.alignment.residualMs }
-                            .thenBy { abs(it.alignment.offsetMs) }
-                            .thenBy { candidateOrder[it.parsed.candidate.url] ?: Int.MAX_VALUE }
-                            .thenBy { it.parsed.candidate.url },
-                    )
-                    val bestMatch = ranked.first()
-
-                    AutoSyncDebugLog.section("SUBTITLE RANKING")
-                    ranked.forEachIndexed { index, match ->
-                        AutoSyncDebugLog.info(
-                            "rank=${index + 1} name=${match.parsed.candidate.displayName} " +
-                                "lang=${match.parsed.candidate.language.ifBlank { "<unknown>" }} " +
-                                "selected=${match.parsed.candidate.url == selectedSubtitleUrl} " +
-                                "correction=${match.alignment.offsetMs}ms " +
-                                "score=${fmt(match.alignment.score)} matches=${match.alignment.matches} " +
-                                "residual=${"%.1f".format(match.alignment.residualMs)}ms",
-                        )
-                    }
-
-                    AutoSyncDebugLog.section("WINNING SUBTITLE DETAILS")
-                    align(
-                        track = canonicalTrack,
-                        target = bestMatch.parsed.cues,
-                        logDetails = true,
-                    )
-
-                    val correctionMs = bestMatch.alignment.offsetMs
-                        .toInt()
-                        .coerceIn(SUBTITLE_DELAY_MIN_MS, SUBTITLE_DELAY_MAX_MS)
-
-                    AutoSyncDebugLog.section("FINAL RECOMMENDATION")
-                    AutoSyncDebugLog.info(
-                        "name=${bestMatch.parsed.candidate.displayName} " +
-                            "lang=${bestMatch.parsed.candidate.language.ifBlank { "<unknown>" }} " +
-                            "selected=${bestMatch.parsed.candidate.url == selectedSubtitleUrl}",
-                    )
-                    AutoSyncDebugLog.info(
-                        "correction=${correctionMs}ms score=${fmt(bestMatch.alignment.score)}",
-                    )
-
-                    val cachedRecommendation = CachedRecommendation(
-                        url = bestMatch.parsed.candidate.url,
-                        language = bestMatch.parsed.candidate.language,
-                        displayName = bestMatch.parsed.candidate.displayName,
-                        correctionMs = correctionMs,
-                        score = bestMatch.alignment.score,
-                    )
-                    synchronized(recommendationCacheLock) {
-                        if (recommendationCache.size >= MAX_RECOMMENDATION_CACHE_ENTRIES) {
-                            recommendationCache.clear()
-                        }
-                        recommendationCache[cacheKey] = cachedRecommendation
-                    }
-
-                    return cachedRecommendation.toRecommendation(selectedSubtitleUrl)
-                }
-
-                AutoSyncDebugLog.info("no subtitle candidate passed confidence checks; waiting for more cues")
             }
 
             delay(POLL_INTERVAL_MS)
             waitedMs += POLL_INTERVAL_MS
         }
 
-        AutoSyncDebugLog.section("TIMEOUT")
-        AutoSyncDebugLog.warn("no reliable same-language subtitle recommendation after ${MAX_WAIT_MS}ms")
-        return null
+        val canonicalTrack = frozenCanonicalTrack ?: run {
+            AutoSyncDebugLog.section("TIMEOUT")
+            AutoSyncDebugLog.warn(
+                "no usable full-dialogue embedded reference after ${MAX_WAIT_MS}ms",
+            )
+            return null
+        }
+
+        val candidateMatches = parsedCandidates.mapNotNull { parsed ->
+            align(
+                track = canonicalTrack,
+                target = parsed.cues,
+                logDetails = false,
+            )?.let { alignment ->
+                CandidateMatch(
+                    parsed = parsed,
+                    alignment = alignment,
+                )
+            }
+        }
+
+        if (candidateMatches.isEmpty()) {
+            AutoSyncDebugLog.section("FINAL RECOMMENDATION")
+            AutoSyncDebugLog.warn(
+                "REJECT no same-language subtitle passed offset, timing-scale, and confidence checks",
+            )
+            return null
+        }
+
+        val ranked = candidateMatches.sortedWith(
+            compareByDescending<CandidateMatch> { it.alignment.score }
+                .thenByDescending { it.alignment.matches }
+                .thenBy { abs(it.alignment.timelineScale - 1.0) }
+                .thenBy { it.alignment.residualMs }
+                .thenBy { abs(it.alignment.offsetMs) }
+                .thenBy { candidateOrder[it.parsed.candidate.url] ?: Int.MAX_VALUE }
+                .thenBy { it.parsed.candidate.url },
+        )
+        val bestMatch = ranked.first()
+
+        AutoSyncDebugLog.section("SUBTITLE RANKING")
+        ranked.forEachIndexed { index, match ->
+            AutoSyncDebugLog.info(
+                "rank=${index + 1} name=${match.parsed.candidate.displayName} " +
+                    "lang=${match.parsed.candidate.language.ifBlank { "<unknown>" }} " +
+                    "selected=${match.parsed.candidate.url == selectedSubtitleUrl} " +
+                    "correction=${match.alignment.offsetMs}ms " +
+                    "scale=${"%.6f".format(match.alignment.timelineScale)} " +
+                    "score=${fmt(match.alignment.score)} matches=${match.alignment.matches} " +
+                    "residual=${"%.1f".format(match.alignment.residualMs)}ms",
+            )
+        }
+
+        AutoSyncDebugLog.section("WINNING SUBTITLE DETAILS")
+        align(
+            track = canonicalTrack,
+            target = bestMatch.parsed.cues,
+            logDetails = true,
+        )
+
+        val correctionMs = bestMatch.alignment.offsetMs
+            .toInt()
+            .coerceIn(SUBTITLE_DELAY_MIN_MS, SUBTITLE_DELAY_MAX_MS)
+
+        AutoSyncDebugLog.section("FINAL RECOMMENDATION")
+        AutoSyncDebugLog.info(
+            "name=${bestMatch.parsed.candidate.displayName} " +
+                "lang=${bestMatch.parsed.candidate.language.ifBlank { "<unknown>" }} " +
+                "selected=${bestMatch.parsed.candidate.url == selectedSubtitleUrl}",
+        )
+        AutoSyncDebugLog.info(
+            "correction=${correctionMs}ms scale=${"%.6f".format(bestMatch.alignment.timelineScale)} " +
+                "score=${fmt(bestMatch.alignment.score)}",
+        )
+
+        val cachedRecommendation = CachedRecommendation(
+            url = bestMatch.parsed.candidate.url,
+            language = bestMatch.parsed.candidate.language,
+            displayName = bestMatch.parsed.candidate.displayName,
+            correctionMs = correctionMs,
+            score = bestMatch.alignment.score,
+        )
+        synchronized(recommendationCacheLock) {
+            if (recommendationCache.size >= MAX_RECOMMENDATION_CACHE_ENTRIES) {
+                recommendationCache.clear()
+            }
+            recommendationCache[cacheKey] = cachedRecommendation
+        }
+
+        return cachedRecommendation.toRecommendation(selectedSubtitleUrl)
     }
 
     /** Keeps the old single-subtitle API available for any other caller. */
@@ -384,17 +418,87 @@ internal object AutomaticSubtitleSync {
     private fun chooseCanonicalReferenceTrack(
         tracks: List<ReferenceTrack>,
     ): ReferenceTrack? =
-        tracks.sortedWith(
-            compareByDescending<ReferenceTrack> { track ->
-                track.cues.count(::isDialogueLikeReferenceCue)
-            }.thenByDescending { track ->
-                track.cues.count { it.text.isNotBlank() }
-            }.thenByDescending { track ->
-                track.cues.size
-            }.thenBy { track ->
-                track.key
-            },
-        ).firstOrNull()
+        tracks
+            .filter(::isLikelyFullDialogueTrack)
+            .sortedWith(
+                compareByDescending<ReferenceTrack>(::fullDialogueReferenceScore)
+                    .thenByDescending { track -> track.cues.size }
+                    .thenByDescending { track -> referenceSpanMs(track.cues) }
+                    .thenBy { track -> track.key },
+            )
+            .firstOrNull()
+
+    private fun isLikelyFullDialogueTrack(track: ReferenceTrack): Boolean {
+        if (track.cues.size < MIN_FULL_DIALOGUE_CUES) return false
+        if (referenceSpanMs(track.cues) < MIN_FROZEN_REFERENCE_SPAN_MS) return false
+        if (
+            isForcedReferenceTrack(track) ||
+            isCommentaryReferenceTrack(track) ||
+            isDescriptiveReferenceTrack(track)
+        ) return false
+        if (referenceCueDensityPerMinute(track.cues) < MIN_FULL_DIALOGUE_DENSITY_PER_MINUTE) return false
+
+        val textCues = track.cues.filter { normalizedCueText(it.text).isNotBlank() }
+        if (textCues.size >= 4) {
+            val dialogueRatio =
+                textCues.count(::isDialogueLikeReferenceCue).toDouble() / textCues.size
+            if (dialogueRatio < MIN_FULL_DIALOGUE_TEXT_RATIO) return false
+        }
+
+        return true
+    }
+
+    private fun fullDialogueReferenceScore(track: ReferenceTrack): Double {
+        val textCues = track.cues.filter { normalizedCueText(it.text).isNotBlank() }
+        val dialogueRatio = if (textCues.isEmpty()) {
+            0.5
+        } else {
+            textCues.count(::isDialogueLikeReferenceCue).toDouble() / textCues.size
+        }
+        val density = referenceCueDensityPerMinute(track.cues).coerceAtMost(20.0)
+        val dialogueRoleBonus =
+            if ((track.roleFlags and C.ROLE_FLAG_TRANSCRIBES_DIALOG) != 0) 8.0 else 0.0
+        val subtitleRoleBonus =
+            if ((track.roleFlags and C.ROLE_FLAG_SUBTITLE) != 0) 4.0 else 0.0
+        val sdhPenalty = if (isSdhReferenceTrack(track)) 5.0 else 0.0
+
+        return track.cues.size * 2.0 +
+            density * 1.5 +
+            dialogueRatio * 20.0 +
+            dialogueRoleBonus +
+            subtitleRoleBonus -
+            sdhPenalty
+    }
+
+    private fun isForcedReferenceTrack(track: ReferenceTrack): Boolean {
+        if ((track.selectionFlags and C.SELECTION_FLAG_FORCED) != 0) return true
+        val label = track.label.orEmpty().lowercase()
+        return label.contains("forced") ||
+            label.contains("foreign only") ||
+            label.contains("signs only") ||
+            label.contains("songs only")
+    }
+
+    private fun isCommentaryReferenceTrack(track: ReferenceTrack): Boolean {
+        if ((track.roleFlags and C.ROLE_FLAG_COMMENTARY) != 0) return true
+        val label = track.label.orEmpty().lowercase()
+        return label.contains("commentary")
+    }
+
+    private fun isDescriptiveReferenceTrack(track: ReferenceTrack): Boolean {
+        if ((track.roleFlags and C.ROLE_FLAG_DESCRIBES_VIDEO) != 0) return true
+        val label = track.label.orEmpty().lowercase()
+        return label.contains("audio description") || label.contains("descriptive subtitle")
+    }
+
+    private fun isSdhReferenceTrack(track: ReferenceTrack): Boolean {
+        if ((track.roleFlags and C.ROLE_FLAG_DESCRIBES_MUSIC_AND_SOUND) != 0) return true
+        val label = track.label.orEmpty().lowercase()
+        return label.contains("sdh") ||
+            label.contains("hearing impaired") ||
+            label.contains("hearing-impaired") ||
+            label.contains("closed caption")
+    }
 
     private fun isDialogueLikeReferenceCue(cue: SubtitleSyncCue): Boolean {
         val text = normalizedCueText(cue.text)
@@ -405,6 +509,45 @@ internal object AutomaticSubtitleSync {
                 (text.startsWith("[") && text.endsWith("]"))
 
         return !parentheticalOnly && text.any { it.isLetterOrDigit() }
+    }
+
+    private fun largestContiguousReferenceSegment(
+        cues: List<SubtitleSyncCue>,
+    ): List<SubtitleSyncCue> {
+        if (cues.size < 2) return cues
+
+        val sorted = cues.sortedBy { it.startTimeMs }
+        val segments = mutableListOf<MutableList<SubtitleSyncCue>>()
+        var current = mutableListOf(sorted.first())
+        segments += current
+
+        for (cue in sorted.drop(1)) {
+            val previous = current.last()
+            if (cue.startTimeMs - previous.startTimeMs > CONTIGUOUS_SEGMENT_MAX_GAP_MS) {
+                current = mutableListOf()
+                segments += current
+            }
+            current += cue
+        }
+
+        return segments
+            .sortedWith(
+                compareByDescending<List<SubtitleSyncCue>> { it.size }
+                    .thenByDescending { referenceSpanMs(it) }
+                    .thenBy { it.firstOrNull()?.startTimeMs ?: Long.MAX_VALUE },
+            )
+            .firstOrNull()
+            ?.toList()
+            .orEmpty()
+    }
+
+    private fun referenceSpanMs(cues: List<SubtitleSyncCue>): Long =
+        if (cues.size < 2) 0L else cues.last().startTimeMs - cues.first().startTimeMs
+
+    private fun referenceCueDensityPerMinute(cues: List<SubtitleSyncCue>): Double {
+        val spanMs = referenceSpanMs(cues)
+        if (spanMs <= 0L) return 0.0
+        return cues.size * 60_000.0 / spanMs
     }
 
     private suspend fun loadSubtitleCandidate(
@@ -526,11 +669,9 @@ internal object AutomaticSubtitleSync {
 
         val referenceParticipation = best.matches.toDouble() / reference.size
         val normalParticipation = referenceParticipation >= NORMAL_PARTICIPATION_THRESHOLD
-
-        val strongPattern =
-            best.matches >= 7 &&
-                best.residualMs <= 500.0 &&
-                best.spacingScore >= 0.62
+        val timelineScale = estimateTimelineScale(reference, target, best.pairs)
+        val scaleCompatible = timelineScale != null &&
+            abs(timelineScale - 1.0) <= MAX_TIMELINE_SCALE_DEVIATION
 
         val strongAbsoluteEvidence =
             best.matches >= STRONG_ACCEPT_MATCHES &&
@@ -571,9 +712,19 @@ internal object AutomaticSubtitleSync {
                 "${fmt(best.score)} >= 0.5800",
             ),
             ConfidenceCheck(
-                "margin OR strong pattern",
-                margin >= 0.008 || strongPattern,
-                "margin=${fmt(margin)} strongPattern=$strongPattern",
+                "unambiguous offset",
+                margin >= MIN_OFFSET_MARGIN,
+                "margin=${fmt(margin)} >= ${fmt(MIN_OFFSET_MARGIN)}",
+            ),
+            ConfidenceCheck(
+                "timeline scale / FPS",
+                scaleCompatible,
+                if (timelineScale == null) {
+                    "insufficient matched span for scale validation"
+                } else {
+                    "scale=${"%.6f".format(timelineScale)} deviation=${"%.4f".format(abs(timelineScale - 1.0))} " +
+                        "<= ${"%.4f".format(MAX_TIMELINE_SCALE_DEVIATION)}"
+                },
             ),
             ConfidenceCheck(
                 "participation OR strong absolute evidence",
@@ -592,6 +743,7 @@ internal object AutomaticSubtitleSync {
                     "medianResidual=${"%.1f".format(best.residualMs)}ms " +
                     "signedResidual=${"%.1f".format(best.signedResidualMs)}ms " +
                     "agreement=${fmt(best.offsetAgreement)} spacing=${fmt(best.spacingScore)} " +
+                    "scale=${timelineScale?.let { "%.6f".format(it) } ?: "<unavailable>"} " +
                     "score=${fmt(best.score)}",
             )
 
@@ -650,7 +802,7 @@ internal object AutomaticSubtitleSync {
             )
         }
 
-        return if (highConfidence) {
+        return if (highConfidence && timelineScale != null) {
             AlignmentResult(
                 trackKey = track.key,
                 language = track.language,
@@ -658,10 +810,48 @@ internal object AutomaticSubtitleSync {
                 score = best.score,
                 matches = best.matches,
                 residualMs = best.residualMs,
+                timelineScale = timelineScale,
             )
         } else {
             null
         }
+    }
+
+    private fun estimateTimelineScale(
+        reference: List<SubtitleSyncCue>,
+        target: List<SubtitleSyncCue>,
+        pairs: List<MatchPair>,
+    ): Double? {
+        if (pairs.size < MIN_SCALE_VALIDATION_MATCHES) return null
+
+        val firstPair = pairs.first()
+        val lastPair = pairs.last()
+        val targetSpan =
+            target[lastPair.targetIndex].startTimeMs - target[firstPair.targetIndex].startTimeMs
+        if (targetSpan < MIN_SCALE_VALIDATION_SPAN_MS) return null
+
+        val slopes = buildList {
+            for (leftIndex in 0 until pairs.lastIndex) {
+                val left = pairs[leftIndex]
+                for (rightIndex in leftIndex + 1 until pairs.size) {
+                    val right = pairs[rightIndex]
+                    val targetGap =
+                        target[right.targetIndex].startTimeMs - target[left.targetIndex].startTimeMs
+                    if (targetGap < MIN_SCALE_PAIR_GAP_MS) continue
+
+                    val referenceGap =
+                        reference[right.referenceIndex].startTimeMs -
+                            reference[left.referenceIndex].startTimeMs
+                    if (referenceGap <= 0L) continue
+
+                    val slope = referenceGap.toDouble() / targetGap.toDouble()
+                    if (slope in 0.85..1.15) add(slope)
+                }
+            }
+        }
+
+        if (slopes.size < 4) return null
+        return median(slopes)
     }
 
     private fun deduplicateReferenceCues(
@@ -986,6 +1176,7 @@ internal object AutomaticSubtitleSync {
         val score: Double,
         val matches: Int,
         val residualMs: Double,
+        val timelineScale: Double,
     )
 
     private data class Evaluation(
@@ -1014,12 +1205,18 @@ internal data class ReferenceTrack(
     val key: String,
     val language: String?,
     val cues: List<SubtitleSyncCue>,
+    val label: String? = null,
+    val selectionFlags: Int = 0,
+    val roleFlags: Int = 0,
 )
 
 /** Thread-safe accumulation of the embedded text timing already passing through Media3. */
 internal object EmbeddedSubtitleCueStore {
     private data class Track(
         var language: String?,
+        var label: String?,
+        var selectionFlags: Int,
+        var roleFlags: Int,
         val cues: LinkedHashMap<String, SubtitleSyncCue> = linkedMapOf(),
     )
 
@@ -1041,6 +1238,9 @@ internal object EmbeddedSubtitleCueStore {
         sourceKey: String,
         trackKey: String,
         language: String?,
+        label: String?,
+        selectionFlags: Int,
+        roleFlags: Int,
         cue: SubtitleSyncCue,
     ) {
         if (sourceKey.isBlank() || trackKey.isBlank()) return
@@ -1051,9 +1251,19 @@ internal object EmbeddedSubtitleCueStore {
         synchronized(lock) {
             val track = sources
                 .getOrPut(sourceKey) { linkedMapOf() }
-                .getOrPut(trackKey) { Track(language) }
+                .getOrPut(trackKey) {
+                    Track(
+                        language = language,
+                        label = label,
+                        selectionFlags = selectionFlags,
+                        roleFlags = roleFlags,
+                    )
+                }
 
             track.language = track.language ?: language
+            track.label = track.label ?: label
+            track.selectionFlags = track.selectionFlags or selectionFlags
+            track.roleFlags = track.roleFlags or roleFlags
 
             val cueKey = "${cue.startTimeMs}:${cue.endTimeMs}:${cue.text}"
             newCue = !track.cues.containsKey(cueKey)
@@ -1083,6 +1293,9 @@ internal object EmbeddedSubtitleCueStore {
                     key = key,
                     language = track.language,
                     cues = track.cues.values.sortedBy { it.startTimeMs },
+                    label = track.label,
+                    selectionFlags = track.selectionFlags,
+                    roleFlags = track.roleFlags,
                 )
             }
             .filter { it.cues.size >= 3 }
