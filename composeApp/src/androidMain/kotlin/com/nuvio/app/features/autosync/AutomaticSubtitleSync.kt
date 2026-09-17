@@ -53,7 +53,12 @@ internal object AutomaticSubtitleSync {
 
     private const val CONTIGUOUS_SEGMENT_MAX_GAP_MS = 30_000L
     private const val MIN_FROZEN_REFERENCE_CUES = 8
-    private const val MIN_FROZEN_REFERENCE_SPAN_MS = 30_000L
+    private const val MIN_FULL_DIALOGUE_CLASSIFICATION_SPAN_MS = 30_000L
+    private const val FALLBACK_FROZEN_REFERENCE_SPAN_MS = 45_000L
+    private const val MIN_FROZEN_REFERENCE_SPAN_MS = 60_000L
+    private const val PREFERRED_FROZEN_REFERENCE_SPAN_MS = 75_000L
+    private const val PREFERRED_REFERENCE_WAIT_MS = 12_000L
+    private const val SDH_RANKING_SCORE_PENALTY = 0.015
 
     private const val MIN_SCALE_VALIDATION_MATCHES = 8
     private const val MIN_SCALE_VALIDATION_SPAN_MS = 20_000L
@@ -215,7 +220,8 @@ internal object AutomaticSubtitleSync {
         var waitedMs = 0L
         var lastReferenceSignature = ""
         var attempt = 0
-        var frozenCanonicalTrack: ReferenceTrack? = null
+        var frozenReferenceTracks: List<ReferenceTrack>? = null
+        var frozenReferenceMode = ""
 
         while (waitedMs <= MAX_WAIT_MS) {
             val rawTracks = EmbeddedSubtitleCueStore.candidateTracks(
@@ -227,9 +233,18 @@ internal object AutomaticSubtitleSync {
                 track.copy(cues = largestContiguousReferenceSegment(deduplicated))
             }
 
-            val usableTracks = preparedTracks.filter { track ->
+            val fullDialogueTracks = preparedTracks.filter(::isLikelyFullDialogueTrack)
+            val preferredTracks = fullDialogueTracks.filter { track ->
+                track.cues.size >= MIN_FROZEN_REFERENCE_CUES &&
+                    referenceSpanMs(track.cues) >= PREFERRED_FROZEN_REFERENCE_SPAN_MS
+            }
+            val minimumTracks = fullDialogueTracks.filter { track ->
                 track.cues.size >= MIN_FROZEN_REFERENCE_CUES &&
                     referenceSpanMs(track.cues) >= MIN_FROZEN_REFERENCE_SPAN_MS
+            }
+            val fallbackTracks = fullDialogueTracks.filter { track ->
+                track.cues.size >= MIN_FROZEN_REFERENCE_CUES &&
+                    referenceSpanMs(track.cues) >= FALLBACK_FROZEN_REFERENCE_SPAN_MS
             }
 
             val signature = rawTracks.joinToString("|") { track ->
@@ -242,7 +257,8 @@ internal object AutomaticSubtitleSync {
 
                 AutoSyncDebugLog.section("REFERENCE SNAPSHOT #$attempt")
                 AutoSyncDebugLog.info(
-                    "waited=${waitedMs}ms tracks=${preparedTracks.size} usable=${usableTracks.size}",
+                    "waited=${waitedMs}ms tracks=${preparedTracks.size} fullDialogue=${fullDialogueTracks.size} " +
+                        "ready60=${minimumTracks.size} ready75=${preferredTracks.size}",
                 )
 
                 if (preparedTracks.isEmpty()) {
@@ -262,7 +278,8 @@ internal object AutomaticSubtitleSync {
                             "label=${track.label ?: "<none>"} selectionFlags=${track.selectionFlags} roleFlags=${track.roleFlags} " +
                             "rawCues=$rawCueCount dedupedCues=$dedupedCueCount segmentCues=$segmentCueCount " +
                             "span=${span}ms density=${"%.2f".format(density)}/min " +
-                            "fullDialogue=${isLikelyFullDialogueTrack(track)} usable=${track in usableTracks}",
+                            "fullDialogue=${track in fullDialogueTracks} " +
+                            "ready60=${track in minimumTracks} ready75=${track in preferredTracks}",
                     )
 
                     track.cues
@@ -279,41 +296,59 @@ internal object AutomaticSubtitleSync {
                 }
             }
 
-            if (usableTracks.isNotEmpty()) {
-                val canonicalTrack = chooseCanonicalReferenceTrack(usableTracks)
-                if (canonicalTrack != null) {
-                    onReferenceReady()
-
-                    frozenCanonicalTrack = canonicalTrack.copy(cues = canonicalTrack.cues.toList())
-                    AutoSyncDebugLog.section("FROZEN REFERENCE")
-                    AutoSyncDebugLog.info(
-                        "track=${canonicalTrack.key} generation=${canonicalTrack.generation} " +
-                            "lang=${canonicalTrack.language ?: "<unknown>"} " +
-                            "label=${canonicalTrack.label ?: "<none>"} cues=${canonicalTrack.cues.size} " +
-                            "span=${referenceSpanMs(canonicalTrack.cues)}ms " +
-                            "density=${"%.2f".format(referenceCueDensityPerMinute(canonicalTrack.cues))}/min",
-                    )
-                    break
+            val readyTracks = when {
+                preferredTracks.isNotEmpty() -> {
+                    frozenReferenceMode = "preferred-75s"
+                    minimumTracks.ifEmpty { preferredTracks }
                 }
+                waitedMs >= PREFERRED_REFERENCE_WAIT_MS && minimumTracks.isNotEmpty() -> {
+                    frozenReferenceMode = "minimum-60s"
+                    minimumTracks
+                }
+                waitedMs >= MAX_WAIT_MS && fallbackTracks.isNotEmpty() -> {
+                    frozenReferenceMode = "fallback-45s"
+                    fallbackTracks
+                }
+                else -> emptyList()
+            }
 
+            if (readyTracks.isNotEmpty()) {
+                onReferenceReady()
+                val frozen = orderReferenceTracks(readyTracks).map { track ->
+                    track.copy(cues = track.cues.toList())
+                }
+                frozenReferenceTracks = frozen
+
+                AutoSyncDebugLog.section("FROZEN REFERENCES")
                 AutoSyncDebugLog.info(
-                    "embedded tracks are usable but none looks like a full-dialogue reference; waiting",
+                    "mode=$frozenReferenceMode tracks=${frozen.size}",
                 )
+                frozen.forEachIndexed { index, track ->
+                    AutoSyncDebugLog.info(
+                        "reference[$index] track=${track.key} generation=${track.generation} " +
+                            "lang=${track.language ?: "<unknown>"} label=${track.label ?: "<none>"} " +
+                            "sdh=${isSdhReferenceTrack(track)} cues=${track.cues.size} " +
+                            "span=${referenceSpanMs(track.cues)}ms " +
+                            "density=${"%.2f".format(referenceCueDensityPerMinute(track.cues))}/min",
+                    )
+                }
+                break
             }
 
             delay(POLL_INTERVAL_MS)
             waitedMs += POLL_INTERVAL_MS
         }
 
-        val canonicalTrack = frozenCanonicalTrack ?: run {
+        val referenceTracks = frozenReferenceTracks ?: run {
             AutoSyncDebugLog.section("TIMEOUT")
             AutoSyncDebugLog.warn(
-                "no usable full-dialogue embedded reference after ${MAX_WAIT_MS}ms",
+                "no usable full-dialogue embedded reference with at least " +
+                    "${FALLBACK_FROZEN_REFERENCE_SPAN_MS}ms span after ${MAX_WAIT_MS}ms",
             )
             return null
         }
 
-        val referenceFingerprint = referenceFingerprint(canonicalTrack)
+        val referenceFingerprint = referenceSetFingerprint(referenceTracks)
         val cacheKey = RecommendationCacheKey(
             sourceKey = sourceKey,
             languageKey = selectedLanguageKey.orEmpty(),
@@ -325,40 +360,93 @@ internal object AutomaticSubtitleSync {
         }?.let { cached ->
             AutoSyncDebugLog.section("RECOMMENDATION CACHE")
             AutoSyncDebugLog.info(
-                "HIT reference=$referenceFingerprint name=${cached.displayName} " +
-                    "correction=${cached.correctionMs}ms score=${fmt(cached.score)}",
+                "HIT references=${referenceTracks.size} fingerprint=$referenceFingerprint " +
+                    "name=${cached.displayName} correction=${cached.correctionMs}ms score=${fmt(cached.score)}",
             )
             return cached.toRecommendation(selectedSubtitleUrl)
         }
 
-        val candidateMatches = parsedCandidates.mapNotNull { parsed ->
-            align(
-                track = canonicalTrack,
-                target = parsed.cues,
-                logDetails = false,
-            )?.let { alignment ->
-                CandidateMatch(
-                    parsed = parsed,
-                    alignment = alignment,
+        AutoSyncDebugLog.section("CANDIDATE MATCH SUMMARY")
+        val candidateMatches = parsedCandidates.mapIndexedNotNull { candidateIndex, parsed ->
+            val attempts = referenceTracks.map { track ->
+                track to attemptAlignment(
+                    track = track,
+                    target = parsed.cues,
+                    logDetails = false,
                 )
+            }
+
+            val acceptedMatches = attempts.mapNotNull { (track, attempt) ->
+                attempt.result?.let { alignment ->
+                    CandidateMatch(
+                        parsed = parsed,
+                        track = track,
+                        alignment = alignment,
+                    )
+                }
+            }
+
+            val bestAccepted = acceptedMatches.sortedWith(
+                compareByDescending<CandidateMatch> { adjustedAlignmentScore(it) }
+                    .thenByDescending { it.alignment.matches }
+                    .thenBy { abs(it.alignment.timelineScale - 1.0) }
+                    .thenBy { it.alignment.residualMs }
+                    .thenBy { abs(it.alignment.offsetMs) }
+                    .thenBy { it.track.key },
+            ).firstOrNull()
+
+            if (bestAccepted != null) {
+                val winningAttempt = attempts.first { (track, _) -> track.key == bestAccepted.track.key }.second
+                AutoSyncDebugLog.info(
+                    "candidate[$candidateIndex] ACCEPT track=${bestAccepted.track.key} " +
+                        "label=${bestAccepted.track.label ?: "<none>"} " +
+                        "score=${fmt(bestAccepted.alignment.score)} " +
+                        "rankScore=${fmt(adjustedAlignmentScore(bestAccepted))} " +
+                        "matches=${bestAccepted.alignment.matches} " +
+                        "offset=${bestAccepted.alignment.offsetMs}ms " +
+                        "scale=${"%.6f".format(bestAccepted.alignment.timelineScale)} " +
+                        "consecutive=${winningAttempt.consecutivePatternMatches}",
+                )
+                bestAccepted
+            } else {
+                val bestAttempt = attempts.sortedWith(
+                    compareBy<Pair<ReferenceTrack, AlignmentAttempt>> { it.second.failedChecks.size }
+                        .thenByDescending { it.second.score }
+                        .thenByDescending { it.second.matches }
+                        .thenBy { it.second.residualMs }
+                        .thenBy { it.first.key },
+                ).first()
+                val track = bestAttempt.first
+                val attemptResult = bestAttempt.second
+                AutoSyncDebugLog.info(
+                    "candidate[$candidateIndex] REJECT bestTrack=${track.key} " +
+                        "label=${track.label ?: "<none>"} score=${fmt(attemptResult.score)} " +
+                        "matches=${attemptResult.matches} " +
+                        "offset=${attemptResult.offsetMs?.let { "${it}ms" } ?: "<none>"} " +
+                        "scale=${attemptResult.timelineScale?.let { "%.6f".format(it) } ?: "<unavailable>"} " +
+                        "consecutive=${attemptResult.consecutivePatternMatches} " +
+                        "failed=${attemptResult.failedChecks.joinToString(",").ifBlank { "unknown" }}",
+                )
+                null
             }
         }
 
         if (candidateMatches.isEmpty()) {
             AutoSyncDebugLog.section("FINAL RECOMMENDATION")
             AutoSyncDebugLog.warn(
-                "REJECT no same-language subtitle passed offset, timing-scale, and confidence checks",
+                "REJECT no same-language subtitle passed any eligible full-dialogue reference track",
             )
             return null
         }
 
         val ranked = candidateMatches.sortedWith(
-            compareByDescending<CandidateMatch> { it.alignment.score }
+            compareByDescending<CandidateMatch> { adjustedAlignmentScore(it) }
                 .thenByDescending { it.alignment.matches }
                 .thenBy { abs(it.alignment.timelineScale - 1.0) }
                 .thenBy { it.alignment.residualMs }
                 .thenBy { abs(it.alignment.offsetMs) }
                 .thenBy { candidateOrder[it.parsed.candidate.url] ?: Int.MAX_VALUE }
+                .thenBy { it.track.key }
                 .thenBy { it.parsed.candidate.url },
         )
         val bestMatch = ranked.first()
@@ -369,16 +457,17 @@ internal object AutomaticSubtitleSync {
                 "rank=${index + 1} name=${match.parsed.candidate.displayName} " +
                     "lang=${match.parsed.candidate.language.ifBlank { "<unknown>" }} " +
                     "selected=${match.parsed.candidate.url == selectedSubtitleUrl} " +
-                    "correction=${match.alignment.offsetMs}ms " +
+                    "reference=${match.track.key} label=${match.track.label ?: "<none>"} " +
+                    "sdh=${isSdhReferenceTrack(match.track)} correction=${match.alignment.offsetMs}ms " +
                     "scale=${"%.6f".format(match.alignment.timelineScale)} " +
-                    "score=${fmt(match.alignment.score)} matches=${match.alignment.matches} " +
-                    "residual=${"%.1f".format(match.alignment.residualMs)}ms",
+                    "score=${fmt(match.alignment.score)} rankScore=${fmt(adjustedAlignmentScore(match))} " +
+                    "matches=${match.alignment.matches} residual=${"%.1f".format(match.alignment.residualMs)}ms",
             )
         }
 
         AutoSyncDebugLog.section("WINNING SUBTITLE DETAILS")
-        align(
-            track = canonicalTrack,
+        attemptAlignment(
+            track = bestMatch.track,
             target = bestMatch.parsed.cues,
             logDetails = true,
         )
@@ -391,11 +480,12 @@ internal object AutomaticSubtitleSync {
         AutoSyncDebugLog.info(
             "name=${bestMatch.parsed.candidate.displayName} " +
                 "lang=${bestMatch.parsed.candidate.language.ifBlank { "<unknown>" }} " +
-                "selected=${bestMatch.parsed.candidate.url == selectedSubtitleUrl}",
+                "selected=${bestMatch.parsed.candidate.url == selectedSubtitleUrl} " +
+                "reference=${bestMatch.track.key} label=${bestMatch.track.label ?: "<none>"}",
         )
         AutoSyncDebugLog.info(
             "correction=${correctionMs}ms scale=${"%.6f".format(bestMatch.alignment.timelineScale)} " +
-                "score=${fmt(bestMatch.alignment.score)}",
+                "score=${fmt(bestMatch.alignment.score)} rankScore=${fmt(adjustedAlignmentScore(bestMatch))}",
         )
 
         val cachedRecommendation = CachedRecommendation(
@@ -432,22 +522,27 @@ internal object AutomaticSubtitleSync {
         onReferenceReady = onReferenceReady,
     )?.takeIf { it.isCurrentSubtitle }?.correctionMs
 
-    private fun chooseCanonicalReferenceTrack(
+    private fun orderReferenceTracks(
         tracks: List<ReferenceTrack>,
-    ): ReferenceTrack? =
-        tracks
-            .filter(::isLikelyFullDialogueTrack)
-            .sortedWith(
-                compareByDescending<ReferenceTrack>(::fullDialogueReferenceScore)
-                    .thenByDescending { track -> track.cues.size }
-                    .thenByDescending { track -> referenceSpanMs(track.cues) }
-                    .thenBy { track -> track.key },
-            )
-            .firstOrNull()
+    ): List<ReferenceTrack> =
+        tracks.sortedWith(
+            compareBy<ReferenceTrack> { isSdhReferenceTrack(it) }
+                .thenByDescending(::fullDialogueReferenceScore)
+                .thenByDescending { track -> track.cues.size }
+                .thenByDescending { track -> referenceSpanMs(track.cues) }
+                .thenBy { track -> track.key },
+        )
+
+    private fun adjustedAlignmentScore(match: CandidateMatch): Double =
+        match.alignment.score - if (isSdhReferenceTrack(match.track)) {
+            SDH_RANKING_SCORE_PENALTY
+        } else {
+            0.0
+        }
 
     private fun isLikelyFullDialogueTrack(track: ReferenceTrack): Boolean {
         if (track.cues.size < MIN_FULL_DIALOGUE_CUES) return false
-        if (referenceSpanMs(track.cues) < MIN_FROZEN_REFERENCE_SPAN_MS) return false
+        if (referenceSpanMs(track.cues) < MIN_FULL_DIALOGUE_CLASSIFICATION_SPAN_MS) return false
         if (
             isForcedReferenceTrack(track) ||
             isCommentaryReferenceTrack(track) ||
@@ -588,6 +683,11 @@ internal object AutomaticSubtitleSync {
         }
     }
 
+    private fun referenceSetFingerprint(tracks: List<ReferenceTrack>): String =
+        tracks
+            .sortedBy { it.key }
+            .joinToString("|") { referenceFingerprint(it) }
+
     private suspend fun loadSubtitleCandidate(
         candidate: SubtitleCandidate,
     ): ParsedSubtitleCandidate? {
@@ -638,11 +738,11 @@ internal object AutomaticSubtitleSync {
         )
     }
 
-    private fun align(
+    private fun attemptAlignment(
         track: ReferenceTrack,
         target: List<SubtitleSyncCue>,
         logDetails: Boolean = true,
-    ): AlignmentResult? {
+    ): AlignmentAttempt {
         val reference = track.cues
 
         if (logDetails) {
@@ -654,7 +754,10 @@ internal object AutomaticSubtitleSync {
         val candidates = candidateOffsets(reference, target)
         if (candidates.isEmpty()) {
             if (logDetails) AutoSyncDebugLog.warn("no candidate offsets")
-            return null
+            return AlignmentAttempt(
+                result = null,
+                failedChecks = listOf("candidate offsets"),
+            )
         }
 
         if (logDetails) {
@@ -693,7 +796,10 @@ internal object AutomaticSubtitleSync {
             }
         }.sortedByDescending { it.score }
 
-        val best = evaluations.firstOrNull() ?: return null
+        val best = evaluations.firstOrNull() ?: return AlignmentAttempt(
+            result = null,
+            failedChecks = listOf("evaluation"),
+        )
         val second = evaluations.firstOrNull {
             abs(it.offsetMs - best.offsetMs) > MATCH_TOLERANCE_MS * 2L
         }
@@ -787,7 +893,8 @@ internal object AutomaticSubtitleSync {
             ),
         )
 
-        val highConfidence = checks.all { it.passed }
+        val failedChecks = checks.filterNot { it.passed }.map { it.name }
+        val highConfidence = failedChecks.isEmpty()
 
         if (logDetails) {
             AutoSyncDebugLog.info(
@@ -856,7 +963,7 @@ internal object AutomaticSubtitleSync {
             )
         }
 
-        return if (highConfidence && timelineScale != null) {
+        val result = if (highConfidence && timelineScale != null) {
             AlignmentResult(
                 trackKey = track.key,
                 language = track.language,
@@ -869,6 +976,17 @@ internal object AutomaticSubtitleSync {
         } else {
             null
         }
+
+        return AlignmentAttempt(
+            result = result,
+            score = best.score,
+            offsetMs = best.offsetMs,
+            matches = best.matches,
+            residualMs = best.residualMs,
+            timelineScale = timelineScale,
+            consecutivePatternMatches = consecutivePatternMatches,
+            failedChecks = failedChecks,
+        )
     }
 
     private fun estimateIndependentTimelineScale(
@@ -1375,7 +1493,19 @@ internal object AutomaticSubtitleSync {
 
     private data class CandidateMatch(
         val parsed: ParsedSubtitleCandidate,
+        val track: ReferenceTrack,
         val alignment: AlignmentResult,
+    )
+
+    private data class AlignmentAttempt(
+        val result: AlignmentResult?,
+        val score: Double = 0.0,
+        val offsetMs: Long? = null,
+        val matches: Int = 0,
+        val residualMs: Double = Double.POSITIVE_INFINITY,
+        val timelineScale: Double? = null,
+        val consecutivePatternMatches: Int = 0,
+        val failedChecks: List<String> = emptyList(),
     )
 
     private data class ScaleAnchor(
