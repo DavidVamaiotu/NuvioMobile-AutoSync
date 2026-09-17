@@ -72,9 +72,6 @@ internal object AutomaticSubtitleSync {
     private const val MAX_PATTERN_GAP_ERROR_MS = 1_500L
     private const val MAX_PATTERN_GAP_ERROR_RATIO = 0.10
 
-    private const val SEEK_DEDUP_WINDOW_MS = 1_500L
-    private const val SEEK_TARGET_TOLERANCE_MS = 1_000L
-
     private const val MIN_FULL_DIALOGUE_CUES = 8
     private const val MIN_FULL_DIALOGUE_DENSITY_PER_MINUTE = 2.0
     private const val MIN_FULL_DIALOGUE_TEXT_RATIO = 0.45
@@ -1437,6 +1434,9 @@ internal data class ReferenceTrack(
 
 /** Thread-safe accumulation of the embedded text timing already passing through Media3. */
 internal object EmbeddedSubtitleCueStore {
+    private const val SEEK_DEDUP_WINDOW_MS = 1_500L
+    private const val SEEK_TARGET_TOLERANCE_MS = 1_000L
+
     private data class Track(
         var language: String?,
         var label: String?,
