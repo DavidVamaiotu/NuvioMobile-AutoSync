@@ -66,6 +66,7 @@ import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
 import androidx.media3.ui.CaptionStyleCompat
 import com.nuvio.app.R
+import com.nuvio.app.features.autosync.AutoSyncDebugLog
 import com.nuvio.app.features.autosync.AutoSyncExtractorsFactory
 import com.nuvio.app.features.autosync.AutomaticSubtitleSync
 import com.nuvio.app.features.streams.normalizeStreamType
@@ -822,25 +823,44 @@ private fun ExoPlayerSurface(
                             },
                         )
                         if (correctionMs == null) {
+                            val copied = AutoSyncDebugLog.finishAndCopy(
+                                context = context,
+                                decision = "REJECT - couldn't find a reliable match",
+                            )
                             Toast.makeText(
                                 context,
-                                "Auto Sync: couldn't find a reliable match",
-                                Toast.LENGTH_SHORT,
+                                if (copied) {
+                                    "Auto Sync: no reliable match — debug log copied"
+                                } else {
+                                    "Auto Sync: couldn't find a reliable match"
+                                },
+                                Toast.LENGTH_LONG,
                             ).show()
                             return@launch
                         }
                         subtitleDelayMs = (baselineDelayMs + correctionMs)
                             .coerceIn(SUBTITLE_DELAY_MIN_MS, SUBTITLE_DELAY_MAX_MS)
+                        AutoSyncDebugLog.info(
+                            "delay baseline=${baselineDelayMs}ms correction=${correctionMs}ms final=${subtitleDelayMs}ms",
+                        )
                         val correctionSeconds = correctionMs / 1000.0
                         val correctionLabel = if (correctionMs > 0) {
                             "+%.1fs".format(correctionSeconds)
                         } else {
                             "%.1fs".format(correctionSeconds)
                         }
+                        val copied = AutoSyncDebugLog.finishAndCopy(
+                            context = context,
+                            decision = "ACCEPT correction=${correctionMs}ms finalDelay=${subtitleDelayMs}ms",
+                        )
                         Toast.makeText(
                             context,
-                            "Subtitles synced: $correctionLabel",
-                            Toast.LENGTH_SHORT,
+                            if (copied) {
+                                "Subtitles synced: $correctionLabel — debug log copied"
+                            } else {
+                                "Subtitles synced: $correctionLabel"
+                            },
+                            Toast.LENGTH_LONG,
                         ).show()
                         Log.i(TAG, "Automatic subtitle sync applied correction=${correctionMs}ms delay=${subtitleDelayMs}ms")
                     }
