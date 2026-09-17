@@ -35,9 +35,10 @@ internal class AutoSyncExtractorsFactory(
     override fun createExtractors(uri: Uri, responseHeaders: Map<String, List<String>>): Array<Extractor> =
         wrap(delegate.createExtractors(uri, responseHeaders))
 
-    private fun wrap(extractors: Array<Extractor>) = extractors.map {
-        ObservingExtractor(it, sourceKey)
-    }.toTypedArray()
+    private fun wrap(extractors: Array<Extractor>): Array<Extractor> =
+        Array<Extractor>(extractors.size) { index ->
+            ObservingExtractor(extractors[index], sourceKey)
+        }
 }
 
 private class ObservingExtractor(
