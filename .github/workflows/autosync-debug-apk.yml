@@ -27,6 +27,9 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
 
+      - name: Create local properties
+        run: touch local.properties
+
       - name: Build full debug APK
         run: ./gradlew :androidApp:assembleFullDebug --stacktrace
 
