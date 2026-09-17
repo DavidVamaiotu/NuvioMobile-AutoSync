@@ -163,6 +163,26 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi() {
                 onControllerReady = { controller ->
                     playerController = controller
                     playerControllerSourceUrl = activeSourceUrl
+                    controller.setAutoSyncAppliedListener { subtitleUrl, delayMs ->
+                        val appliedSubtitle = addonSubtitles.firstOrNull { it.url == subtitleUrl }
+                        selectedAddonSubtitleId = appliedSubtitle?.selectionKey ?: subtitleUrl
+                        selectedSubtitleIndex = -1
+                        useCustomSubtitles = true
+                        preferredSubtitleSelectionApplied = true
+                        if (appliedSubtitle != null) {
+                            persistAddonSubtitlePreference(appliedSubtitle)
+                        }
+
+                        val appliedDelayMs = delayMs.coerceIn(
+                            SUBTITLE_DELAY_MIN_MS,
+                            SUBTITLE_DELAY_MAX_MS,
+                        )
+                        subtitleDelayMs = appliedDelayMs
+                        PlayerTrackPreferenceStorage.saveSubtitleDelayMs(
+                            playbackSession.videoId,
+                            appliedDelayMs,
+                        )
+                    }
                 },
                 onSnapshot = { snapshot ->
                     playbackSnapshot = snapshot

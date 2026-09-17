@@ -29,6 +29,9 @@ interface PlayerEngineController {
         useCustomSubtitles: Boolean = false,
     ) {}
     fun setSubtitleDelayMs(delayMs: Int) {}
+    fun setAutoSyncAppliedListener(
+        listener: ((subtitleUrl: String, delayMs: Int) -> Unit)?,
+    ) {}
     fun configureIosVideoOutput(settings: PlayerSettingsUiState) {}
     fun updateNowPlayingMetadata(info: PlayerNowPlayingInfo) {}
     fun clearNowPlayingInfo() {}
