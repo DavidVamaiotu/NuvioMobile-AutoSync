@@ -26,7 +26,16 @@ internal object AutomaticSubtitleSync {
     private const val POLL_INTERVAL_MS = 750L
     private const val MAX_WAIT_MS = 45_000L
     private const val MIN_REFERENCE_CUES = 4
+    private const val MIN_ACCEPT_MATCHES = 8
     private const val MIN_REFERENCE_SPAN_MS = 8_000L
+    private const val REFERENCE_DEDUP_WINDOW_MS = 125L
+
+    private const val NORMAL_PARTICIPATION_THRESHOLD = 0.55
+    private const val STRONG_ACCEPT_MATCHES = 20
+    private const val STRONG_ACCEPT_RESIDUAL_MS = 250.0
+    private const val STRONG_ACCEPT_AGREEMENT = 0.80
+    private const val STRONG_ACCEPT_SPACING = 0.85
+    private const val STRONG_ACCEPT_MARGIN = 0.10
 
     private const val MAX_OFFSET_MS = 120_000L
     private const val CANDIDATE_BUCKET_MS = 500L
@@ -112,17 +121,20 @@ internal object AutomaticSubtitleSync {
         var attempt = 0
 
         while (waitedMs <= MAX_WAIT_MS) {
-            val allTracks = EmbeddedSubtitleCueStore.candidateTracks(
+            val rawTracks = EmbeddedSubtitleCueStore.candidateTracks(
                 sourceKey = sourceKey,
                 preferredLanguage = preferredLanguage,
             )
+            val allTracks = rawTracks.map { track ->
+                track.copy(cues = deduplicateReferenceCues(track.cues))
+            }
 
             val usableTracks = allTracks.filter { track ->
                 track.cues.size >= MIN_REFERENCE_CUES &&
                     track.cues.last().startTimeMs - track.cues.first().startTimeMs >= MIN_REFERENCE_SPAN_MS
             }
 
-            val signature = allTracks.joinToString("|") { track ->
+            val signature = rawTracks.joinToString("|") { track ->
                 "${track.key}:${track.cues.size}:${track.cues.lastOrNull()?.startTimeMs ?: -1L}"
             }
 
@@ -140,6 +152,8 @@ internal object AutomaticSubtitleSync {
                 }
 
                 allTracks.forEachIndexed { trackIndex, track ->
+                    val rawCueCount = rawTracks.getOrNull(trackIndex)?.cues?.size ?: track.cues.size
+                    val removedDuplicates = (rawCueCount - track.cues.size).coerceAtLeast(0)
                     val span = if (track.cues.size >= 2) {
                         track.cues.last().startTimeMs - track.cues.first().startTimeMs
                     } else {
@@ -148,8 +162,8 @@ internal object AutomaticSubtitleSync {
 
                     AutoSyncDebugLog.info(
                         "track[$trackIndex] key=${track.key} lang=${track.language ?: "<unknown>"} " +
-                            "cues=${track.cues.size} span=${span}ms " +
-                            "usable=${track in usableTracks}",
+                            "rawCues=$rawCueCount cues=${track.cues.size} deduped=$removedDuplicates " +
+                            "span=${span}ms usable=${track in usableTracks}",
                     )
 
                     track.cues
@@ -268,22 +282,25 @@ internal object AutomaticSubtitleSync {
         }
 
         val referenceParticipation = best.matches.toDouble() / reference.size
+        val normalParticipation = referenceParticipation >= NORMAL_PARTICIPATION_THRESHOLD
 
         val strongPattern =
             best.matches >= 7 &&
                 best.residualMs <= 500.0 &&
                 best.spacingScore >= 0.62
 
+        val strongAbsoluteEvidence =
+            best.matches >= STRONG_ACCEPT_MATCHES &&
+                best.residualMs <= STRONG_ACCEPT_RESIDUAL_MS &&
+                best.offsetAgreement >= STRONG_ACCEPT_AGREEMENT &&
+                best.spacingScore >= STRONG_ACCEPT_SPACING &&
+                margin >= STRONG_ACCEPT_MARGIN
+
         val checks = listOf(
             ConfidenceCheck(
                 "matches",
-                best.matches >= MIN_REFERENCE_CUES,
-                "${best.matches} >= $MIN_REFERENCE_CUES",
-            ),
-            ConfidenceCheck(
-                "participation",
-                referenceParticipation >= 0.55,
-                "${fmt(referenceParticipation)} >= 0.5500",
+                best.matches >= MIN_ACCEPT_MATCHES,
+                "${best.matches} >= $MIN_ACCEPT_MATCHES",
             ),
             ConfidenceCheck(
                 "coverage",
@@ -314,6 +331,12 @@ internal object AutomaticSubtitleSync {
                 "margin OR strong pattern",
                 margin >= 0.008 || strongPattern,
                 "margin=${fmt(margin)} strongPattern=$strongPattern",
+            ),
+            ConfidenceCheck(
+                "participation OR strong absolute evidence",
+                normalParticipation || strongAbsoluteEvidence,
+                "participation=${fmt(referenceParticipation)} >= ${fmt(NORMAL_PARTICIPATION_THRESHOLD)} " +
+                    "OR strongAbsoluteEvidence=$strongAbsoluteEvidence",
             ),
         )
 
@@ -360,6 +383,18 @@ internal object AutomaticSubtitleSync {
             }
 
         AutoSyncDebugLog.section("CONFIDENCE")
+        AutoSyncDebugLog.info(
+            "${if (normalParticipation) "PASS" else "FAIL"} normal participation: " +
+                "${fmt(referenceParticipation)} >= ${fmt(NORMAL_PARTICIPATION_THRESHOLD)}",
+        )
+        AutoSyncDebugLog.info(
+            "${if (strongAbsoluteEvidence) "PASS" else "FAIL"} strong absolute evidence: " +
+                "matches=${best.matches}/${STRONG_ACCEPT_MATCHES} " +
+                "residual=${"%.1f".format(best.residualMs)}ms/${"%.0f".format(STRONG_ACCEPT_RESIDUAL_MS)}ms " +
+                "agreement=${fmt(best.offsetAgreement)}/${fmt(STRONG_ACCEPT_AGREEMENT)} " +
+                "spacing=${fmt(best.spacingScore)}/${fmt(STRONG_ACCEPT_SPACING)} " +
+                "margin=${fmt(margin)}/${fmt(STRONG_ACCEPT_MARGIN)}",
+        )
         checks.forEach { check ->
             AutoSyncDebugLog.info(
                 "${if (check.passed) "PASS" else "FAIL"} ${check.name}: ${check.detail}",
@@ -381,6 +416,51 @@ internal object AutomaticSubtitleSync {
             null
         }
     }
+
+    private fun deduplicateReferenceCues(
+        cues: List<SubtitleSyncCue>,
+    ): List<SubtitleSyncCue> {
+        if (cues.size < 2) return cues
+
+        val sorted = cues.sortedBy { it.startTimeMs }
+        val deduplicated = ArrayList<SubtitleSyncCue>(sorted.size)
+
+        for (cue in sorted) {
+            val previous = deduplicated.lastOrNull()
+            if (previous == null) {
+                deduplicated += cue
+                continue
+            }
+
+            val closeInTime =
+                abs(cue.startTimeMs - previous.startTimeMs) <= REFERENCE_DEDUP_WINDOW_MS
+            val previousText = normalizedCueText(previous.text)
+            val currentText = normalizedCueText(cue.text)
+            val sameLogicalCue =
+                closeInTime &&
+                    (previousText.isBlank() || currentText.isBlank() || previousText == currentText)
+
+            if (!sameLogicalCue) {
+                deduplicated += cue
+                continue
+            }
+
+            // Prefer a cue carrying actual text over a timestamp-only observation.
+            if (previousText.isBlank() && currentText.isNotBlank()) {
+                deduplicated[deduplicated.lastIndex] = cue
+            }
+        }
+
+        return deduplicated
+    }
+
+    private fun normalizedCueText(text: String): String =
+        text
+            .replace('\r', ' ')
+            .replace('\n', ' ')
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .lowercase()
 
     private fun candidateOffsets(
         reference: List<SubtitleSyncCue>,
