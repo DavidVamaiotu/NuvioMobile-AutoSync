@@ -24,7 +24,8 @@ import kotlin.math.roundToLong
  * Android-only automatic subtitle sync.
  *
  * External/add-on subtitles are parsed using Nuvio's existing [PlayerSubtitleCueParser].
- * Embedded timestamps/text are observed by [AutoSyncExtractorsFactory].
+ * Embedded timestamps are first loaded independently from a Matroska Cues index when possible.
+ * [AutoSyncExtractorsFactory] remains the fallback for sources that cannot be indexed independently.
  *
  * The matcher is text-independent so different subtitle languages can still synchronize.
  * Verbose debugging DOES log both embedded and add-on cue text so a human can verify that
@@ -85,6 +86,7 @@ internal object AutomaticSubtitleSync {
     private const val MAX_LOGGED_CANDIDATES = 20
     private const val MAX_LOGGED_MATCH_PAIRS = 50
     private const val MAX_PARALLEL_SUBTITLE_DOWNLOADS = 6
+    private const val MAX_OFFSET_VOTE_REFERENCE_CUES = 48
     private const val MAX_RECOMMENDATION_CACHE_ENTRIES = 16
 
     private val recommendationCacheLock = Any()
@@ -99,6 +101,7 @@ internal object AutomaticSubtitleSync {
         preferredLanguage: String?,
         includeRepositorySubtitles: Boolean = true,
         onReferenceReady: () -> Unit = {},
+        sourceHeaders: Map<String, String> = emptyMap(),
     ): AutoSyncSubtitleRecommendation? {
         AutoSyncDebugLog.start(
             sourceKey = sourceKey,
@@ -178,16 +181,23 @@ internal object AutomaticSubtitleSync {
         )
         AutoSyncDebugLog.info("header values intentionally not logged")
 
-        val parsedCandidates = sameLanguageCandidates
-            .chunked(MAX_PARALLEL_SUBTITLE_DOWNLOADS)
-            .flatMap { batch ->
-                supervisorScope {
+        val (parsedCandidates, indexedTimeline) = supervisorScope {
+            val indexedTimelineDeferred = async {
+                EmbeddedSubtitleTimelineLoader.load(
+                    sourceUrl = sourceKey,
+                    sourceHeaders = sourceHeaders,
+                )
+            }
+            val parsed = sameLanguageCandidates
+                .chunked(MAX_PARALLEL_SUBTITLE_DOWNLOADS)
+                .flatMap { batch ->
                     batch.map { candidate ->
                         async { loadSubtitleCandidate(candidate) }
                     }.awaitAll()
                 }
-            }
-            .filterNotNull()
+                .filterNotNull()
+            parsed to indexedTimelineDeferred.await()
+        }
 
         parsedCandidates.forEachIndexed { index, parsed ->
             AutoSyncDebugLog.info(
@@ -223,7 +233,51 @@ internal object AutomaticSubtitleSync {
         var frozenReferenceTracks: List<ReferenceTrack>? = null
         var frozenReferenceMode = ""
 
-        while (waitedMs <= MAX_WAIT_MS) {
+        AutoSyncDebugLog.section("INDEXED EMBEDDED REFERENCE")
+        if (indexedTimeline == null) {
+            AutoSyncDebugLog.info(
+                "Matroska Cues timeline unavailable; falling back to live Media3 capture",
+            )
+        } else {
+            AutoSyncDebugLog.info(
+                "source=${indexedTimeline.source} tracks=${indexedTimeline.tracks.size} " +
+                    "requests=${indexedTimeline.rangeRequests} bytes=${indexedTimeline.bytesDownloaded} " +
+                    "load=${indexedTimeline.loadMs}ms",
+            )
+            val indexedPreparedTracks = indexedTimeline.tracks.map { track ->
+                track.copy(cues = deduplicateReferenceCues(track.cues))
+            }
+            indexedPreparedTracks.forEachIndexed { index, track ->
+                AutoSyncDebugLog.info(
+                    "indexed[$index] track=${track.key} lang=${track.language ?: "<unknown>"} " +
+                        "label=${track.label ?: "<none>"} selectionFlags=${track.selectionFlags} " +
+                        "roleFlags=${track.roleFlags} cues=${track.cues.size} " +
+                        "span=${referenceSpanMs(track.cues)}ms " +
+                        "fullDialogue=${isLikelyFullDialogueTrack(track)}",
+                )
+            }
+            val indexedFullDialogueTracks = indexedPreparedTracks.filter { track ->
+                isLikelyFullDialogueTrack(track) &&
+                    track.cues.size >= MIN_FROZEN_REFERENCE_CUES &&
+                    referenceSpanMs(track.cues) >= MIN_FROZEN_REFERENCE_SPAN_MS
+            }
+            if (indexedFullDialogueTracks.isNotEmpty()) {
+                onReferenceReady()
+                frozenReferenceMode = "indexed-matroska-cues"
+                frozenReferenceTracks = orderReferenceTracks(indexedFullDialogueTracks).map { track ->
+                    track.copy(cues = track.cues.toList())
+                }
+                AutoSyncDebugLog.info(
+                    "using complete indexed subtitle timelines tracks=${frozenReferenceTracks.size}",
+                )
+            } else {
+                AutoSyncDebugLog.info(
+                    "indexed Cues did not contain a usable full-dialogue timeline; falling back to live Media3 capture",
+                )
+            }
+        }
+
+        while (frozenReferenceTracks == null && waitedMs <= MAX_WAIT_MS) {
             val rawTracks = EmbeddedSubtitleCueStore.candidateTracks(
                 sourceKey = sourceKey,
                 preferredLanguage = preferredLanguage,
@@ -512,6 +566,7 @@ internal object AutomaticSubtitleSync {
         subtitleHeaders: Map<String, String>,
         preferredLanguage: String?,
         onReferenceReady: () -> Unit = {},
+        sourceHeaders: Map<String, String> = emptyMap(),
     ): Int? = findBestSubtitleRecommendation(
         sourceKey = sourceKey,
         selectedSubtitleUrl = subtitleUrl,
@@ -520,6 +575,7 @@ internal object AutomaticSubtitleSync {
         preferredLanguage = preferredLanguage,
         includeRepositorySubtitles = false,
         onReferenceReady = onReferenceReady,
+        sourceHeaders = sourceHeaders,
     )?.takeIf { it.isCurrentSubtitle }?.correctionMs
 
     private fun orderReferenceTracks(
@@ -813,7 +869,11 @@ internal object AutomaticSubtitleSync {
 
         val referenceParticipation = best.matches.toDouble() / reference.size
         val normalParticipation = referenceParticipation >= NORMAL_PARTICIPATION_THRESHOLD
-        val matchedPairScale = estimateMatchedPairTimelineScale(reference, target, best.pairs)
+        val matchedPairScale = if (logDetails) {
+            estimateMatchedPairTimelineScale(reference, target, best.pairs)
+        } else {
+            null
+        }
         val independentScale = estimateIndependentTimelineScale(
             reference = reference,
             target = target,
@@ -1225,13 +1285,29 @@ internal object AutomaticSubtitleSync {
             .trim()
             .lowercase()
 
+    private fun sampleReferenceCuesForOffsetVoting(
+        reference: List<SubtitleSyncCue>,
+    ): List<SubtitleSyncCue> {
+        if (reference.size <= MAX_OFFSET_VOTE_REFERENCE_CUES) return reference
+        if (MAX_OFFSET_VOTE_REFERENCE_CUES <= 1) return listOf(reference.first())
+
+        val lastIndex = reference.lastIndex
+        return (0 until MAX_OFFSET_VOTE_REFERENCE_CUES)
+            .map { sampleIndex ->
+                val referenceIndex =
+                    (sampleIndex.toLong() * lastIndex / (MAX_OFFSET_VOTE_REFERENCE_CUES - 1)).toInt()
+                reference[referenceIndex]
+            }
+            .distinctBy { it.startTimeMs }
+    }
+
     private fun candidateOffsets(
         reference: List<SubtitleSyncCue>,
         target: List<SubtitleSyncCue>,
     ): List<CandidateOffset> {
         val buckets = mutableMapOf<Long, Int>()
 
-        for (referenceCue in reference.take(40)) {
+        for (referenceCue in sampleReferenceCuesForOffsetVoting(reference)) {
             for (targetCue in target) {
                 val difference = referenceCue.startTimeMs - targetCue.startTimeMs
                 if (abs(difference) > MAX_OFFSET_MS) continue
