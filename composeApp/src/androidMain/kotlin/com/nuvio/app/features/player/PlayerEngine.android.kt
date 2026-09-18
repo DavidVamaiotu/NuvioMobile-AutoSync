@@ -896,10 +896,14 @@ private fun ExoPlayerSurface(
                             },
                         )
                         if (recommendation == null) {
-                            val copied = AutoSyncDebugLog.finishAndCopy(
-                                context = context,
-                                decision = "REJECT - couldn't find a reliable same-language subtitle",
-                            )
+                            val copied = if (AutoSyncDebugLog.ENABLED) {
+                                AutoSyncDebugLog.finishAndCopy(
+                                    context = context,
+                                    decision = "REJECT - couldn't find a reliable same-language subtitle",
+                                )
+                            } else {
+                                false
+                            }
                             Toast.makeText(
                                 context,
                                 if (copied) {
@@ -928,10 +932,8 @@ private fun ExoPlayerSurface(
                         }
                         subtitleDelayMs = correctionMs
                         autoSyncAppliedListener?.invoke(recommendation.url, correctionMs)
-                        AutoSyncDebugLog.info(
-                            "AUTO APPLY switched=$switchedSubtitle rawCorrection=${rawCorrectionMs}ms " +
-                                "correction=${correctionMs}ms final=${subtitleDelayMs}ms",
-                        )
+                        AutoSyncDebugLog.info { "AUTO APPLY switched=$switchedSubtitle rawCorrection=${rawCorrectionMs}ms " +
+                                "correction=${correctionMs}ms final=${subtitleDelayMs}ms" }
 
                         val subtitleListNumber = run {
                             val visibleAddonSubtitles = mergeStreamAndAddonSubtitles(
@@ -956,14 +958,16 @@ private fun ExoPlayerSurface(
                             ?: recommendation.displayName.take(24)
                         val delayLabel = "%+.2fs".format(correctionMs / 1000.0)
 
-                        AutoSyncDebugLog.finishAndCopy(
-                            context = context,
-                            decision =
-                                "APPLIED list=${subtitleListNumber ?: "<unknown>"} " +
-                                    "name=${recommendation.displayName} switched=$switchedSubtitle " +
-                                    "rawCorrection=${rawCorrectionMs}ms correction=${correctionMs}ms " +
-                                    "finalDelay=${subtitleDelayMs}ms",
-                        )
+                        if (AutoSyncDebugLog.ENABLED) {
+                            AutoSyncDebugLog.finishAndCopy(
+                                context = context,
+                                decision =
+                                    "APPLIED list=${subtitleListNumber ?: "<unknown>"} " +
+                                        "name=${recommendation.displayName} switched=$switchedSubtitle " +
+                                        "rawCorrection=${rawCorrectionMs}ms correction=${correctionMs}ms " +
+                                        "finalDelay=${subtitleDelayMs}ms",
+                            )
+                        }
                         Toast.makeText(
                             context,
                             "Auto Sync: $toastSubtitleLabel selected • $delayLabel",

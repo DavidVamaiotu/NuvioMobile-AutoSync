@@ -7,6 +7,7 @@ internal object AutoSyncPreferencesAndroid {
     private const val preferencesName = "nuvio_autosync_settings"
     private const val preferredSubtitleAutoSyncOnStartKey =
         "preferred_subtitle_auto_sync_on_start"
+    private const val debugLogsEnabledKey = "auto_sync_debug_logs_enabled"
 
     fun initialize(context: Context) {
         val preferences = context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
@@ -23,6 +24,20 @@ internal object AutoSyncPreferencesAndroid {
                 preferences
                     .edit()
                     .putBoolean(ProfileScopedKey.of(preferredSubtitleAutoSyncOnStartKey), enabled)
+                    .apply()
+            },
+            loadDebugLogs = {
+                val key = ProfileScopedKey.of(debugLogsEnabledKey)
+                if (preferences.contains(key)) {
+                    preferences.getBoolean(key, false)
+                } else {
+                    null
+                }
+            },
+            saveDebugLogs = { enabled ->
+                preferences
+                    .edit()
+                    .putBoolean(ProfileScopedKey.of(debugLogsEnabledKey), enabled)
                     .apply()
             },
         )

@@ -24,7 +24,14 @@ import java.util.UUID
  * Request headers, auth tokens and complete subtitle/video URLs are not logged.
  */
 internal object AutoSyncDebugLog {
-    const val VERBOSE: Boolean = true
+    val ENABLED: Boolean
+        get() {
+            AutoSyncPreferencesRepository.ensureLoaded()
+            return AutoSyncPreferencesRepository.debugLogsEnabled.value
+        }
+
+    val VERBOSE: Boolean
+        get() = ENABLED
 
     private const val TAG = "NuvioAutoSync"
     private const val MAX_REPORT_CHARS = 160_000
@@ -41,6 +48,7 @@ internal object AutoSyncDebugLog {
         sourceKey: String,
         subtitleUrl: String,
     ) {
+        if (!ENABLED) return
         synchronized(lock) {
             sessionId = UUID.randomUUID().toString().take(8)
             startedElapsedMs = SystemClock.elapsedRealtime()
@@ -58,30 +66,35 @@ internal object AutoSyncDebugLog {
         Log.i(TAG, "session=$sessionId started")
     }
 
-    fun section(title: String) {
+    fun section(title: () -> String) {
+        if (!ENABLED) return
         appendRaw("")
-        appendRaw("=== $title ===")
+        appendRaw("=== ${title()} ===")
     }
 
-    fun info(message: String) {
-        append("INFO", message)
+    fun info(message: () -> String) {
+        if (!ENABLED) return
+        append("INFO", message())
     }
 
-    fun warn(message: String) {
-        append("WARN", message)
+    fun warn(message: () -> String) {
+        if (!ENABLED) return
+        append("WARN", message())
     }
 
-    fun error(message: String, throwable: Throwable? = null) {
+    fun error(throwable: Throwable? = null, message: () -> String) {
+        if (!ENABLED) return
+        val text = message()
         val detail = if (throwable == null) {
-            message
+            text
         } else {
-            "$message | ${throwable::class.simpleName}: ${throwable.message.orEmpty()}"
+            "$text | ${throwable::class.simpleName}: ${throwable.message.orEmpty()}"
         }
         append("ERROR", detail)
     }
 
-    fun verbose(message: String) {
-        if (VERBOSE) append("VERBOSE", message)
+    fun verbose(message: () -> String) {
+        if (VERBOSE) append("VERBOSE", message())
     }
 
     fun cue(
@@ -92,14 +105,15 @@ internal object AutoSyncDebugLog {
         text: String,
     ) {
         if (!VERBOSE) return
-        verbose(
+        verbose {
             "$prefix[$index] ${formatTimestamp(startMs)} --> ${formatTimestamp(endMs)} | " +
-                quoteCueText(text),
-        )
+                quoteCueText(text)
+        }
     }
 
-    fun latestReport(): String = synchronized(lock) {
-        buffer.toString()
+    fun latestReport(): String {
+        if (!ENABLED) return ""
+        return synchronized(lock) { buffer.toString() }
     }
 
     /**
@@ -110,9 +124,10 @@ internal object AutoSyncDebugLog {
         context: Context,
         decision: String,
     ): Boolean {
-        section("SESSION END")
-        info("decision=$decision")
-        info("elapsed=${elapsedMs()}ms")
+        if (!ENABLED) return false
+        section { "SESSION END" }
+        info { "decision=$decision" }
+        info { "elapsed=${elapsedMs()}ms" }
 
         val report = latestReport()
         saveReport(context, report)
@@ -144,9 +159,9 @@ internal object AutoSyncDebugLog {
             val directory = File(context.cacheDir, "autosync-debug").apply { mkdirs() }
             File(directory, "latest.txt").writeText(report)
             File(directory, "autosync-$sessionId.txt").writeText(report)
-            info("cache_report=${directory.absolutePath}/latest.txt")
+            info { "cache_report=${directory.absolutePath}/latest.txt" }
         }.onFailure {
-            error("cache report write failed", it)
+            error(it) { "cache report write failed" }
         }
     }
 

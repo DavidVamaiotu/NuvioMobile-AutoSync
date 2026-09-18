@@ -419,6 +419,10 @@
     <string name="compose_player_audio_tracks">Audio Tracks</string>
     <string name="compose_player_audio">Audio</string>
     <string name="compose_player_auto_sync">Auto Sync</string>
+    <string name="settings_playback_subtitle_auto_sync">Auto Sync Subtitle</string>
+    <string name="settings_playback_subtitle_auto_sync_description">Automatically sync the preferred add-on subtitle when playback starts. Requires a preferred subtitle language.</string>
+    <string name="settings_playback_auto_sync_debug_logs">Debug Logs for Auto Sync</string>
+    <string name="settings_playback_auto_sync_debug_logs_description">Keep verbose Auto Sync logs and copy the report to the clipboard after each run.</string>
     <string name="compose_player_bold">Bold</string>
     <string name="compose_player_built_in">Built-in</string>
     <string name="compose_player_bottom_offset">Bottom Offset</string>

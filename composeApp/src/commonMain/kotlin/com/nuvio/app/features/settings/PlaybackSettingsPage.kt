@@ -327,6 +327,10 @@ private fun PlaybackSettingsSection(
         AutoSyncPreferencesRepository.ensureLoaded()
         AutoSyncPreferencesRepository.preferredSubtitleAutoSyncOnStart
     }.collectAsStateWithLifecycle()
+    val autoSyncDebugLogsEnabled by remember {
+        AutoSyncPreferencesRepository.ensureLoaded()
+        AutoSyncPreferencesRepository.debugLogsEnabled
+    }.collectAsStateWithLifecycle()
     val p2pSettings by remember {
         P2pSettingsRepository.ensureLoaded()
         P2pSettingsRepository.uiState
@@ -475,6 +479,10 @@ private fun PlaybackSettingsSection(
             val audioLanguageEnabled = !isExternalPlayer
             val subtitleLanguageEnabled = !isExternalPlayer || isForwardingSubtitles
             val otherSubtitleOptionsEnabled = !isExternalPlayer
+            val autoSyncPreferredLanguageAvailable =
+                preferredSubtitleLanguage.isNotBlank() &&
+                    preferredSubtitleLanguage != SubtitleLanguageOption.NONE &&
+                    preferredSubtitleLanguage != SubtitleLanguageOption.FORCED
 
             SettingsGroup(isTablet = isTablet) {
                 SettingsNavigationRow(
@@ -521,11 +529,21 @@ private fun PlaybackSettingsSection(
                 if (!isIos) {
                     SettingsGroupDivider(isTablet = isTablet)
                     SettingsSwitchRow(
-                        title = stringResource(Res.string.compose_player_auto_sync),
+                        title = stringResource(Res.string.settings_playback_subtitle_auto_sync),
+                        description = stringResource(Res.string.settings_playback_subtitle_auto_sync_description),
                         checked = preferredSubtitleAutoSyncOnStart,
-                        enabled = otherSubtitleOptionsEnabled,
+                        enabled = otherSubtitleOptionsEnabled && autoSyncPreferredLanguageAvailable,
                         isTablet = isTablet,
                         onCheckedChange = AutoSyncPreferencesRepository::setPreferredSubtitleAutoSyncOnStart,
+                    )
+                    SettingsGroupDivider(isTablet = isTablet)
+                    SettingsSwitchRow(
+                        title = stringResource(Res.string.settings_playback_auto_sync_debug_logs),
+                        description = stringResource(Res.string.settings_playback_auto_sync_debug_logs_description),
+                        checked = autoSyncDebugLogsEnabled,
+                        enabled = otherSubtitleOptionsEnabled,
+                        isTablet = isTablet,
+                        onCheckedChange = AutoSyncPreferencesRepository::setDebugLogsEnabled,
                     )
                 }
                 SettingsGroupDivider(isTablet = isTablet)

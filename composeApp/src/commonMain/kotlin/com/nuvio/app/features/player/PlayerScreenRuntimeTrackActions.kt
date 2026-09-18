@@ -346,6 +346,12 @@ private fun PlayerScreenRuntime.tryAutoSelectPreferredSubtitleFromAvailableTrack
 
 private fun PlayerScreenRuntime.maybeAutoSyncPreferredSubtitleAtStart(subtitle: AddonSubtitle) {
     if (isUserExplicitSubtitleSelection) return
+    val preferredLanguage = normalizeLanguageCode(playerSettingsUiState.preferredSubtitleLanguage)
+    if (
+        preferredLanguage.isBlank() ||
+        preferredLanguage == SubtitleLanguageOption.NONE ||
+        preferredLanguage == SubtitleLanguageOption.FORCED
+    ) return
     val controller = playerController ?: return
     val videoKey = activeVideoId?.takeIf { it.isNotBlank() } ?: activeSourceUrl
 

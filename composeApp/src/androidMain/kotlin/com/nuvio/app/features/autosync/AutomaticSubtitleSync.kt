@@ -243,12 +243,10 @@ internal object AutomaticSubtitleSync {
 
         val candidateFingerprint = sameLanguageCandidates.joinToString("|") { it.url }
 
-        AutoSyncDebugLog.section("SUBTITLE CANDIDATES")
-        AutoSyncDebugLog.info(
-            "selectedLanguage=${selectedLanguage.ifBlank { "<unknown>" }} " +
-                "languageKey=${selectedLanguageKey ?: "<unknown>"} candidates=${sameLanguageCandidates.size}",
-        )
-        AutoSyncDebugLog.info("header values intentionally not logged")
+        AutoSyncDebugLog.section { "SUBTITLE CANDIDATES" }
+        AutoSyncDebugLog.info { "selectedLanguage=${selectedLanguage.ifBlank { "<unknown>" }} " +
+                "languageKey=${selectedLanguageKey ?: "<unknown>"} candidates=${sameLanguageCandidates.size}" }
+        AutoSyncDebugLog.info { "header values intentionally not logged" }
 
         return supervisorScope {
             val indexedTimelineDeferred = async {
@@ -283,29 +281,23 @@ internal object AutomaticSubtitleSync {
             var lastUsefulReferenceProgressMs: Long? = null
             var timeoutReason = "absolute safety timeout"
 
-            AutoSyncDebugLog.section("INDEXED EMBEDDED REFERENCE")
+            AutoSyncDebugLog.section { "INDEXED EMBEDDED REFERENCE" }
             if (indexedTimeline == null) {
-                AutoSyncDebugLog.info(
-                    "Matroska Cues timeline unavailable; falling back to live Media3 capture",
-                )
+                AutoSyncDebugLog.info { "Matroska Cues timeline unavailable; falling back to live Media3 capture" }
             } else {
-                AutoSyncDebugLog.info(
-                    "source=${indexedTimeline.source} tracks=${indexedTimeline.tracks.size} " +
+                AutoSyncDebugLog.info { "source=${indexedTimeline.source} tracks=${indexedTimeline.tracks.size} " +
                         "requests=${indexedTimeline.rangeRequests} bytes=${indexedTimeline.bytesDownloaded} " +
-                        "load=${indexedTimeline.loadMs}ms",
-                )
+                        "load=${indexedTimeline.loadMs}ms" }
                 // EmbeddedSubtitleTimelineLoader already returns cue-start-sorted, start-deduplicated
                 // timelines. Re-running the live-capture deduper here only sorts/scans every cue again.
                 val indexedProfiles = indexedTimeline.tracks.map(::buildReferenceProfile)
-                indexedProfiles.forEachIndexed { index, profile ->
+                if (AutoSyncDebugLog.ENABLED) indexedProfiles.forEachIndexed { index, profile ->
                     val track = profile.track
-                    AutoSyncDebugLog.info(
-                        "indexed[$index] track=${track.key} lang=${track.language ?: "<unknown>"} " +
+                    AutoSyncDebugLog.info { "indexed[$index] track=${track.key} lang=${track.language ?: "<unknown>"} " +
                             "label=${track.label ?: "<none>"} selectionFlags=${track.selectionFlags} " +
                             "roleFlags=${track.roleFlags} cues=${profile.cueCount} " +
                             "span=${profile.spanMs}ms density=${"%.2f".format(profile.densityPerMinute)}/min " +
-                            "fullDialogue=${profile.fullDialogue}",
-                    )
+                            "fullDialogue=${profile.fullDialogue}" }
                 }
                 val indexedFullDialogueProfiles = indexedProfiles.filter { profile ->
                     profile.fullDialogue &&
@@ -318,13 +310,9 @@ internal object AutomaticSubtitleSync {
                     frozenReferenceTracks = orderReferenceProfiles(indexedFullDialogueProfiles).map { profile ->
                         profile.track.copy(cues = profile.track.cues.toList())
                     }
-                    AutoSyncDebugLog.info(
-                        "using complete indexed subtitle timelines tracks=${frozenReferenceTracks.size}",
-                    )
+                    AutoSyncDebugLog.info { "using complete indexed subtitle timelines tracks=${frozenReferenceTracks.size}" }
                 } else {
-                    AutoSyncDebugLog.info(
-                        "indexed Cues did not contain a usable full-dialogue timeline; falling back to live Media3 capture",
-                    )
+                    AutoSyncDebugLog.info { "indexed Cues did not contain a usable full-dialogue timeline; falling back to live Media3 capture" }
                 }
             }
 
@@ -336,10 +324,8 @@ internal object AutomaticSubtitleSync {
                     onReferenceReady()
                     frozenReferenceMode = "cached-live-media3"
                     frozenReferenceTracks = cachedLiveReferences
-                    AutoSyncDebugLog.info(
-                        "using cached live Media3 reference tracks=${cachedLiveReferences.size} " +
-                            "generation=${cachedLiveReferences.firstOrNull()?.generation ?: -1L}",
-                    )
+                    AutoSyncDebugLog.info { "using cached live Media3 reference tracks=${cachedLiveReferences.size} " +
+                            "generation=${cachedLiveReferences.firstOrNull()?.generation ?: -1L}" }
                 }
             }
 
@@ -398,19 +384,17 @@ internal object AutomaticSubtitleSync {
                         lastUsefulReferenceProgressMs = nowMs
                     }
 
-                    AutoSyncDebugLog.section("REFERENCE SNAPSHOT #$referenceSnapshot")
+                    AutoSyncDebugLog.section { "REFERENCE SNAPSHOT #$referenceSnapshot" }
                     val elapsedMs = nowMs - liveWaitStartedMs
-                    AutoSyncDebugLog.info(
-                        "waited=${elapsedMs}ms tracks=${preparedTracks.size} " +
+                    AutoSyncDebugLog.info { "waited=${elapsedMs}ms tracks=${preparedTracks.size} " +
                             "fullDialogue=${fullDialogueTracks.size} ready30=${fallbackTracks.size} " +
-                            "ready45=${minimumTracks.size} ready75=${preferredTracks.size}",
-                    )
+                            "ready45=${minimumTracks.size} ready75=${preferredTracks.size}" }
 
                     if (preparedTracks.isEmpty()) {
-                        AutoSyncDebugLog.info("no embedded text tracks captured yet")
+                        AutoSyncDebugLog.info { "no embedded text tracks captured yet" }
                     }
 
-                    preparedTracks.forEachIndexed { trackIndex, track ->
+                    if (AutoSyncDebugLog.ENABLED) preparedTracks.forEachIndexed { trackIndex, track ->
                         val raw = rawTracks.getOrNull(trackIndex)
                         val rawCueCount = raw?.cues?.size ?: track.cues.size
                         val dedupedCueCount =
@@ -419,16 +403,14 @@ internal object AutomaticSubtitleSync {
                         val span = referenceSpanMs(track.cues)
                         val density = referenceCueDensityPerMinute(track.cues)
 
-                        AutoSyncDebugLog.info(
-                            "track[$trackIndex] key=${track.key} generation=${track.generation} " +
+                        AutoSyncDebugLog.info { "track[$trackIndex] key=${track.key} generation=${track.generation} " +
                                 "lang=${track.language ?: "<unknown>"} label=${track.label ?: "<none>"} " +
                                 "selectionFlags=${track.selectionFlags} roleFlags=${track.roleFlags} " +
                                 "rawCues=$rawCueCount dedupedCues=$dedupedCueCount segmentCues=$segmentCueCount " +
                                 "span=${span}ms density=${"%.2f".format(density)}/min " +
                                 "fullDialogue=${track in fullDialogueTracks} " +
                                 "ready30=${track in fallbackTracks} ready45=${track in minimumTracks} " +
-                                "ready75=${track in preferredTracks}",
-                        )
+                                "ready75=${track in preferredTracks}" }
 
                         track.cues.take(MAX_LOGGED_CUE_SAMPLES).forEachIndexed { cueIndex, cue ->
                             AutoSyncDebugLog.cue(
@@ -471,16 +453,14 @@ internal object AutomaticSubtitleSync {
                     frozenReferenceTracks = frozen
                     cacheLiveReferenceTracks(sourceKey, frozen)
 
-                    AutoSyncDebugLog.section("FROZEN REFERENCES")
-                    AutoSyncDebugLog.info("mode=$frozenReferenceMode tracks=${frozen.size}")
+                    AutoSyncDebugLog.section { "FROZEN REFERENCES" }
+                    AutoSyncDebugLog.info { "mode=$frozenReferenceMode tracks=${frozen.size}" }
                     frozen.forEachIndexed { index, track ->
-                        AutoSyncDebugLog.info(
-                            "reference[$index] track=${track.key} generation=${track.generation} " +
+                        AutoSyncDebugLog.info { "reference[$index] track=${track.key} generation=${track.generation} " +
                                 "lang=${track.language ?: "<unknown>"} label=${track.label ?: "<none>"} " +
                                 "sdh=${isSdhReferenceTrack(track)} cues=${track.cues.size} " +
                                 "span=${referenceSpanMs(track.cues)}ms " +
-                                "density=${"%.2f".format(referenceCueDensityPerMinute(track.cues))}/min",
-                        )
+                                "density=${"%.2f".format(referenceCueDensityPerMinute(track.cues))}/min" }
                     }
                     break
                 }
@@ -490,8 +470,8 @@ internal object AutomaticSubtitleSync {
 
             val referenceTracks = frozenReferenceTracks ?: run {
                 pendingLoads.forEach { it.deferred.cancel() }
-                AutoSyncDebugLog.section("TIMEOUT")
-                AutoSyncDebugLog.warn("no usable full-dialogue embedded reference; $timeoutReason")
+                AutoSyncDebugLog.section { "TIMEOUT" }
+                AutoSyncDebugLog.warn { "no usable full-dialogue embedded reference; $timeoutReason" }
                 return@supervisorScope null
             }
 
@@ -506,32 +486,26 @@ internal object AutomaticSubtitleSync {
                 recommendationCache[cacheKey]
             }?.let { cached ->
                 pendingLoads.forEach { it.deferred.cancel() }
-                AutoSyncDebugLog.section("RECOMMENDATION CACHE")
-                AutoSyncDebugLog.info(
-                    "HIT references=${referenceTracks.size} fingerprint=$referenceFingerprint " +
-                        "name=${cached.displayName} correction=${cached.correctionMs}ms score=${fmt(cached.score)}",
-                )
+                AutoSyncDebugLog.section { "RECOMMENDATION CACHE" }
+                AutoSyncDebugLog.info { "HIT references=${referenceTracks.size} fingerprint=$referenceFingerprint " +
+                        "name=${cached.displayName} correction=${cached.correctionMs}ms score=${fmt(cached.score)}" }
                 return@supervisorScope cached.toRecommendation(selectedSubtitleUrl)
             }
 
             val referenceTimingGroups = groupEquivalentReferenceTimelines(referenceTracks)
-            AutoSyncDebugLog.section("REFERENCE TIMING DEDUPLICATION")
-            AutoSyncDebugLog.info(
-                "reference timing timelines=${referenceTimingGroups.size}/${referenceTracks.size} " +
-                    "duplicatesSaved=${referenceTracks.size - referenceTimingGroups.size}",
-            )
-            referenceTimingGroups
+            AutoSyncDebugLog.section { "REFERENCE TIMING DEDUPLICATION" }
+            AutoSyncDebugLog.info { "reference timing timelines=${referenceTimingGroups.size}/${referenceTracks.size} " +
+                    "duplicatesSaved=${referenceTracks.size - referenceTimingGroups.size}" }
+            if (AutoSyncDebugLog.ENABLED) referenceTimingGroups
                 .filter { it.members.size > 1 }
                 .forEachIndexed { index, group ->
-                    AutoSyncDebugLog.info(
-                        "referenceTiming[$index] reused=${group.members.size} tracks=" +
+                    AutoSyncDebugLog.info { "referenceTiming[$index] reused=${group.members.size} tracks=" +
                             group.members.joinToString(",") { track ->
                                 "${track.key}:${track.language ?: "<unknown>"}"
-                            },
-                    )
+                            } }
                 }
 
-            AutoSyncDebugLog.section("CANDIDATE MATCH SUMMARY")
+            AutoSyncDebugLog.section { "CANDIDATE MATCH SUMMARY" }
             val parsedCandidates = mutableListOf<ParsedSubtitleCandidate>()
             val timingBuckets =
                 linkedMapOf<CandidateTimingFingerprint, MutableList<PipelineTimingGroupState>>()
@@ -555,8 +529,7 @@ internal object AutomaticSubtitleSync {
 
                 if (bestAccepted != null) {
                     candidateMatches += bestAccepted
-                    AutoSyncDebugLog.info(
-                        "candidate[$candidateIndex] ACCEPT track=${bestAccepted.track.key} " +
+                    AutoSyncDebugLog.info { "candidate[$candidateIndex] ACCEPT track=${bestAccepted.track.key} " +
                             "label=${bestAccepted.track.label ?: "<none>"} " +
                             "score=${fmt(bestAccepted.alignment.score)} " +
                             "rankScore=${fmt(adjustedAlignmentScore(bestAccepted))} " +
@@ -566,15 +539,13 @@ internal object AutomaticSubtitleSync {
                             "pairScale=${bestAccepted.alignment.matchedPairScale?.let { "%.6f".format(it) } ?: "<unavailable>"} " +
                             "scaleDisagreement=${"%.6f".format(bestAccepted.alignment.scaleDisagreement)} " +
                             "consecutive=${summary.winningAttempt?.consecutivePatternMatches ?: 0} " +
-                            "references=${summary.attempts.size}/${referenceTracks.size} reusedTiming=$reusedTiming",
-                    )
+                            "references=${summary.attempts.size}/${referenceTracks.size} reusedTiming=$reusedTiming" }
                 } else {
                     val bestAttempt = summary.bestRejectedAttempt
                     if (bestAttempt != null) {
                         val track = bestAttempt.first
                         val attemptResult = bestAttempt.second
-                        AutoSyncDebugLog.info(
-                            "candidate[$candidateIndex] REJECT bestTrack=${track.key} " +
+                        AutoSyncDebugLog.info { "candidate[$candidateIndex] REJECT bestTrack=${track.key} " +
                                 "label=${track.label ?: "<none>"} score=${fmt(attemptResult.score)} " +
                                 "matches=${attemptResult.matches} " +
                                 "offset=${attemptResult.offsetMs?.let { "${it}ms" } ?: "<none>"} " +
@@ -582,8 +553,7 @@ internal object AutomaticSubtitleSync {
                                 "pairScale=${attemptResult.matchedPairScale?.let { "%.6f".format(it) } ?: "<unavailable>"} " +
                                 "consecutive=${attemptResult.consecutivePatternMatches} " +
                                 "references=${summary.attempts.size}/${referenceTracks.size} reusedTiming=$reusedTiming " +
-                                "failed=${attemptResult.failedChecks.joinToString(",").ifBlank { "unknown" }}",
-                        )
+                                "failed=${attemptResult.failedChecks.joinToString(",").ifBlank { "unknown" }}" }
                     }
                 }
             }
@@ -595,14 +565,16 @@ internal object AutomaticSubtitleSync {
                 if (parsed == null) return
 
                 parsedCandidates += parsed
-                AutoSyncDebugLog.info(
-                    "candidate[$candidateIndex] name=${parsed.candidate.displayName} " +
+                AutoSyncDebugLog.info { "candidate[$candidateIndex] name=${parsed.candidate.displayName} " +
                         "lang=${parsed.candidate.language.ifBlank { "<unknown>" }} " +
                         "selected=${parsed.candidate.url == selectedSubtitleUrl} cues=${parsed.cues.size} " +
-                        "download=${parsed.downloadMs}ms parse=${parsed.parseMs}ms cached=${parsed.cacheHit}",
-                )
+                        "download=${parsed.downloadMs}ms parse=${parsed.parseMs}ms cached=${parsed.cacheHit}" }
 
-                if (!selectedCueSamplesLogged && parsed.candidate.url == selectedSubtitleUrl) {
+                if (
+                    AutoSyncDebugLog.ENABLED &&
+                    !selectedCueSamplesLogged &&
+                    parsed.candidate.url == selectedSubtitleUrl
+                ) {
                     selectedCueSamplesLogged = true
                     parsed.cues.take(MAX_LOGGED_CUE_SAMPLES).forEachIndexed { index, cue ->
                         AutoSyncDebugLog.cue(
@@ -659,11 +631,9 @@ internal object AutomaticSubtitleSync {
                     ) ?: break
                     queuedMatchStates.remove(state)
                     val parsed = state.group.members.first()
-                    AutoSyncDebugLog.verbose(
-                        "MATCH START candidate=${state.candidateOrder} " +
+                    AutoSyncDebugLog.verbose { "MATCH START candidate=${state.candidateOrder} " +
                             "cheapAffinity=${fmt(state.priorityScore)} " +
-                            "references=${state.rankedReferences.size}",
-                    )
+                            "references=${state.rankedReferences.size}" }
                     pendingMatches += PendingTimingMatch(
                         state = state,
                         deferred = async(Dispatchers.Default) {
@@ -720,10 +690,8 @@ internal object AutomaticSubtitleSync {
                         if (canStopCandidateSearch(event.summary)) {
                             earlyStopped = true
                             val best = event.summary.bestAccepted
-                            AutoSyncDebugLog.info(
-                                "EARLY STOP candidate search score=${best?.let { fmt(adjustedAlignmentScore(it)) } ?: "<none>"} " +
-                                    "remainingDownloads=${pendingLoads.size} remainingMatches=${pendingMatches.size}",
-                            )
+                            AutoSyncDebugLog.info { "EARLY STOP candidate search score=${best?.let { fmt(adjustedAlignmentScore(it)) } ?: "<none>"} " +
+                                    "remainingDownloads=${pendingLoads.size} remainingMatches=${pendingMatches.size}" }
                             pendingLoads.forEach { it.deferred.cancel() }
                             pendingMatches.forEach { it.deferred.cancel() }
                             pendingLoads.clear()
@@ -737,20 +705,16 @@ internal object AutomaticSubtitleSync {
             }
 
             val timingGroupCount = timingBuckets.values.sumOf { it.size }
-            AutoSyncDebugLog.info(
-                "timing timelines=$timingGroupCount/${parsedCandidates.size} " +
-                    "duplicatesSaved=${parsedCandidates.size - timingGroupCount} earlyStop=$earlyStopped",
-            )
+            AutoSyncDebugLog.info { "timing timelines=$timingGroupCount/${parsedCandidates.size} " +
+                    "duplicatesSaved=${parsedCandidates.size - timingGroupCount} earlyStop=$earlyStopped" }
 
             if (parsedCandidates.isEmpty()) {
-                AutoSyncDebugLog.warn("REJECT no same-language subtitle candidate could be parsed")
+                AutoSyncDebugLog.warn { "REJECT no same-language subtitle candidate could be parsed" }
                 return@supervisorScope null
             }
             if (candidateMatches.isEmpty()) {
-                AutoSyncDebugLog.section("FINAL RECOMMENDATION")
-                AutoSyncDebugLog.warn(
-                    "REJECT no same-language subtitle passed any eligible full-dialogue reference track",
-                )
+                AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
+                AutoSyncDebugLog.warn { "REJECT no same-language subtitle passed any eligible full-dialogue reference track" }
                 return@supervisorScope null
             }
 
@@ -767,10 +731,9 @@ internal object AutomaticSubtitleSync {
             )
             val bestMatch = ranked.first()
 
-            AutoSyncDebugLog.section("SUBTITLE RANKING")
-            ranked.forEachIndexed { index, match ->
-                AutoSyncDebugLog.info(
-                    "rank=${index + 1} name=${match.parsed.candidate.displayName} " +
+            AutoSyncDebugLog.section { "SUBTITLE RANKING" }
+            if (AutoSyncDebugLog.ENABLED) ranked.forEachIndexed { index, match ->
+                AutoSyncDebugLog.info { "rank=${index + 1} name=${match.parsed.candidate.displayName} " +
                         "lang=${match.parsed.candidate.language.ifBlank { "<unknown>" }} " +
                         "selected=${match.parsed.candidate.url == selectedSubtitleUrl} " +
                         "reference=${match.track.key} label=${match.track.label ?: "<none>"} " +
@@ -779,11 +742,10 @@ internal object AutomaticSubtitleSync {
                         "pairScale=${match.alignment.matchedPairScale?.let { "%.6f".format(it) } ?: "<unavailable>"} " +
                         "scalePenalty=${fmt(alignmentScalePenalty(match.alignment))} " +
                         "score=${fmt(match.alignment.score)} rankScore=${fmt(adjustedAlignmentScore(match))} " +
-                        "matches=${match.alignment.matches} residual=${"%.1f".format(match.alignment.residualMs)}ms",
-                )
+                        "matches=${match.alignment.matches} residual=${"%.1f".format(match.alignment.residualMs)}ms" }
             }
 
-            AutoSyncDebugLog.section("WINNING SUBTITLE DETAILS")
+            AutoSyncDebugLog.section { "WINNING SUBTITLE DETAILS" }
             val winningAttempt = groupResults
                 .firstOrNull { groupResult ->
                     groupResult.group.members.any { member ->
@@ -795,32 +757,26 @@ internal object AutomaticSubtitleSync {
             if (winningAttempt != null) {
                 logAlignmentAttempt(bestMatch.track, bestMatch.parsed.cues, winningAttempt)
             } else {
-                AutoSyncDebugLog.warn("winning alignment details unavailable without rematching")
+                AutoSyncDebugLog.warn { "winning alignment details unavailable without rematching" }
             }
 
             val rawCorrectionMs = bestMatch.alignment.offsetMs
             if (rawCorrectionMs !in MIN_APPLICABLE_OFFSET_MS..MAX_APPLICABLE_OFFSET_MS) {
-                AutoSyncDebugLog.section("FINAL RECOMMENDATION")
-                AutoSyncDebugLog.warn(
-                    "REJECT correction ${rawCorrectionMs}ms is outside Nuvio's applicable range " +
-                        "[$MIN_APPLICABLE_OFFSET_MS, $MAX_APPLICABLE_OFFSET_MS]ms",
-                )
+                AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
+                AutoSyncDebugLog.warn { "REJECT correction ${rawCorrectionMs}ms is outside Nuvio's applicable range " +
+                        "[$MIN_APPLICABLE_OFFSET_MS, $MAX_APPLICABLE_OFFSET_MS]ms" }
                 return@supervisorScope null
             }
             val correctionMs = rawCorrectionMs.toInt()
 
-            AutoSyncDebugLog.section("FINAL RECOMMENDATION")
-            AutoSyncDebugLog.info(
-                "name=${bestMatch.parsed.candidate.displayName} " +
+            AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
+            AutoSyncDebugLog.info { "name=${bestMatch.parsed.candidate.displayName} " +
                     "lang=${bestMatch.parsed.candidate.language.ifBlank { "<unknown>" }} " +
                     "selected=${bestMatch.parsed.candidate.url == selectedSubtitleUrl} " +
-                    "reference=${bestMatch.track.key} label=${bestMatch.track.label ?: "<none>"}",
-            )
-            AutoSyncDebugLog.info(
-                "correction=${correctionMs}ms scale=${"%.6f".format(bestMatch.alignment.timelineScale)} " +
+                    "reference=${bestMatch.track.key} label=${bestMatch.track.label ?: "<none>"}" }
+            AutoSyncDebugLog.info { "correction=${correctionMs}ms scale=${"%.6f".format(bestMatch.alignment.timelineScale)} " +
                     "pairScale=${bestMatch.alignment.matchedPairScale?.let { "%.6f".format(it) } ?: "<unavailable>"} " +
-                    "score=${fmt(bestMatch.alignment.score)} rankScore=${fmt(adjustedAlignmentScore(bestMatch))}",
-            )
+                    "score=${fmt(bestMatch.alignment.score)} rankScore=${fmt(adjustedAlignmentScore(bestMatch))}" }
 
             val cachedRecommendation = CachedRecommendation(
                 url = bestMatch.parsed.candidate.url,
@@ -1058,13 +1014,11 @@ internal object AutomaticSubtitleSync {
         var bestAccepted: CandidateMatch? = null
         var winningAttempt: AlignmentAttempt? = null
 
-        AutoSyncDebugLog.verbose(
-            "REFERENCE PRE-RANK candidate=${parsed.candidate.displayName} top=" +
+        AutoSyncDebugLog.verbose { "REFERENCE PRE-RANK candidate=${parsed.candidate.displayName} top=" +
                 rankedReferenceTimingGroups.take(6).joinToString(",") { ranked ->
                     val track = ranked.group.members.first()
                     "${track.key}:${fmt(ranked.affinity)}"
-                },
-        )
+                } }
 
         for (batch in rankedReferenceTimingGroups.chunked(REFERENCE_MATCH_BATCH_SIZE)) {
             currentCoroutineContext().ensureActive()
@@ -1112,11 +1066,9 @@ internal object AutomaticSubtitleSync {
                 currentAttempt != null &&
                 canStopReferenceSearch(currentBest, currentAttempt)
             ) {
-                AutoSyncDebugLog.verbose(
-                    "EARLY STOP reference search candidate=${parsed.candidate.displayName} " +
+                AutoSyncDebugLog.verbose { "EARLY STOP reference search candidate=${parsed.candidate.displayName} " +
                         "tested=${attempts.size} total=${rankedReferenceTimingGroups.sumOf { it.group.members.size }} " +
-                        "score=${fmt(adjustedAlignmentScore(currentBest))}",
-                )
+                        "score=${fmt(adjustedAlignmentScore(currentBest))}" }
                 break
             }
         }
@@ -1413,10 +1365,9 @@ internal object AutomaticSubtitleSync {
         } catch (cancel: CancellationException) {
             throw cancel
         } catch (error: Exception) {
-            AutoSyncDebugLog.error(
-                "candidate download failed name=${candidate.displayName}",
-                error,
-            )
+            AutoSyncDebugLog.error(error) {
+                "candidate download failed name=${candidate.displayName}"
+            }
             return null
         }
         val downloadMs = SystemClock.elapsedRealtime() - downloadStarted
@@ -1432,19 +1383,16 @@ internal object AutomaticSubtitleSync {
         } catch (cancel: CancellationException) {
             throw cancel
         } catch (error: Exception) {
-            AutoSyncDebugLog.error(
-                "candidate parse failed name=${candidate.displayName}",
-                error,
-            )
+            AutoSyncDebugLog.error(error) {
+                "candidate parse failed name=${candidate.displayName}"
+            }
             return null
         }
         val parseMs = SystemClock.elapsedRealtime() - parseStarted
 
         if (cues.size < MIN_REFERENCE_CUES) {
-            AutoSyncDebugLog.warn(
-                "candidate rejected before matching name=${candidate.displayName} " +
-                    "cues=${cues.size} required=$MIN_REFERENCE_CUES",
-            )
+            AutoSyncDebugLog.warn { "candidate rejected before matching name=${candidate.displayName} " +
+                    "cues=${cues.size} required=$MIN_REFERENCE_CUES" }
             return null
         }
 
@@ -1472,10 +1420,8 @@ internal object AutomaticSubtitleSync {
     ): String {
         val first = requestSubtitleCandidate(candidate, downloadSemaphore)
         if (first.status == 429) {
-            AutoSyncDebugLog.warn(
-                "candidate HTTP 429 name=${candidate.displayName}; retrying once after " +
-                    "${HTTP_429_RETRY_DELAY_MS}ms",
-            )
+            AutoSyncDebugLog.warn { "candidate HTTP 429 name=${candidate.displayName}; retrying once after " +
+                    "${HTTP_429_RETRY_DELAY_MS}ms" }
             delay(HTTP_429_RETRY_DELAY_MS)
             return validatedSubtitleBody(
                 response = requestSubtitleCandidate(candidate, downloadSemaphore),
@@ -1543,7 +1489,7 @@ internal object AutomaticSubtitleSync {
         val reference = track.cues
         val candidates = candidateOffsets(reference, target)
         if (candidates.isEmpty()) {
-            if (logDetails) AutoSyncDebugLog.warn("no candidate offsets")
+            if (logDetails) AutoSyncDebugLog.warn { "no candidate offsets" }
             return AlignmentAttempt(
                 result = null,
                 failedChecks = listOf("candidate offsets"),
@@ -1809,6 +1755,7 @@ internal object AutomaticSubtitleSync {
         target: List<SubtitleSyncCue>,
         attempt: AlignmentAttempt,
     ) {
+        if (!AutoSyncDebugLog.ENABLED) return
         val details = attempt.debugDetails ?: return
         val reference = track.cues
         val best = details.best
@@ -1816,26 +1763,19 @@ internal object AutomaticSubtitleSync {
         val matchedPairScale = attempt.matchedPairScale
         val timelineScale = details.independentScale?.scale
 
-        AutoSyncDebugLog.section(
-            "ALIGN track=${track.key} lang=${track.language ?: "<unknown>"}",
-        )
-        AutoSyncDebugLog.info("candidate offsets=${details.candidates.size}")
+        AutoSyncDebugLog.section { "ALIGN track=${track.key} lang=${track.language ?: "<unknown>"}" }
+        AutoSyncDebugLog.info { "candidate offsets=${details.candidates.size}" }
         details.candidates
             .take(MAX_LOGGED_CANDIDATES)
             .forEachIndexed { index, candidate ->
-                AutoSyncDebugLog.verbose(
-                    "CANDIDATE[$index] offset=${candidate.offsetMs}ms votes=${candidate.votes}",
-                )
+                AutoSyncDebugLog.verbose { "CANDIDATE[$index] offset=${candidate.offsetMs}ms votes=${candidate.votes}" }
             }
         details.refinements.forEach { refinement ->
-            AutoSyncDebugLog.verbose(
-                "REFINE ${refinement.originalOffsetMs}ms -> ${refinement.refinedOffsetMs}ms " +
-                    "using median signed residual=${"%.1f".format(refinement.signedResidualMs)}ms",
-            )
+            AutoSyncDebugLog.verbose { "REFINE ${refinement.originalOffsetMs}ms -> ${refinement.refinedOffsetMs}ms " +
+                    "using median signed residual=${"%.1f".format(refinement.signedResidualMs)}ms" }
         }
 
-        AutoSyncDebugLog.info(
-            "BEST offset=${best.offsetMs}ms matches=${best.matches}/${reference.size} " +
+        AutoSyncDebugLog.info { "BEST offset=${best.offsetMs}ms matches=${best.matches}/${reference.size} " +
                 "referenceParticipation=${fmt(details.referenceParticipation)} " +
                 "targetParticipation=${fmt(details.targetParticipation)} " +
                 "effectiveParticipation=${fmt(details.effectiveParticipation)} " +
@@ -1847,69 +1787,50 @@ internal object AutomaticSubtitleSync {
                 "matchedPairScale=${matchedPairScale?.let { "%.6f".format(it) } ?: "<unavailable>"} " +
                 "resolvedScale=${attempt.timelineScale?.let { "%.6f".format(it) } ?: "<unavailable>"} " +
                 "scaleSource=${details.scaleSource} " +
-                "consecutive=${attempt.consecutivePatternMatches} score=${fmt(best.score)}",
-        )
+                "consecutive=${attempt.consecutivePatternMatches} score=${fmt(best.score)}" }
 
         if (second != null) {
-            AutoSyncDebugLog.info(
-                "SECOND offset=${second.offsetMs}ms matches=${second.matches} " +
-                    "score=${fmt(second.score)} margin=${fmt(details.margin)}",
-            )
+            AutoSyncDebugLog.info { "SECOND offset=${second.offsetMs}ms matches=${second.matches} " +
+                    "score=${fmt(second.score)} margin=${fmt(details.margin)}" }
         } else {
-            AutoSyncDebugLog.info("SECOND <none> margin=1.0000")
+            AutoSyncDebugLog.info { "SECOND <none> margin=1.0000" }
         }
 
-        AutoSyncDebugLog.section("BEST MATCHED PAIRS")
+        AutoSyncDebugLog.section { "BEST MATCHED PAIRS" }
         best.pairs
             .take(MAX_LOGGED_MATCH_PAIRS)
             .forEachIndexed { pairIndex, pair ->
                 val ref = reference[pair.referenceIndex]
                 val addon = target[pair.targetIndex]
 
-                AutoSyncDebugLog.verbose("PAIR[$pairIndex]")
-                AutoSyncDebugLog.verbose(
-                    "  EMBEDDED ${AutoSyncDebugLog.formatTimestamp(ref.startTimeMs)} " +
-                        "| \"${logText(ref.text)}\"",
-                )
-                AutoSyncDebugLog.verbose(
-                    "  ADDON    ${AutoSyncDebugLog.formatTimestamp(addon.startTimeMs)} " +
-                        "| \"${logText(addon.text)}\"",
-                )
-                AutoSyncDebugLog.verbose(
-                    "  shifted addon=${AutoSyncDebugLog.formatTimestamp(addon.startTimeMs + best.offsetMs)} " +
-                        "residual=${pair.residualMs}ms",
-                )
+                AutoSyncDebugLog.verbose { "PAIR[$pairIndex]" }
+                AutoSyncDebugLog.verbose { "  EMBEDDED ${AutoSyncDebugLog.formatTimestamp(ref.startTimeMs)} " +
+                        "| \"${logText(ref.text)}\"" }
+                AutoSyncDebugLog.verbose { "  ADDON    ${AutoSyncDebugLog.formatTimestamp(addon.startTimeMs)} " +
+                        "| \"${logText(addon.text)}\"" }
+                AutoSyncDebugLog.verbose { "  shifted addon=${AutoSyncDebugLog.formatTimestamp(addon.startTimeMs + best.offsetMs)} " +
+                        "residual=${pair.residualMs}ms" }
             }
 
-        AutoSyncDebugLog.section("CONFIDENCE")
-        AutoSyncDebugLog.info(
-            "${if (details.normalParticipation) "PASS" else "FAIL"} normal participation: " +
+        AutoSyncDebugLog.section { "CONFIDENCE" }
+        AutoSyncDebugLog.info { "${if (details.normalParticipation) "PASS" else "FAIL"} normal participation: " +
                 "reference=${fmt(details.referenceParticipation)} threshold=${fmt(NORMAL_PARTICIPATION_THRESHOLD)} " +
                 "target=${fmt(details.targetParticipation)} threshold=${fmt(TARGET_PARTICIPATION_THRESHOLD)} " +
-                "asymmetricEligible=${details.asymmetricTargetEligible}",
-        )
-        AutoSyncDebugLog.info(
-            "${if (details.strongConstantOffsetEvidence) "PASS" else "FAIL"} strong constant-offset evidence: " +
+                "asymmetricEligible=${details.asymmetricTargetEligible}" }
+        AutoSyncDebugLog.info { "${if (details.strongConstantOffsetEvidence) "PASS" else "FAIL"} strong constant-offset evidence: " +
                 "targetParticipation=${fmt(details.targetParticipation)} " +
                 "matches=${best.matches} residual=${"%.1f".format(best.residualMs)}ms " +
-                "coverage=${fmt(best.referenceCoverage)} consecutive=${attempt.consecutivePatternMatches}",
-        )
-        AutoSyncDebugLog.info(
-            "${if (details.strongAbsoluteEvidence) "PASS" else "FAIL"} strong absolute evidence: " +
+                "coverage=${fmt(best.referenceCoverage)} consecutive=${attempt.consecutivePatternMatches}" }
+        AutoSyncDebugLog.info { "${if (details.strongAbsoluteEvidence) "PASS" else "FAIL"} strong absolute evidence: " +
                 "matches=${best.matches}/${STRONG_ACCEPT_MATCHES} " +
                 "residual=${"%.1f".format(best.residualMs)}ms/${"%.0f".format(STRONG_ACCEPT_RESIDUAL_MS)}ms " +
                 "agreement=${fmt(best.offsetAgreement)}/${fmt(STRONG_ACCEPT_AGREEMENT)} " +
                 "spacing=${fmt(best.spacingScore)}/${fmt(STRONG_ACCEPT_SPACING)} " +
-                "margin=${fmt(details.margin)}/${fmt(STRONG_ACCEPT_MARGIN)}",
-        )
+                "margin=${fmt(details.margin)}/${fmt(STRONG_ACCEPT_MARGIN)}" }
         details.checks.forEach { check ->
-            AutoSyncDebugLog.info(
-                "${if (check.passed) "PASS" else "FAIL"} ${check.name}: ${check.detail}",
-            )
+            AutoSyncDebugLog.info { "${if (check.passed) "PASS" else "FAIL"} ${check.name}: ${check.detail}" }
         }
-        AutoSyncDebugLog.info(
-            "DECISION=${if (details.highConfidence) "ACCEPT" else "REJECT"} track=${track.key}",
-        )
+        AutoSyncDebugLog.info { "DECISION=${if (details.highConfidence) "ACCEPT" else "REJECT"} track=${track.key}" }
     }
 
     private fun estimateIndependentTimelineScale(
@@ -2729,7 +2650,7 @@ internal object EmbeddedSubtitleCueStore {
             lastSeekWallMs.remove(sourceKey)
         }
 
-        AutoSyncDebugLog.verbose("embedded store reset generation=$generation")
+        AutoSyncDebugLog.verbose { "embedded store reset generation=$generation" }
     }
 
     fun beginNewGeneration(sourceKey: String, targetTimeMs: Long?) {
@@ -2770,9 +2691,7 @@ internal object EmbeddedSubtitleCueStore {
         }
 
         generation?.let {
-            AutoSyncDebugLog.verbose(
-                "embedded store seek generation=$it target=${targetTimeMs ?: -1L}ms",
-            )
+            AutoSyncDebugLog.verbose { "embedded store seek generation=$it target=${targetTimeMs ?: -1L}ms" }
         }
     }
 
@@ -2814,11 +2733,9 @@ internal object EmbeddedSubtitleCueStore {
         }
 
         if (newCue && AutoSyncDebugLog.VERBOSE) {
-            AutoSyncDebugLog.verbose(
-                "CAPTURE track=$trackKey lang=${language ?: "<unknown>"} " +
+            AutoSyncDebugLog.verbose { "CAPTURE track=$trackKey lang=${language ?: "<unknown>"} " +
                     "count=$cueCount ${AutoSyncDebugLog.formatTimestamp(cue.startTimeMs)} " +
-                    "| \"${cue.text.replace('\n', ' ').take(500).ifBlank { "<text unavailable>" }}\"",
-            )
+                    "| \"${cue.text.replace('\n', ' ').take(500).ifBlank { "<text unavailable>" }}\"" }
         }
     }
 
