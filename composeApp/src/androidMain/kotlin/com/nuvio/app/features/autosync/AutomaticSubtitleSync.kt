@@ -16,8 +16,9 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.yield
 import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.max
@@ -89,6 +90,8 @@ internal object AutomaticSubtitleSync {
     private const val MAX_LOGGED_CANDIDATES = 20
     private const val MAX_LOGGED_MATCH_PAIRS = 50
     private const val MAX_PARALLEL_SUBTITLE_DOWNLOADS = 6
+    private const val MAX_PARALLEL_MATCH_GROUPS = 2
+    private const val HTTP_429_RETRY_DELAY_MS = 900L
     private const val MAX_OFFSET_VOTE_REFERENCE_CUES = 48
     private const val MAX_RECOMMENDATION_CACHE_ENTRIES = 16
     private const val MAX_PARSED_CANDIDATE_CACHE_ENTRIES = 64
@@ -223,13 +226,19 @@ internal object AutomaticSubtitleSync {
                     sourceHeaders = sourceHeaders,
                 )
             }
+            // Keep a rolling pool busy instead of waiting for the slowest request in each fixed batch.
+            // awaitAll() preserves candidate order, so deterministic ranking/tie-breaking is unchanged.
+            val downloadSemaphore = Semaphore(MAX_PARALLEL_SUBTITLE_DOWNLOADS)
             val parsed = sameLanguageCandidates
-                .chunked(MAX_PARALLEL_SUBTITLE_DOWNLOADS)
-                .flatMap { batch ->
-                    batch.map { candidate ->
-                        async { loadSubtitleCandidate(candidate) }
-                    }.awaitAll()
+                .map { candidate ->
+                    async {
+                        loadSubtitleCandidate(
+                            candidate = candidate,
+                            downloadSemaphore = downloadSemaphore,
+                        )
+                    }
                 }
+                .awaitAll()
                 .filterNotNull()
             parsed to indexedTimelineDeferred.await()
         }
@@ -478,24 +487,26 @@ internal object AutomaticSubtitleSync {
                 "duplicatesSaved=${parsedCandidates.size - timingGroups.size}",
         )
 
-        // The matcher is intentionally CPU-heavy. Keep every comparison off Compose/Main so
-        // pathological streams (many candidates x many embedded tracks) cannot freeze playback UI.
+        // Matching is CPU-heavy. Run two timing groups at a time: enough parallelism to cut
+        // large candidate sets substantially without saturating every core while video is playing.
+        // awaitAll() keeps the original timing-group order, preserving deterministic ranking logs.
         val groupResults = withContext(Dispatchers.Default) {
-            buildList {
-                timingGroups.forEach { group ->
-                    add(
-                        CandidateTimingGroupResult(
-                            group = group,
-                            summary = matchCandidateAgainstReferences(
-                                parsed = group.members.first(),
-                                referenceTracks = referenceTracks,
-                            ),
-                        ),
-                    )
-                    // Give cancellation/new subtitle selections a prompt hand-off point.
-                    yield()
+            val matchSemaphore = Semaphore(MAX_PARALLEL_MATCH_GROUPS)
+            timingGroups
+                .map { group ->
+                    async {
+                        matchSemaphore.withPermit {
+                            CandidateTimingGroupResult(
+                                group = group,
+                                summary = matchCandidateAgainstReferences(
+                                    parsed = group.members.first(),
+                                    referenceTracks = referenceTracks,
+                                ),
+                            )
+                        }
+                    }
                 }
-            }
+                .awaitAll()
         }
 
         val candidateIndexByUrl = parsedCandidates
@@ -586,12 +597,23 @@ internal object AutomaticSubtitleSync {
         }
 
         AutoSyncDebugLog.section("WINNING SUBTITLE DETAILS")
-        withContext(Dispatchers.Default) {
-            attemptAlignment(
+        val winningAttempt = groupResults
+            .firstOrNull { groupResult ->
+                groupResult.group.members.any { member ->
+                    member.candidate.url == bestMatch.parsed.candidate.url
+                }
+            }
+            ?.summary
+            ?.winningAttempt
+            ?.takeIf { attempt -> attempt.result?.trackKey == bestMatch.track.key }
+        if (winningAttempt != null) {
+            logAlignmentAttempt(
                 track = bestMatch.track,
                 target = bestMatch.parsed.cues,
-                logDetails = true,
+                attempt = winningAttempt,
             )
+        } else {
+            AutoSyncDebugLog.warn("winning alignment details unavailable without rematching")
         }
 
         val correctionMs = bestMatch.alignment.offsetMs
@@ -721,7 +743,9 @@ internal object AutomaticSubtitleSync {
                     target = parsed.cues,
                     logDetails = false,
                 )
-                attempts += track to attempt
+                // Detailed evaluation/pair data is needed only for the current winner's verbose log.
+                // Strip it from the all-attempts list so large candidate sets do not retain it all.
+                attempts += track to attempt.copy(debugDetails = null)
                 val alignment = attempt.result ?: continue
                 val match = CandidateMatch(
                     parsed = parsed,
@@ -944,6 +968,7 @@ internal object AutomaticSubtitleSync {
 
     private suspend fun loadSubtitleCandidate(
         candidate: SubtitleCandidate,
+        downloadSemaphore: Semaphore,
     ): ParsedSubtitleCandidate? {
         val cacheKey = parsedCandidateCacheKey(candidate)
         synchronized(parsedCandidateCacheLock) {
@@ -960,7 +985,10 @@ internal object AutomaticSubtitleSync {
 
         val downloadStarted = SystemClock.elapsedRealtime()
         val subtitleText = try {
-            httpGetTextWithHeaders(candidate.url, candidate.headers)
+            downloadSubtitleTextWithSingle429Retry(
+                candidate = candidate,
+                downloadSemaphore = downloadSemaphore,
+            )
         } catch (cancel: CancellationException) {
             throw cancel
         } catch (error: Exception) {
@@ -1013,6 +1041,43 @@ internal object AutomaticSubtitleSync {
         )
     }
 
+    /**
+     * A rate-limited subtitle request gets exactly one retry (two total attempts), never a loop.
+     * Other HTTP/network failures keep the existing fail-fast behavior.
+     */
+    private suspend fun downloadSubtitleTextWithSingle429Retry(
+        candidate: SubtitleCandidate,
+        downloadSemaphore: Semaphore,
+    ): String {
+        try {
+            return downloadSemaphore.withPermit {
+                httpGetTextWithHeaders(candidate.url, candidate.headers)
+            }
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (firstError: Exception) {
+            if (!isHttp429(firstError)) throw firstError
+
+            AutoSyncDebugLog.warn(
+                "candidate HTTP 429 name=${candidate.displayName}; retrying once after " +
+                    "${HTTP_429_RETRY_DELAY_MS}ms",
+            )
+            delay(HTTP_429_RETRY_DELAY_MS)
+
+            // Deliberately no loop: if this second request is also 429 (or otherwise fails),
+            // it propagates to loadSubtitleCandidate() and the candidate is skipped. The permit is
+            // reacquired only for the request, so the backoff never blocks another download slot.
+            return downloadSemaphore.withPermit {
+                httpGetTextWithHeaders(candidate.url, candidate.headers)
+            }
+        }
+    }
+
+    private fun isHttp429(error: Throwable): Boolean =
+        error.message
+            ?.contains(Regex("(?i)\\b(?:HTTP\\s*)?429\\b"))
+            ?: false
+
     private fun parsedCandidateCacheKey(candidate: SubtitleCandidate): ParsedCandidateCacheKey {
         var headerHash = 1
         candidate.headers.entries
@@ -1033,13 +1098,6 @@ internal object AutomaticSubtitleSync {
         logDetails: Boolean = true,
     ): AlignmentAttempt {
         val reference = track.cues
-
-        if (logDetails) {
-            AutoSyncDebugLog.section(
-                "ALIGN track=${track.key} lang=${track.language ?: "<unknown>"}",
-            )
-        }
-
         val candidates = candidateOffsets(reference, target)
         if (candidates.isEmpty()) {
             if (logDetails) AutoSyncDebugLog.warn("no candidate offsets")
@@ -1049,17 +1107,7 @@ internal object AutomaticSubtitleSync {
             )
         }
 
-        if (logDetails) {
-            AutoSyncDebugLog.info("candidate offsets=${candidates.size}")
-            candidates
-                .take(MAX_LOGGED_CANDIDATES)
-                .forEachIndexed { index, candidate ->
-                    AutoSyncDebugLog.verbose(
-                        "CANDIDATE[$index] offset=${candidate.offsetMs}ms votes=${candidate.votes}",
-                    )
-                }
-        }
-
+        val refinements = mutableListOf<OffsetRefinement>()
         val evaluations = buildList {
             for (candidate in candidates) {
                 val initial = evaluate(reference, target, candidate.offsetMs)
@@ -1073,12 +1121,11 @@ internal object AutomaticSubtitleSync {
                         refinedOffset != candidate.offsetMs &&
                         abs(refinedOffset) <= MAX_OFFSET_MS
                     ) {
-                        if (logDetails) {
-                            AutoSyncDebugLog.verbose(
-                                "REFINE ${candidate.offsetMs}ms -> ${refinedOffset}ms " +
-                                    "using median signed residual=${"%.1f".format(initial.signedResidualMs)}ms",
-                            )
-                        }
+                        refinements += OffsetRefinement(
+                            originalOffsetMs = candidate.offsetMs,
+                            refinedOffsetMs = refinedOffset,
+                            signedResidualMs = initial.signedResidualMs,
+                        )
                         add(evaluate(reference, target, refinedOffset))
                     }
                 }
@@ -1102,11 +1149,6 @@ internal object AutomaticSubtitleSync {
 
         val referenceParticipation = best.matches.toDouble() / reference.size
         val normalParticipation = referenceParticipation >= NORMAL_PARTICIPATION_THRESHOLD
-        val matchedPairScale = if (logDetails) {
-            estimateMatchedPairTimelineScale(reference, target, best.pairs)
-        } else {
-            null
-        }
         val independentScale = estimateIndependentTimelineScale(
             reference = reference,
             target = target,
@@ -1189,73 +1231,6 @@ internal object AutomaticSubtitleSync {
         val failedChecks = checks.filterNot { it.passed }.map { it.name }
         val highConfidence = failedChecks.isEmpty()
 
-        if (logDetails) {
-            AutoSyncDebugLog.info(
-                "BEST offset=${best.offsetMs}ms matches=${best.matches}/${reference.size} " +
-                    "participation=${fmt(referenceParticipation)} coverage=${fmt(best.referenceCoverage)} " +
-                    "medianResidual=${"%.1f".format(best.residualMs)}ms " +
-                    "signedResidual=${"%.1f".format(best.signedResidualMs)}ms " +
-                    "agreement=${fmt(best.offsetAgreement)} spacing=${fmt(best.spacingScore)} " +
-                    "independentScale=${timelineScale?.let { "%.6f".format(it) } ?: "<unavailable>"} " +
-                    "matchedPairScale=${matchedPairScale?.let { "%.6f".format(it) } ?: "<unavailable>"} " +
-                    "consecutive=$consecutivePatternMatches score=${fmt(best.score)}",
-            )
-
-            if (second != null) {
-                AutoSyncDebugLog.info(
-                    "SECOND offset=${second.offsetMs}ms matches=${second.matches} " +
-                        "score=${fmt(second.score)} margin=${fmt(margin)}",
-                )
-            } else {
-                AutoSyncDebugLog.info("SECOND <none> margin=1.0000")
-            }
-
-            AutoSyncDebugLog.section("BEST MATCHED PAIRS")
-            best.pairs
-                .take(MAX_LOGGED_MATCH_PAIRS)
-                .forEachIndexed { pairIndex, pair ->
-                    val ref = reference[pair.referenceIndex]
-                    val addon = target[pair.targetIndex]
-
-                    AutoSyncDebugLog.verbose("PAIR[$pairIndex]")
-                    AutoSyncDebugLog.verbose(
-                        "  EMBEDDED ${AutoSyncDebugLog.formatTimestamp(ref.startTimeMs)} " +
-                            "| \"${logText(ref.text)}\"",
-                    )
-                    AutoSyncDebugLog.verbose(
-                        "  ADDON    ${AutoSyncDebugLog.formatTimestamp(addon.startTimeMs)} " +
-                            "| \"${logText(addon.text)}\"",
-                    )
-                    AutoSyncDebugLog.verbose(
-                        "  shifted addon=${AutoSyncDebugLog.formatTimestamp(addon.startTimeMs + best.offsetMs)} " +
-                            "residual=${pair.residualMs}ms",
-                    )
-                }
-
-            AutoSyncDebugLog.section("CONFIDENCE")
-            AutoSyncDebugLog.info(
-                "${if (normalParticipation) "PASS" else "FAIL"} normal participation: " +
-                    "${fmt(referenceParticipation)} >= ${fmt(NORMAL_PARTICIPATION_THRESHOLD)}",
-            )
-            AutoSyncDebugLog.info(
-                "${if (strongAbsoluteEvidence) "PASS" else "FAIL"} strong absolute evidence: " +
-                    "matches=${best.matches}/${STRONG_ACCEPT_MATCHES} " +
-                    "residual=${"%.1f".format(best.residualMs)}ms/${"%.0f".format(STRONG_ACCEPT_RESIDUAL_MS)}ms " +
-                    "agreement=${fmt(best.offsetAgreement)}/${fmt(STRONG_ACCEPT_AGREEMENT)} " +
-                    "spacing=${fmt(best.spacingScore)}/${fmt(STRONG_ACCEPT_SPACING)} " +
-                    "margin=${fmt(margin)}/${fmt(STRONG_ACCEPT_MARGIN)}",
-            )
-            checks.forEach { check ->
-                AutoSyncDebugLog.info(
-                    "${if (check.passed) "PASS" else "FAIL"} ${check.name}: ${check.detail}",
-                )
-            }
-
-            AutoSyncDebugLog.info(
-                "DECISION=${if (highConfidence) "ACCEPT" else "REJECT"} track=${track.key}",
-            )
-        }
-
         val result = if (highConfidence && timelineScale != null) {
             AlignmentResult(
                 trackKey = track.key,
@@ -1270,7 +1245,7 @@ internal object AutomaticSubtitleSync {
             null
         }
 
-        return AlignmentAttempt(
+        val attempt = AlignmentAttempt(
             result = result,
             score = best.score,
             offsetMs = best.offsetMs,
@@ -1279,6 +1254,119 @@ internal object AutomaticSubtitleSync {
             timelineScale = timelineScale,
             consecutivePatternMatches = consecutivePatternMatches,
             failedChecks = failedChecks,
+            debugDetails = AlignmentDebugDetails(
+                candidates = candidates,
+                refinements = refinements,
+                best = best,
+                second = second,
+                margin = margin,
+                referenceParticipation = referenceParticipation,
+                normalParticipation = normalParticipation,
+                independentScale = independentScale,
+                strongAbsoluteEvidence = strongAbsoluteEvidence,
+                checks = checks,
+                highConfidence = highConfidence,
+            ),
+        )
+
+        if (logDetails) {
+            logAlignmentAttempt(track, target, attempt)
+        }
+        return attempt
+    }
+
+    private fun logAlignmentAttempt(
+        track: ReferenceTrack,
+        target: List<SubtitleSyncCue>,
+        attempt: AlignmentAttempt,
+    ) {
+        val details = attempt.debugDetails ?: return
+        val reference = track.cues
+        val best = details.best
+        val second = details.second
+        val matchedPairScale = estimateMatchedPairTimelineScale(reference, target, best.pairs)
+        val timelineScale = details.independentScale?.scale
+
+        AutoSyncDebugLog.section(
+            "ALIGN track=${track.key} lang=${track.language ?: "<unknown>"}",
+        )
+        AutoSyncDebugLog.info("candidate offsets=${details.candidates.size}")
+        details.candidates
+            .take(MAX_LOGGED_CANDIDATES)
+            .forEachIndexed { index, candidate ->
+                AutoSyncDebugLog.verbose(
+                    "CANDIDATE[$index] offset=${candidate.offsetMs}ms votes=${candidate.votes}",
+                )
+            }
+        details.refinements.forEach { refinement ->
+            AutoSyncDebugLog.verbose(
+                "REFINE ${refinement.originalOffsetMs}ms -> ${refinement.refinedOffsetMs}ms " +
+                    "using median signed residual=${"%.1f".format(refinement.signedResidualMs)}ms",
+            )
+        }
+
+        AutoSyncDebugLog.info(
+            "BEST offset=${best.offsetMs}ms matches=${best.matches}/${reference.size} " +
+                "participation=${fmt(details.referenceParticipation)} coverage=${fmt(best.referenceCoverage)} " +
+                "medianResidual=${"%.1f".format(best.residualMs)}ms " +
+                "signedResidual=${"%.1f".format(best.signedResidualMs)}ms " +
+                "agreement=${fmt(best.offsetAgreement)} spacing=${fmt(best.spacingScore)} " +
+                "independentScale=${timelineScale?.let { "%.6f".format(it) } ?: "<unavailable>"} " +
+                "matchedPairScale=${matchedPairScale?.let { "%.6f".format(it) } ?: "<unavailable>"} " +
+                "consecutive=${attempt.consecutivePatternMatches} score=${fmt(best.score)}",
+        )
+
+        if (second != null) {
+            AutoSyncDebugLog.info(
+                "SECOND offset=${second.offsetMs}ms matches=${second.matches} " +
+                    "score=${fmt(second.score)} margin=${fmt(details.margin)}",
+            )
+        } else {
+            AutoSyncDebugLog.info("SECOND <none> margin=1.0000")
+        }
+
+        AutoSyncDebugLog.section("BEST MATCHED PAIRS")
+        best.pairs
+            .take(MAX_LOGGED_MATCH_PAIRS)
+            .forEachIndexed { pairIndex, pair ->
+                val ref = reference[pair.referenceIndex]
+                val addon = target[pair.targetIndex]
+
+                AutoSyncDebugLog.verbose("PAIR[$pairIndex]")
+                AutoSyncDebugLog.verbose(
+                    "  EMBEDDED ${AutoSyncDebugLog.formatTimestamp(ref.startTimeMs)} " +
+                        "| \"${logText(ref.text)}\"",
+                )
+                AutoSyncDebugLog.verbose(
+                    "  ADDON    ${AutoSyncDebugLog.formatTimestamp(addon.startTimeMs)} " +
+                        "| \"${logText(addon.text)}\"",
+                )
+                AutoSyncDebugLog.verbose(
+                    "  shifted addon=${AutoSyncDebugLog.formatTimestamp(addon.startTimeMs + best.offsetMs)} " +
+                        "residual=${pair.residualMs}ms",
+                )
+            }
+
+        AutoSyncDebugLog.section("CONFIDENCE")
+        AutoSyncDebugLog.info(
+            "${if (details.normalParticipation) "PASS" else "FAIL"} normal participation: " +
+                "${fmt(details.referenceParticipation)} >= ${fmt(NORMAL_PARTICIPATION_THRESHOLD)}",
+        )
+        AutoSyncDebugLog.info(
+            "${if (details.strongAbsoluteEvidence) "PASS" else "FAIL"} strong absolute evidence: " +
+                "matches=${best.matches}/${STRONG_ACCEPT_MATCHES} " +
+                "residual=${"%.1f".format(best.residualMs)}ms/${"%.0f".format(STRONG_ACCEPT_RESIDUAL_MS)}ms " +
+                "agreement=${fmt(best.offsetAgreement)}/${fmt(STRONG_ACCEPT_AGREEMENT)} " +
+                "spacing=${fmt(best.spacingScore)}/${fmt(STRONG_ACCEPT_SPACING)} " +
+                "margin=${fmt(details.margin)}/${fmt(STRONG_ACCEPT_MARGIN)}",
+        )
+        details.checks.forEach { check ->
+            AutoSyncDebugLog.info(
+                "${if (check.passed) "PASS" else "FAIL"} ${check.name}: ${check.detail}",
+            )
+        }
+        AutoSyncDebugLog.info(
+            "DECISION=${if (details.highConfidence) "ACCEPT" else "REJECT"} track=${track.key}",
         )
     }
 
@@ -1540,13 +1628,23 @@ internal object AutomaticSubtitleSync {
     ): List<CandidateOffset> {
         val buckets = mutableMapOf<Long, Int>()
 
+        // target is already time-ordered (evaluate() relies on the same invariant). Instead of
+        // comparing every sampled reference cue with every target cue, binary-search directly to
+        // the first target that can possibly be within +/-MAX_OFFSET_MS and stop after the window.
+        // This produces exactly the same votes/buckets as the previous full nested scan.
         for (referenceCue in sampleReferenceCuesForOffsetVoting(reference)) {
-            for (targetCue in target) {
-                val difference = referenceCue.startTimeMs - targetCue.startTimeMs
-                if (abs(difference) > MAX_OFFSET_MS) continue
+            val minTargetStart = referenceCue.startTimeMs - MAX_OFFSET_MS
+            val maxTargetStart = referenceCue.startTimeMs + MAX_OFFSET_MS
+            var targetIndex = lowerBoundCueStart(target, minTargetStart)
 
+            while (targetIndex < target.size) {
+                val targetStart = target[targetIndex].startTimeMs
+                if (targetStart > maxTargetStart) break
+
+                val difference = referenceCue.startTimeMs - targetStart
                 val bucket = floorBucket(difference, CANDIDATE_BUCKET_MS)
                 buckets[bucket] = (buckets[bucket] ?: 0) + 1
+                targetIndex++
             }
         }
 
@@ -1560,6 +1658,23 @@ internal object AutomaticSubtitleSync {
 
         return (ranked + CandidateOffset(0L, buckets[0L] ?: 0))
             .distinctBy { it.offsetMs }
+    }
+
+    private fun lowerBoundCueStart(
+        cues: List<SubtitleSyncCue>,
+        targetStartMs: Long,
+    ): Int {
+        var low = 0
+        var high = cues.size
+        while (low < high) {
+            val middle = (low + high) ushr 1
+            if (cues[middle].startTimeMs < targetStartMs) {
+                low = middle + 1
+            } else {
+                high = middle
+            }
+        }
+        return low
     }
 
     private fun evaluate(
@@ -1849,6 +1964,27 @@ internal object AutomaticSubtitleSync {
         val timelineScale: Double? = null,
         val consecutivePatternMatches: Int = 0,
         val failedChecks: List<String> = emptyList(),
+        val debugDetails: AlignmentDebugDetails? = null,
+    )
+
+    private data class AlignmentDebugDetails(
+        val candidates: List<CandidateOffset>,
+        val refinements: List<OffsetRefinement>,
+        val best: Evaluation,
+        val second: Evaluation?,
+        val margin: Double,
+        val referenceParticipation: Double,
+        val normalParticipation: Boolean,
+        val independentScale: IndependentScaleResult?,
+        val strongAbsoluteEvidence: Boolean,
+        val checks: List<ConfidenceCheck>,
+        val highConfidence: Boolean,
+    )
+
+    private data class OffsetRefinement(
+        val originalOffsetMs: Long,
+        val refinedOffsetMs: Long,
+        val signedResidualMs: Double,
     )
 
     private data class ScaleAnchor(

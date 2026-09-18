@@ -178,6 +178,7 @@ internal object EmbeddedSubtitleTimelineLoader {
                     segment = segment,
                 ),
                 totalLength = initial.totalLength,
+                initialBytes = initial.bytes,
             )
         }
         val segmentDataStart = initialMetadata.segmentDataStart
@@ -197,7 +198,12 @@ internal object EmbeddedSubtitleTimelineLoader {
             if (!visitedSeekHeads.add(seekHeadPosition)) continue
             seekHeadHops++
 
-            val seekHeadBytes = fetchElementAt(
+            val seekHeadBytes = extractElementFromInitialProbe(
+                initialBytes = initialMetadata.initialBytes,
+                absolutePosition = seekHeadPosition,
+                expectedId = ID_SEEK_HEAD,
+                maxElementBytes = MAX_SEEK_HEAD_BYTES,
+            ) ?: fetchElementAt(
                 sourceUrl = sourceUrl,
                 sourceHeaders = sourceHeaders,
                 absolutePosition = seekHeadPosition,
@@ -219,7 +225,12 @@ internal object EmbeddedSubtitleTimelineLoader {
         val infoPosition = resolvedPositions[ID_INFO] ?: directPositions[ID_INFO]
         val timestampScaleNs = infoPosition
             ?.let { position ->
-                fetchElementAt(
+                extractElementFromInitialProbe(
+                    initialBytes = initialMetadata.initialBytes,
+                    absolutePosition = position,
+                    expectedId = ID_INFO,
+                    maxElementBytes = MAX_INFO_BYTES,
+                ) ?: fetchElementAt(
                     sourceUrl = sourceUrl,
                     sourceHeaders = sourceHeaders,
                     absolutePosition = position,
@@ -233,26 +244,40 @@ internal object EmbeddedSubtitleTimelineLoader {
 
         val tracksPosition = resolvedPositions[ID_TRACKS] ?: directPositions[ID_TRACKS]
             ?: return null
-        val subtitleTracks = fetchElementAt(
-            sourceUrl = sourceUrl,
-            sourceHeaders = sourceHeaders,
-            absolutePosition = tracksPosition,
-            expectedId = ID_TRACKS,
-            maxElementBytes = MAX_TRACKS_BYTES,
-            stats = stats,
-        )?.let(::parseSubtitleTracks).orEmpty()
+        val subtitleTracks = (
+            extractElementFromInitialProbe(
+                initialBytes = initialMetadata.initialBytes,
+                absolutePosition = tracksPosition,
+                expectedId = ID_TRACKS,
+                maxElementBytes = MAX_TRACKS_BYTES,
+            ) ?: fetchElementAt(
+                sourceUrl = sourceUrl,
+                sourceHeaders = sourceHeaders,
+                absolutePosition = tracksPosition,
+                expectedId = ID_TRACKS,
+                maxElementBytes = MAX_TRACKS_BYTES,
+                stats = stats,
+            )
+            )?.let(::parseSubtitleTracks).orEmpty()
         if (subtitleTracks.isEmpty()) return null
 
         val cuesPosition = resolvedPositions[ID_CUES] ?: directPositions[ID_CUES]
         val parsedCues = if (cuesPosition != null) {
-            fetchElementAt(
-                sourceUrl = sourceUrl,
-                sourceHeaders = sourceHeaders,
-                absolutePosition = cuesPosition,
-                expectedId = ID_CUES,
-                maxElementBytes = MAX_CUES_BYTES,
-                stats = stats,
-            )?.let { cuesBytes ->
+            (
+                extractElementFromInitialProbe(
+                    initialBytes = initialMetadata.initialBytes,
+                    absolutePosition = cuesPosition,
+                    expectedId = ID_CUES,
+                    maxElementBytes = MAX_CUES_BYTES,
+                ) ?: fetchElementAt(
+                    sourceUrl = sourceUrl,
+                    sourceHeaders = sourceHeaders,
+                    absolutePosition = cuesPosition,
+                    expectedId = ID_CUES,
+                    maxElementBytes = MAX_CUES_BYTES,
+                    stats = stats,
+                )
+                )?.let { cuesBytes ->
                 parseSubtitleCueTimelines(
                     cuesElement = cuesBytes,
                     subtitleTracks = subtitleTracks,
@@ -574,6 +599,31 @@ internal object EmbeddedSubtitleTimelineLoader {
         return ticks * timestampScaleNs / 1_000_000L
     }
 
+    /**
+     * Reuse the first 512 KiB probe whenever it already contains a complete metadata element.
+     * Matroska SeekHead/Info/Tracks are commonly near the beginning of the file, so this removes
+     * whole network round-trips without changing parsing or range-request fallback behavior.
+     */
+    private fun extractElementFromInitialProbe(
+        initialBytes: ByteArray,
+        absolutePosition: Long,
+        expectedId: Long,
+        maxElementBytes: Int,
+    ): ByteArray? {
+        if (absolutePosition < 0L || absolutePosition > Int.MAX_VALUE.toLong()) return null
+        val start = absolutePosition.toInt()
+        if (start < 0 || start >= initialBytes.size) return null
+
+        val header = readElement(initialBytes, start, initialBytes.size) ?: return null
+        if (header.id != expectedId || header.size == null) return null
+        val totalSize = header.headerSize.toLong() + header.size
+        if (totalSize <= 0L || totalSize > maxElementBytes.toLong()) return null
+
+        val end = start.toLong() + totalSize
+        if (end > initialBytes.size.toLong() || end > Int.MAX_VALUE.toLong()) return null
+        return initialBytes.copyOfRange(start, end.toInt())
+    }
+
     private fun fetchElementAt(
         sourceUrl: String,
         sourceHeaders: Map<String, String>,
@@ -867,6 +917,7 @@ internal object EmbeddedSubtitleTimelineLoader {
         val segmentDataStart: Long,
         val directPositions: Map<Long, Long>,
         val totalLength: Long?,
+        val initialBytes: ByteArray,
     )
 
     private data class EbmlElement(
