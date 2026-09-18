@@ -310,7 +310,7 @@ internal object AutomaticSubtitleSync {
                     frozenReferenceTracks = orderReferenceProfiles(indexedFullDialogueProfiles).map { profile ->
                         profile.track.copy(cues = profile.track.cues.toList())
                     }
-                    AutoSyncDebugLog.info { "using complete indexed subtitle timelines tracks=${frozenReferenceTracks.size}" }
+                    AutoSyncDebugLog.info { "using complete indexed subtitle timelines tracks=${frozenReferenceTracks?.size ?: 0}" }
                 } else {
                     AutoSyncDebugLog.info { "indexed Cues did not contain a usable full-dialogue timeline; falling back to live Media3 capture" }
                 }
