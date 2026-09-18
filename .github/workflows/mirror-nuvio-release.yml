@@ -1,137 +1,213 @@
-name: Mirror Nuvio Release
+name: AutoSync Release
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "2-57/5 * * * *"
 
 permissions:
   contents: write
 
 concurrency:
-  group: mirror-nuvio-release
+  group: autosync-release
   cancel-in-progress: false
 
 jobs:
-  check:
+  release:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout AutoSync
+      - name: Checkout AutoSync branch
         uses: actions/checkout@v6
         with:
           ref: subtitle-autosync
           fetch-depth: 0
 
       - name: Find latest official Nuvio release
-        id: release
+        id: version
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="$(
-            gh api repos/NuvioMedia/NuvioMobile/releases/latest \
-              --jq '.tag_name'
+          UPSTREAM_TAG="$(
+            gh api repos/NuvioMedia/NuvioMobile/releases \
+              --jq '[.[] | select(.draft == false)][0].tag_name'
           )"
 
-          if [[ -z "$TAG" || "$TAG" == "null" ]]; then
+          if [[ -z "$UPSTREAM_TAG" || "$UPSTREAM_TAG" == "null" ]]; then
             echo "No official Nuvio release found"
             exit 1
           fi
 
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Latest official release: $TAG"
+          AUTOSYNC_TAG="${UPSTREAM_TAG}-autosync"
 
-          if gh release view "$TAG" \
+          echo "upstream_tag=$UPSTREAM_TAG" >> "$GITHUB_OUTPUT"
+          echo "autosync_tag=$AUTOSYNC_TAG" >> "$GITHUB_OUTPUT"
+
+          echo "Official Nuvio release: $UPSTREAM_TAG"
+          echo "AutoSync release: $AUTOSYNC_TAG"
+
+          if gh release view "$AUTOSYNC_TAG" \
               --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "already_exists=true" >> "$GITHUB_OUTPUT"
-            echo "$TAG is already released in AutoSync"
           else
             echo "already_exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Stop if already mirrored
-        if: steps.release.outputs.already_exists == 'true'
+      - name: Nothing new
+        if: steps.version.outputs.already_exists == 'true'
         run: |
-          echo "Nothing to do."
+          echo "${{ steps.version.outputs.autosync_tag }} already exists."
+          echo "Nothing to build."
 
       - name: Configure Git
-        if: steps.release.outputs.already_exists == 'false'
+        if: steps.version.outputs.already_exists == 'false'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Fetch exact official release
-        if: steps.release.outputs.already_exists == 'false'
+      - name: Fetch exact official Nuvio release
+        if: steps.version.outputs.already_exists == 'false'
         env:
-          TAG: ${{ steps.release.outputs.tag }}
+          UPSTREAM_TAG: ${{ steps.version.outputs.upstream_tag }}
         run: |
           git remote remove upstream 2>/dev/null || true
           git remote add upstream https://github.com/NuvioMedia/NuvioMobile.git
 
           git fetch upstream \
-            "refs/tags/$TAG:refs/tags/upstream-$TAG"
+            "refs/tags/$UPSTREAM_TAG:refs/tags/nuvio-$UPSTREAM_TAG"
 
-          git merge --no-edit "refs/tags/upstream-$TAG"
+      - name: Merge official release
+        if: steps.version.outputs.already_exists == 'false'
+        env:
+          UPSTREAM_TAG: ${{ steps.version.outputs.upstream_tag }}
+        run: |
+          git merge --no-edit "refs/tags/nuvio-$UPSTREAM_TAG"
+
+      - name: Read exact Nuvio version code
+        if: steps.version.outputs.already_exists == 'false'
+        id: upstream
+        env:
+          UPSTREAM_TAG: ${{ steps.version.outputs.upstream_tag }}
+        run: |
+          VERSION_FILE="$(
+            git show \
+              "refs/tags/nuvio-$UPSTREAM_TAG:iosApp/Configuration/Version.xcconfig"
+          )"
+
+          VERSION_CODE="$(
+            printf '%s\n' "$VERSION_FILE" |
+            sed -nE \
+              's/^CURRENT_PROJECT_VERSION[[:space:]]*=[[:space:]]*([0-9]+).*$/\1/p' |
+            head -n1
+          )"
+
+          if [[ -z "$VERSION_CODE" ]]; then
+            echo "Could not determine official Nuvio versionCode"
+            exit 1
+          fi
+
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "Official versionCode: $VERSION_CODE"
+
+      - name: Use exact Nuvio version code
+        if: steps.version.outputs.already_exists == 'false'
+        env:
+          VERSION_CODE: ${{ steps.upstream.outputs.version_code }}
+        run: |
+          sed -i -E \
+            "s/^CURRENT_PROJECT_VERSION[[:space:]]*=.*/CURRENT_PROJECT_VERSION=$VERSION_CODE/" \
+            iosApp/Configuration/Version.xcconfig
 
       - name: Set up Java
-        if: steps.release.outputs.already_exists == 'false'
+        if: steps.version.outputs.already_exists == 'false'
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
 
       - name: Set up Gradle
-        if: steps.release.outputs.already_exists == 'false'
+        if: steps.version.outputs.already_exists == 'false'
         uses: gradle/actions/setup-gradle@v6
 
-      - name: Configure AutoSync signing
-        if: steps.release.outputs.already_exists == 'false'
+      - name: Configure release signing
+        if: steps.version.outputs.already_exists == 'false'
         env:
           KEYSTORE_BASE64: ${{ secrets.AUTOSYNC_KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.AUTOSYNC_STORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.AUTOSYNC_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.AUTOSYNC_KEY_PASSWORD }}
         run: |
-          test -n "$KEYSTORE_BASE64"
-          test -n "$STORE_PASSWORD"
-          test -n "$KEY_ALIAS"
-          test -n "$KEY_PASSWORD"
+          if [[ -z "$KEYSTORE_BASE64" ||
+                -z "$STORE_PASSWORD" ||
+                -z "$KEY_ALIAS" ||
+                -z "$KEY_PASSWORD" ]]; then
+            echo "Missing AutoSync signing secret"
+            exit 1
+          fi
 
           KEYSTORE_PATH="$RUNNER_TEMP/autosync-release.jks"
 
           printf '%s' "$KEYSTORE_BASE64" |
             base64 --decode > "$KEYSTORE_PATH"
 
-          cat > local.properties <<PROPS
-          NUVIO_RELEASE_STORE_FILE=$KEYSTORE_PATH
-          NUVIO_RELEASE_STORE_PASSWORD=$STORE_PASSWORD
-          NUVIO_RELEASE_KEY_ALIAS=$KEY_ALIAS
-          NUVIO_RELEASE_KEY_PASSWORD=$KEY_PASSWORD
-          PROPS
+          {
+            echo "NUVIO_RELEASE_STORE_FILE=$KEYSTORE_PATH"
+            echo "NUVIO_RELEASE_STORE_PASSWORD=$STORE_PASSWORD"
+            echo "NUVIO_RELEASE_KEY_ALIAS=$KEY_ALIAS"
+            echo "NUVIO_RELEASE_KEY_PASSWORD=$KEY_PASSWORD"
+          } > local.properties
 
-      - name: Build release with exact Nuvio version
-        if: steps.release.outputs.already_exists == 'false'
+      - name: Build signed AutoSync release APKs
+        if: steps.version.outputs.already_exists == 'false'
         env:
-          TAG: ${{ steps.release.outputs.tag }}
+          AUTOSYNC_TAG: ${{ steps.version.outputs.autosync_tag }}
         run: |
           ./gradlew :androidApp:assembleFullRelease \
-            -Pnuvio.app.versionName="$TAG" \
+            -Pnuvio.app.versionName="$AUTOSYNC_TAG" \
             --stacktrace
 
-      - name: Push merged upstream release
-        if: steps.release.outputs.already_exists == 'false'
+      - name: Show generated APKs
+        if: steps.version.outputs.already_exists == 'false'
+        run: |
+          find androidApp/build/outputs/apk/full/release \
+            -maxdepth 1 \
+            -type f \
+            -name '*.apk' \
+            -print
+
+      - name: Verify APKs exist
+        if: steps.version.outputs.already_exists == 'false'
+        run: |
+          APK_COUNT="$(
+            find androidApp/build/outputs/apk/full/release \
+              -maxdepth 1 \
+              -type f \
+              -name '*.apk' |
+            wc -l
+          )"
+
+          if [[ "$APK_COUNT" -eq 0 ]]; then
+            echo "No release APKs were produced"
+            exit 1
+          fi
+
+          echo "Produced $APK_COUNT APKs"
+
+      - name: Push merged Nuvio release
+        if: steps.version.outputs.already_exists == 'false'
         run: |
           git push origin HEAD:subtitle-autosync
 
-      - name: Create matching GitHub release
-        if: steps.release.outputs.already_exists == 'false'
+      - name: Create AutoSync GitHub release
+        if: steps.version.outputs.already_exists == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag }}
+          UPSTREAM_TAG: ${{ steps.version.outputs.upstream_tag }}
+          AUTOSYNC_TAG: ${{ steps.version.outputs.autosync_tag }}
         run: |
-          gh release create "$TAG" \
+          gh release create "$AUTOSYNC_TAG" \
             androidApp/build/outputs/apk/full/release/*.apk \
             --repo "$GITHUB_REPOSITORY" \
             --target subtitle-autosync \
-            --title "$TAG" \
-            --notes "AutoSync build based on the official Nuvio $TAG release."
+            --title "$AUTOSYNC_TAG" \
+            --notes "AutoSync build based on official Nuvio $UPSTREAM_TAG."
