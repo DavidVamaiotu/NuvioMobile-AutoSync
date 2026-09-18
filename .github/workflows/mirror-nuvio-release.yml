@@ -1,0 +1,137 @@
+name: Mirror Nuvio Release
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mirror-nuvio-release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout AutoSync
+        uses: actions/checkout@v6
+        with:
+          ref: subtitle-autosync
+          fetch-depth: 0
+
+      - name: Find latest official Nuvio release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="$(
+            gh api repos/NuvioMedia/NuvioMobile/releases/latest \
+              --jq '.tag_name'
+          )"
+
+          if [[ -z "$TAG" || "$TAG" == "null" ]]; then
+            echo "No official Nuvio release found"
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Latest official release: $TAG"
+
+          if gh release view "$TAG" \
+              --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "already_exists=true" >> "$GITHUB_OUTPUT"
+            echo "$TAG is already released in AutoSync"
+          else
+            echo "already_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Stop if already mirrored
+        if: steps.release.outputs.already_exists == 'true'
+        run: |
+          echo "Nothing to do."
+
+      - name: Configure Git
+        if: steps.release.outputs.already_exists == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch exact official release
+        if: steps.release.outputs.already_exists == 'false'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/NuvioMedia/NuvioMobile.git
+
+          git fetch upstream \
+            "refs/tags/$TAG:refs/tags/upstream-$TAG"
+
+          git merge --no-edit "refs/tags/upstream-$TAG"
+
+      - name: Set up Java
+        if: steps.release.outputs.already_exists == 'false'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        if: steps.release.outputs.already_exists == 'false'
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Configure AutoSync signing
+        if: steps.release.outputs.already_exists == 'false'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.AUTOSYNC_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.AUTOSYNC_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.AUTOSYNC_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.AUTOSYNC_KEY_PASSWORD }}
+        run: |
+          test -n "$KEYSTORE_BASE64"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+          KEYSTORE_PATH="$RUNNER_TEMP/autosync-release.jks"
+
+          printf '%s' "$KEYSTORE_BASE64" |
+            base64 --decode > "$KEYSTORE_PATH"
+
+          cat > local.properties <<PROPS
+          NUVIO_RELEASE_STORE_FILE=$KEYSTORE_PATH
+          NUVIO_RELEASE_STORE_PASSWORD=$STORE_PASSWORD
+          NUVIO_RELEASE_KEY_ALIAS=$KEY_ALIAS
+          NUVIO_RELEASE_KEY_PASSWORD=$KEY_PASSWORD
+          PROPS
+
+      - name: Build release with exact Nuvio version
+        if: steps.release.outputs.already_exists == 'false'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          ./gradlew :androidApp:assembleFullRelease \
+            -Pnuvio.app.versionName="$TAG" \
+            --stacktrace
+
+      - name: Push merged upstream release
+        if: steps.release.outputs.already_exists == 'false'
+        run: |
+          git push origin HEAD:subtitle-autosync
+
+      - name: Create matching GitHub release
+        if: steps.release.outputs.already_exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          gh release create "$TAG" \
+            androidApp/build/outputs/apk/full/release/*.apk \
+            --repo "$GITHUB_REPOSITORY" \
+            --target subtitle-autosync \
+            --title "$TAG" \
+            --notes "AutoSync build based on the official Nuvio $TAG release."
