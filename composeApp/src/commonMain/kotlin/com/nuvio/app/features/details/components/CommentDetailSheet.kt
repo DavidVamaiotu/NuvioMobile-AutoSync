@@ -114,10 +114,7 @@ fun CommentDetailSheet(
                         modifier = Modifier
                             .size(36.dp)
                             .clip(CircleShape)
-                            .background(
-                                if (canGoBack) MaterialTheme.colorScheme.surfaceVariant
-                                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                            )
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
                             .then(if (canGoBack) Modifier.clickable(onClick = onPrevious) else Modifier),
                         contentAlignment = Alignment.Center,
                     ) {
@@ -140,10 +137,7 @@ fun CommentDetailSheet(
                         modifier = Modifier
                             .size(36.dp)
                             .clip(CircleShape)
-                            .background(
-                                if (canGoForward) MaterialTheme.colorScheme.surfaceVariant
-                                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                            )
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
                             .then(if (canGoForward) Modifier.clickable(onClick = onNext) else Modifier),
                         contentAlignment = Alignment.Center,
                     ) {

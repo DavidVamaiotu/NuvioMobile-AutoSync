@@ -47,6 +47,7 @@ internal fun BoxScope.PlayerPlaybackOverlays(
     initialLoadCompleted: Boolean,
     pausedOverlayVisible: Boolean,
     activeSkipInterval: SkipInterval?,
+    skipsToPostCredits: Boolean,
     skipIntervalDismissed: Boolean,
     controlsVisible: Boolean,
     onSkipInterval: (SkipInterval) -> Unit,
@@ -130,6 +131,7 @@ internal fun BoxScope.PlayerPlaybackOverlays(
     if (!playerControlsLocked) {
         SkipIntroButton(
             interval = if (!initialLoadCompleted || pausedOverlayVisible) null else activeSkipInterval,
+            skipsToPostCredits = skipsToPostCredits,
             dismissed = skipIntervalDismissed,
             controlsVisible = controlsVisible,
             onSkip = {

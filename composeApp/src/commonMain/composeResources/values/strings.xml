@@ -1065,7 +1065,7 @@
     <string name="settings_playback_external_player_forward_subtitles">Forward Subtitles to External Player</string>
     <string name="settings_playback_external_player_forward_subtitles_description">Fetch addon subtitles in your preferred language and pass them to the external player.</string>
     <string name="settings_playback_external_player_send_skip_segments">Send Intro and Outro Timestamps</string>
-    <string name="settings_playback_external_player_send_skip_segments_description">Pass resolved intro and outro skip timestamps to the external player for auto-skipping. Only works in players that support it; other players ignore it.</string>
+    <string name="settings_playback_external_player_send_skip_segments_description">Send all available episode and movie skip timestamps. The external player controls skipping, independently of these settings.</string>
     <string name="settings_playback_external_player_none_available">No supported external players installed</string>
     <string name="settings_playback_player_preference">Player</string>
     <string name="settings_playback_player_preference_internal">Internal</string>
@@ -2306,4 +2306,16 @@
         <item quantity="one">%d title</item>
         <item quantity="other">%d titles</item>
     </plurals>
+    <string name="settings_playback_auto_skip_segments">Automatic Skipping</string>
+    <string name="settings_playback_auto_skip_none">None</string>
+    <string name="settings_playback_auto_skip_intro">Intro / Opening</string>
+    <string name="settings_playback_auto_skip_intro_description">Skip intros and anime openings automatically.</string>
+    <string name="settings_playback_auto_skip_recap">Recap</string>
+    <string name="settings_playback_auto_skip_recap_description">Skip recap segments automatically.</string>
+    <string name="settings_playback_auto_skip_outro">Outro / Ending</string>
+    <string name="settings_playback_auto_skip_outro_description">Skip outros and anime endings automatically.</string>
+    <string name="settings_playback_auto_skip_movie_credits">End Credits</string>
+    <string name="settings_playback_auto_skip_movie_credits_description">Skip movie credits, keeping post-credits scenes.</string>
+    <string name="player_skip_movie_credits">Skip Credits</string>
+    <string name="player_skip_to_post_credits">Skip to Post-Credits</string>
 </resources>

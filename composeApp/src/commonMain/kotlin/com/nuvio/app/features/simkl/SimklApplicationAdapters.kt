@@ -81,6 +81,7 @@ object SimklWatchedSyncAdapter : TrackingWatchedProvider {
                     season = item.season,
                     episode = item.episode,
                     videoId = item.videoId,
+                    posterUrl = item.poster,
                 ),
                 watchedAtEpochMs = item.markedAtEpochMs,
             )

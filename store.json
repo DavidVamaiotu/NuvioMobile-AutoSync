@@ -20,6 +20,16 @@
       "category": "entertainment",
       "versions": [
         {
+          "version": "0.4.23",
+          "buildVersion": "128",
+          "date": "2026-09-17T09:40:44Z",
+          "localizedDescription": "- 542aa570 fix(simkl): retain posters when marking items watched @tapframe  \n- 08bdd629 fix(home): restore wide continue watching sizing @tapframe  \n- [i18n(vi): update latest Vietnamese strings (#1975)](https://github.com/NuvioMedia/NuvioMobile/pull/1975) @blueocean2308  \n- a599340e fix(ui): use filled chips and consistent surface colors @tapframe  \n- [feat(playback): support IntroDB movie segments and external forwarding (#1963)](https://github.com/NuvioMedia/NuvioMobile/pull/1963) @Laskco  \n",
+          "downloadURL": "https://github.com/NuvioMedia/NuvioMobile/releases/download/0.4.23-beta/nuvio-0.4.23-full-release.ipa",
+          "size": 51420909,
+          "sha256": "5b47a730e6467ca18baf39ee2ef589714761fdb4d0ff5b2040800a8c994c1e40",
+          "minOSVersion": "16.1"
+        },
+        {
           "version": "0.4.22",
           "buildVersion": "127",
           "date": "2026-09-16T11:00:33Z",

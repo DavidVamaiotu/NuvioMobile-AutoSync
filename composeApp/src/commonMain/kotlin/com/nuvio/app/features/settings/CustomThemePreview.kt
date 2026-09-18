@@ -45,7 +45,7 @@ internal fun CustomThemePreview(colors: CustomThemeColors) {
         )
         Box(
             modifier = Modifier.fillMaxWidth().clip(tokens.shapes.button)
-                .background(palette.backgroundCard)
+                .background(palette.backgroundElevated)
                 .border(tokens.borders.medium, palette.accentBrush(), tokens.shapes.button)
                 .padding(NuvioTokens.Space.s12),
             contentAlignment = Alignment.Center,

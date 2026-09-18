@@ -60,6 +60,9 @@ actual object PlayerSettingsStorage {
     private const val streamAutoPlayRegexKey = "stream_auto_play_regex"
     private const val streamAutoPlayTimeoutSecondsKey = "stream_auto_play_timeout_seconds"
     private const val skipIntroEnabledKey = "skip_intro_enabled"
+    private const val autoSkipMovieCreditsKey = "auto_skip_movie_credits"
+    private const val autoSkipSegmentTypesKey = "auto_skip_segment_types"
+    private const val autoSkipPostCreditsKey = "auto_skip_post_credits"
     private const val animeSkipEnabledKey = "animeskip_enabled"
     private const val animeSkipClientIdKey = "animeskip_client_id"
     private const val introDbApiKeyKey = "introdb_api_key"
@@ -132,6 +135,9 @@ actual object PlayerSettingsStorage {
         streamAutoPlayRegexKey,
         streamAutoPlayTimeoutSecondsKey,
         skipIntroEnabledKey,
+        autoSkipMovieCreditsKey,
+        autoSkipSegmentTypesKey,
+        autoSkipPostCreditsKey,
         animeSkipEnabledKey,
         animeSkipClientIdKey,
         streamAutoPlayNextEpisodeEnabledKey,
@@ -674,6 +680,39 @@ actual object PlayerSettingsStorage {
         }
     }
 
+    actual fun loadAutoSkipSegmentTypes(): Set<String>? {
+        val defaults = NSUserDefaults.standardUserDefaults
+        val key = ProfileScopedKey.of(autoSkipSegmentTypesKey)
+        return if (defaults.objectForKey(key) != null) {
+            defaults.stringArrayForKey(key)?.filterIsInstance<String>()?.toSet() ?: emptySet()
+        } else null
+    }
+
+    actual fun saveAutoSkipSegmentTypes(types: Set<String>) {
+        NSUserDefaults.standardUserDefaults.setObject(types.toList(), forKey = ProfileScopedKey.of(autoSkipSegmentTypesKey))
+    }
+
+    actual fun loadAutoSkipMovieCredits(): Boolean? {
+        val defaults = NSUserDefaults.standardUserDefaults
+        val key = ProfileScopedKey.of(autoSkipMovieCreditsKey)
+        return if (defaults.objectForKey(key) != null) defaults.boolForKey(key) else null
+    }
+
+    actual fun saveAutoSkipMovieCredits(enabled: Boolean) {
+        NSUserDefaults.standardUserDefaults.setBool(enabled, forKey = ProfileScopedKey.of(autoSkipMovieCreditsKey))
+    }
+
+    actual fun loadAutoSkipPostCredits(): Boolean? {
+        val defaults = NSUserDefaults.standardUserDefaults
+        val key = ProfileScopedKey.of(autoSkipPostCreditsKey)
+        return if (defaults.objectForKey(key) != null) defaults.boolForKey(key) else null
+    }
+
+    actual fun saveAutoSkipPostCredits(enabled: Boolean) {
+        NSUserDefaults.standardUserDefaults.setBool(enabled, forKey = ProfileScopedKey.of(autoSkipPostCreditsKey))
+    }
+
+
     actual fun saveSkipIntroEnabled(enabled: Boolean) {
         NSUserDefaults.standardUserDefaults.setBool(enabled, forKey = ProfileScopedKey.of(skipIntroEnabledKey))
     }
@@ -974,6 +1013,9 @@ actual object PlayerSettingsStorage {
         loadStreamAutoPlayRegex()?.let { put(streamAutoPlayRegexKey, encodeSyncString(it)) }
         loadStreamAutoPlayTimeoutSeconds()?.let { put(streamAutoPlayTimeoutSecondsKey, encodeSyncInt(it)) }
         loadSkipIntroEnabled()?.let { put(skipIntroEnabledKey, encodeSyncBoolean(it)) }
+        loadAutoSkipMovieCredits()?.let { put(autoSkipMovieCreditsKey, encodeSyncBoolean(it)) }
+        loadAutoSkipSegmentTypes()?.let { put(autoSkipSegmentTypesKey, encodeSyncStringSet(it)) }
+        loadAutoSkipPostCredits()?.let { put(autoSkipPostCreditsKey, encodeSyncBoolean(it)) }
         loadAnimeSkipEnabled()?.let { put(animeSkipEnabledKey, encodeSyncBoolean(it)) }
         loadAnimeSkipClientId()?.let { put(animeSkipClientIdKey, encodeSyncString(it)) }
         loadStreamAutoPlayNextEpisodeEnabled()?.let { put(streamAutoPlayNextEpisodeEnabledKey, encodeSyncBoolean(it)) }
@@ -1050,6 +1092,9 @@ actual object PlayerSettingsStorage {
         payload.decodeSyncString(streamAutoPlayRegexKey)?.let(::saveStreamAutoPlayRegex)
         payload.decodeSyncInt(streamAutoPlayTimeoutSecondsKey)?.let(::saveStreamAutoPlayTimeoutSeconds)
         payload.decodeSyncBoolean(skipIntroEnabledKey)?.let(::saveSkipIntroEnabled)
+        payload.decodeSyncBoolean(autoSkipMovieCreditsKey)?.let(::saveAutoSkipMovieCredits)
+        payload.decodeSyncStringSet(autoSkipSegmentTypesKey)?.let(::saveAutoSkipSegmentTypes)
+        payload.decodeSyncBoolean(autoSkipPostCreditsKey)?.let(::saveAutoSkipPostCredits)
         payload.decodeSyncBoolean(animeSkipEnabledKey)?.let(::saveAnimeSkipEnabled)
         payload.decodeSyncString(animeSkipClientIdKey)?.let(::saveAnimeSkipClientId)
         payload.decodeSyncString(introDbApiKeyKey)?.let(::saveIntroDbApiKey)

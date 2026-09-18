@@ -375,7 +375,6 @@ internal fun defaultNuvioThemeTokens(
     val textSecondary = Color(0xFFB8BEC5)
     val textMuted = Color(0xFF969CA3)
     val surface = palette.backgroundElevated
-    val surfaceCard = palette.backgroundCard
     val accent = palette.secondary
     val accentStrong = palette.secondaryVariant
     val borderSubtle = Color(0xFF252A2A).copy(alpha = 0.55f)
@@ -388,10 +387,10 @@ internal fun defaultNuvioThemeTokens(
             backgroundAmoled = Color.Black,
             surface = surface,
             surfaceElevated = surface,
-            surfaceCard = surfaceCard,
+            surfaceCard = surface,
             surfaceSheet = surface,
             surfaceDialog = surface,
-            surfacePopover = surfaceCard,
+            surfacePopover = surface,
             nativeChrome = background,
             textPrimary = textPrimary,
             textSecondary = textSecondary,

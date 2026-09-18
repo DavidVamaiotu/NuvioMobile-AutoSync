@@ -312,7 +312,7 @@ private fun TimeInputRow(
             )
             Surface(
                 shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                color = MaterialTheme.colorScheme.surfaceVariant,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
             ) {
                 BasicTextField(

@@ -95,10 +95,12 @@ internal fun StreamBadgeChip(
     }
     val outlineColorArgb = borderColor.toBadgeColorArgbOrNull()
     val shape = StreamBadgeChipDefaults.shape
-    var chipModifier = modifier.height(size.containerHeight)
-    if (backgroundColorArgb != null) {
-        chipModifier = chipModifier.background(Color(backgroundColorArgb), shape)
-    }
+    var chipModifier = modifier
+        .height(size.containerHeight)
+        .background(
+            color = backgroundColorArgb?.let { Color(it) } ?: MaterialTheme.nuvio.colors.surfacePopover,
+            shape = shape,
+        )
     if (outlineColorArgb != null) {
         chipModifier = chipModifier.border(NuvioTokens.Border.thin, Color(outlineColorArgb), shape)
     }

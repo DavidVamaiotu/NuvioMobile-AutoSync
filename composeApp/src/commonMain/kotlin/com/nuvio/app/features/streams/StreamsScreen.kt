@@ -786,7 +786,7 @@ private fun FilterChip(
         targetValue = if (isSelected) {
             MaterialTheme.colorScheme.primary
         } else {
-            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+            MaterialTheme.colorScheme.surfaceVariant
         },
         animationSpec = tween(durationMillis = 180),
         label = "filter_chip_container",

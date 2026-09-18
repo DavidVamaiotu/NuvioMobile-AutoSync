@@ -2,7 +2,6 @@ package com.nuvio.app.features.library
 
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -789,8 +788,7 @@ private fun LibraryChip(
             .clip(RoundedCornerShape(18.dp))
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(18.dp),
-        color = if (selected) colorScheme.primaryContainer else colorScheme.surfaceContainerLow,
-        border = if (selected) BorderStroke(1.dp, colorScheme.primary.copy(alpha = 0.45f)) else null,
+        color = if (selected) colorScheme.primary else colorScheme.surfaceVariant,
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
@@ -800,7 +798,7 @@ private fun LibraryChip(
             if (loading) {
                 NuvioLoadingIndicator(
                     modifier = Modifier.size(12.dp),
-                    color = colorScheme.primary,
+                    color = if (selected) colorScheme.onPrimary else colorScheme.primary,
                 )
             }
             Text(
@@ -808,7 +806,7 @@ private fun LibraryChip(
                 style = MaterialTheme.typography.labelMedium,
                 color = when {
                     error -> colorScheme.error
-                    selected -> colorScheme.onPrimaryContainer
+                    selected -> colorScheme.onPrimary
                     else -> colorScheme.onSurfaceVariant
                 },
                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
