@@ -51,6 +51,7 @@ import com.nuvio.app.core.ui.withDuplicateSafeLazyKeys
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.addon_title
 import nuvio.composeapp.generated.resources.compose_player_built_in
+import nuvio.composeapp.generated.resources.compose_player_auto_sync
 import nuvio.composeapp.generated.resources.compose_player_fetch_subtitles
 import nuvio.composeapp.generated.resources.compose_player_languages
 import nuvio.composeapp.generated.resources.compose_player_none
@@ -83,6 +84,7 @@ fun SubtitleModal(
     onAutoSyncCapture: () -> Unit,
     onAutoSyncCueSelected: (SubtitleSyncCue) -> Unit,
     onAutoSyncReload: () -> Unit,
+    onAutomaticAutoSync: () -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -281,6 +283,13 @@ fun SubtitleModal(
                                     }
                                 }
                             }
+                        }
+
+                        if (effectiveSelectedAddonSubtitle != null) {
+                            SubtitleRailEmptyState(
+                                text = stringResource(Res.string.compose_player_auto_sync),
+                                onClick = onAutomaticAutoSync,
+                            )
                         }
                     }
 

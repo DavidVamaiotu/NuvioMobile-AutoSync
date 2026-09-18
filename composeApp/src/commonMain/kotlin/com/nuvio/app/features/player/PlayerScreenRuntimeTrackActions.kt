@@ -1,5 +1,7 @@
 package com.nuvio.app.features.player
 
+import com.nuvio.app.features.autosync.AutoSyncPreferencesRepository
+
 internal val PlayerScreenRuntime.subtitleStyle: SubtitleStyleState
     get() = playerSettingsUiState.subtitleStyle
 
@@ -252,6 +254,7 @@ private fun PlayerScreenRuntime.tryAutoSelectPreferredSubtitleFromAvailableTrack
                 selectedSubtitleIndex = -1
                 useCustomSubtitles = true
                 playerController?.setSubtitleUri(primaryAddonMatch.url)
+                maybeAutoSyncPreferredSubtitleAtStart(primaryAddonMatch)
                 return
             }
         }
@@ -313,6 +316,7 @@ private fun PlayerScreenRuntime.tryAutoSelectPreferredSubtitleFromAvailableTrack
         )
         if (selectedMatchesPrimary) {
             preferredSubtitleSelectionApplied = true
+            maybeAutoSyncPreferredSubtitleAtStart(selectedAddon)
             return
         }
     }
@@ -332,10 +336,21 @@ private fun PlayerScreenRuntime.tryAutoSelectPreferredSubtitleFromAvailableTrack
         selectedSubtitleIndex = -1
         useCustomSubtitles = true
         playerController?.setSubtitleUri(addonMatch.url)
+        maybeAutoSyncPreferredSubtitleAtStart(addonMatch)
     } else if (!preferredSubtitleSelectionApplied) {
         disableAutomaticSubtitleSelection()
         preferredSubtitleSelectionApplied = true
     }
+}
+
+
+private fun PlayerScreenRuntime.maybeAutoSyncPreferredSubtitleAtStart(subtitle: AddonSubtitle) {
+    if (isUserExplicitSubtitleSelection) return
+    val controller = playerController ?: return
+    val videoKey = activeVideoId?.takeIf { it.isNotBlank() } ?: activeSourceUrl
+
+    if (!AutoSyncPreferencesRepository.claimStartupRun(hashCode(), videoKey)) return
+    controller.runSubtitleAutoSync(subtitle.url)
 }
 
 private fun PlayerScreenRuntime.disableAutomaticSubtitleSelection() {

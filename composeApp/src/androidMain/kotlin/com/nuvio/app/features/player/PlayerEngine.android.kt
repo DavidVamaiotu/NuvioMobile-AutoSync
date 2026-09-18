@@ -811,103 +811,6 @@ private fun ExoPlayerSurface(
                         autoSyncApplyingSubtitleUrl = null
                     } else {
                         automaticSubtitleSyncJob?.cancel()
-                        val subtitleHeaders = externalSubtitles.firstOrNull { it.url == url }?.headers.orEmpty()
-                        automaticSubtitleSyncJob = coroutineScope.launch {
-                            Toast.makeText(
-                                context,
-                                "Auto Sync: waiting for embedded subtitles…",
-                                Toast.LENGTH_SHORT,
-                            ).show()
-                            val recommendation = AutomaticSubtitleSync.findBestSubtitleRecommendation(
-                                sourceKey = sourceUrl,
-                                sourceHeaders = sanitizedSourceHeaders,
-                                selectedSubtitleUrl = url,
-                                selectedSubtitleHeaders = subtitleHeaders,
-                                streamSubtitles = externalSubtitles,
-                                preferredLanguage = playerSettings.preferredSubtitleLanguage,
-                                onReferenceReady = {
-                                    Toast.makeText(
-                                        context,
-                                        "Auto Sync: comparing same-language subtitles…",
-                                        Toast.LENGTH_SHORT,
-                                    ).show()
-                                },
-                            )
-                            if (recommendation == null) {
-                                val copied = AutoSyncDebugLog.finishAndCopy(
-                                    context = context,
-                                    decision = "REJECT - couldn't find a reliable same-language subtitle",
-                                )
-                                Toast.makeText(
-                                    context,
-                                    if (copied) {
-                                        "Auto Sync: no reliable subtitle match — debug log copied"
-                                    } else {
-                                        "Auto Sync: couldn't find a reliable subtitle match"
-                                    },
-                                    Toast.LENGTH_LONG,
-                                ).show()
-                                return@launch
-                            }
-
-                            val correctionMs = recommendation.correctionMs
-                                .coerceIn(SUBTITLE_DELAY_MIN_MS, SUBTITLE_DELAY_MAX_MS)
-                            val switchedSubtitle = !recommendation.isCurrentSubtitle
-
-                            // AutoSync corrections are absolute for the winning subtitle. Do not add the
-                            // previous subtitle's AutoSync delay, otherwise changing winners compounds delays.
-                            if (switchedSubtitle) {
-                                autoSyncApplyingSubtitleUrl = recommendation.url
-                                setSubtitleUri(recommendation.url)
-                            }
-                            subtitleDelayMs = correctionMs
-                            autoSyncAppliedListener?.invoke(recommendation.url, correctionMs)
-                            AutoSyncDebugLog.info(
-                                "AUTO APPLY switched=$switchedSubtitle correction=${correctionMs}ms final=${subtitleDelayMs}ms",
-                            )
-
-                            val subtitleListNumber = run {
-                                val visibleAddonSubtitles = mergeStreamAndAddonSubtitles(
-                                    SubtitleRepository.addonSubtitles.value,
-                                    externalSubtitles,
-                                )
-                                val recommendedAddon = visibleAddonSubtitles
-                                    .firstOrNull { it.url == recommendation.url }
-                                    ?: return@run null
-                                val recommendationLanguageKey = subtitleLanguageKey(recommendedAddon.language)
-                                buildSubtitleSelectionOptions(
-                                    languageKey = recommendationLanguageKey,
-                                    subtitleTracks = exoPlayer.extractSubtitleTracks(context),
-                                    addonSubtitles = visibleAddonSubtitles,
-                                ).indexOfFirst { option ->
-                                    option is SubtitleSelectionOption.Addon &&
-                                        option.subtitle.url == recommendation.url
-                                }.takeIf { it >= 0 }?.plus(1)
-                            }
-                            val toastSubtitleLabel = subtitleListNumber
-                                ?.let { "#$it" }
-                                ?: recommendation.displayName.take(24)
-                            val delayLabel = "%+.2fs".format(correctionMs / 1000.0)
-
-                            AutoSyncDebugLog.finishAndCopy(
-                                context = context,
-                                decision =
-                                    "APPLIED list=${subtitleListNumber ?: "<unknown>"} " +
-                                        "name=${recommendation.displayName} switched=$switchedSubtitle " +
-                                        "correction=${correctionMs}ms finalDelay=${subtitleDelayMs}ms",
-                            )
-                            Toast.makeText(
-                                context,
-                                "Auto Sync: $toastSubtitleLabel selected • $delayLabel",
-                                Toast.LENGTH_LONG,
-                            ).show()
-                            Log.i(
-                                TAG,
-                                "Automatic subtitle applied list=${subtitleListNumber ?: "<unknown>"} " +
-                                    "name=${recommendation.displayName} correction=${correctionMs}ms " +
-                                    "switched=$switchedSubtitle",
-                            )
-                        }
                     }
 
                     if (sidecarController.canAttachAddonSubtitleViaSidecar(url, useLibass)) {
@@ -965,6 +868,113 @@ private fun ExoPlayerSurface(
                         exoPlayer.prepare()
                         exoPlayer.playWhenReady = wasPlaying
                         Log.d(TAG, "setSubtitleUri: prepare() called, waiting for STATE_READY")
+                    }
+                }
+
+                override fun runSubtitleAutoSync(url: String) {
+                    automaticSubtitleSyncJob?.cancel()
+                    val subtitleHeaders = externalSubtitles.firstOrNull { it.url == url }?.headers.orEmpty()
+                    automaticSubtitleSyncJob = coroutineScope.launch {
+                        Toast.makeText(
+                            context,
+                            "Auto Sync: waiting for embedded subtitles…",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                        val recommendation = AutomaticSubtitleSync.findBestSubtitleRecommendation(
+                            sourceKey = sourceUrl,
+                            sourceHeaders = sanitizedSourceHeaders,
+                            selectedSubtitleUrl = url,
+                            selectedSubtitleHeaders = subtitleHeaders,
+                            streamSubtitles = externalSubtitles,
+                            preferredLanguage = playerSettings.preferredSubtitleLanguage,
+                            onReferenceReady = {
+                                Toast.makeText(
+                                    context,
+                                    "Auto Sync: comparing same-language subtitles…",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            },
+                        )
+                        if (recommendation == null) {
+                            val copied = AutoSyncDebugLog.finishAndCopy(
+                                context = context,
+                                decision = "REJECT - couldn't find a reliable same-language subtitle",
+                            )
+                            Toast.makeText(
+                                context,
+                                if (copied) {
+                                    "Auto Sync: no reliable subtitle match — debug log copied"
+                                } else {
+                                    "Auto Sync: couldn't find a reliable subtitle match"
+                                },
+                                Toast.LENGTH_LONG,
+                            ).show()
+                            return@launch
+                        }
+
+                        val rawCorrectionMs = recommendation.correctionMs
+                            .coerceIn(SUBTITLE_DELAY_MIN_MS, SUBTITLE_DELAY_MAX_MS)
+                        val correctionMs = (
+                            (rawCorrectionMs / SUBTITLE_DELAY_STEP_MS.toDouble()).roundToInt() *
+                                SUBTITLE_DELAY_STEP_MS
+                            ).coerceIn(SUBTITLE_DELAY_MIN_MS, SUBTITLE_DELAY_MAX_MS)
+                        val switchedSubtitle = !recommendation.isCurrentSubtitle
+
+                        // Matcher stays millisecond-precise. Only the value applied to the player/UI is
+                        // quantized to the same 100 ms steps used by the subtitle delay controls.
+                        if (switchedSubtitle) {
+                            autoSyncApplyingSubtitleUrl = recommendation.url
+                            setSubtitleUri(recommendation.url)
+                        }
+                        subtitleDelayMs = correctionMs
+                        autoSyncAppliedListener?.invoke(recommendation.url, correctionMs)
+                        AutoSyncDebugLog.info(
+                            "AUTO APPLY switched=$switchedSubtitle rawCorrection=${rawCorrectionMs}ms " +
+                                "correction=${correctionMs}ms final=${subtitleDelayMs}ms",
+                        )
+
+                        val subtitleListNumber = run {
+                            val visibleAddonSubtitles = mergeStreamAndAddonSubtitles(
+                                SubtitleRepository.addonSubtitles.value,
+                                externalSubtitles,
+                            )
+                            val recommendedAddon = visibleAddonSubtitles
+                                .firstOrNull { it.url == recommendation.url }
+                                ?: return@run null
+                            val recommendationLanguageKey = subtitleLanguageKey(recommendedAddon.language)
+                            buildSubtitleSelectionOptions(
+                                languageKey = recommendationLanguageKey,
+                                subtitleTracks = exoPlayer.extractSubtitleTracks(context),
+                                addonSubtitles = visibleAddonSubtitles,
+                            ).indexOfFirst { option ->
+                                option is SubtitleSelectionOption.Addon &&
+                                    option.subtitle.url == recommendation.url
+                            }.takeIf { it >= 0 }?.plus(1)
+                        }
+                        val toastSubtitleLabel = subtitleListNumber
+                            ?.let { "#$it" }
+                            ?: recommendation.displayName.take(24)
+                        val delayLabel = "%+.2fs".format(correctionMs / 1000.0)
+
+                        AutoSyncDebugLog.finishAndCopy(
+                            context = context,
+                            decision =
+                                "APPLIED list=${subtitleListNumber ?: "<unknown>"} " +
+                                    "name=${recommendation.displayName} switched=$switchedSubtitle " +
+                                    "rawCorrection=${rawCorrectionMs}ms correction=${correctionMs}ms " +
+                                    "finalDelay=${subtitleDelayMs}ms",
+                        )
+                        Toast.makeText(
+                            context,
+                            "Auto Sync: $toastSubtitleLabel selected • $delayLabel",
+                            Toast.LENGTH_LONG,
+                        ).show()
+                        Log.i(
+                            TAG,
+                            "Automatic subtitle applied list=${subtitleListNumber ?: "<unknown>"} " +
+                                "name=${recommendation.displayName} rawCorrection=${rawCorrectionMs}ms " +
+                                "correction=${correctionMs}ms switched=$switchedSubtitle",
+                        )
                     }
                 }
 

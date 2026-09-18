@@ -54,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.addons.enabledAddons
+import com.nuvio.app.features.autosync.AutoSyncPreferencesRepository
 import com.nuvio.app.features.player.AndroidLibmpvVideoOutput
 import com.nuvio.app.features.player.AndroidPlaybackEngine
 import com.nuvio.app.features.player.AudioLanguageOption
@@ -322,6 +323,10 @@ private fun PlaybackSettingsSection(
     var p2pCacheClearFailed by remember { mutableStateOf(false) }
     val pluginsEnabled = AppFeaturePolicy.pluginsEnabled
     val autoPlayPlayerSettings by PlayerSettingsRepository.uiState.collectAsStateWithLifecycle()
+    val preferredSubtitleAutoSyncOnStart by remember {
+        AutoSyncPreferencesRepository.ensureLoaded()
+        AutoSyncPreferencesRepository.preferredSubtitleAutoSyncOnStart
+    }.collectAsStateWithLifecycle()
     val p2pSettings by remember {
         P2pSettingsRepository.ensureLoaded()
         P2pSettingsRepository.uiState
@@ -513,6 +518,16 @@ private fun PlaybackSettingsSection(
                     isTablet = isTablet,
                     onClick = { showSecondarySubtitleDialog = true },
                 )
+                if (!isIos) {
+                    SettingsGroupDivider(isTablet = isTablet)
+                    SettingsSwitchRow(
+                        title = stringResource(Res.string.compose_player_auto_sync),
+                        checked = preferredSubtitleAutoSyncOnStart,
+                        enabled = otherSubtitleOptionsEnabled,
+                        isTablet = isTablet,
+                        onCheckedChange = AutoSyncPreferencesRepository::setPreferredSubtitleAutoSyncOnStart,
+                    )
+                }
                 SettingsGroupDivider(isTablet = isTablet)
                 SettingsSwitchRow(
                     title = stringResource(Res.string.settings_playback_subtitle_strip_sdh),
