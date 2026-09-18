@@ -1,0 +1,56 @@
+name: Sync Nuvio Upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: autosync-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout AutoSync branch
+        uses: actions/checkout@v6
+        with:
+          ref: subtitle-autosync
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch official Nuvio
+        run: |
+          git remote add upstream https://github.com/NuvioMedia/NuvioMobile.git
+          git fetch upstream cmp-rewrite
+
+      - name: Merge upstream
+        run: |
+          git merge --no-edit upstream/cmp-rewrite
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Create local properties
+        run: touch local.properties
+
+      - name: Test merged AutoSync
+        run: ./gradlew :androidApp:assembleFullDebug --stacktrace
+
+      - name: Push merge to AutoSync branch
+        run: git push origin HEAD:subtitle-autosync
