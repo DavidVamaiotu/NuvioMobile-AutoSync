@@ -39,4 +39,26 @@ class VersionUtilsTest {
     fun `current beta naming is recognized as prerelease`() {
         assertTrue(VersionUtils.isPrerelease("0.8.12-beta"))
     }
+
+    @Test
+    fun `autosync suffix does not affect version precedence`() {
+        assertTrue(
+            VersionUtils.isRemoteNewer(
+                "0.4.24-beta-autosync",
+                "0.4.23-beta-autosync",
+            )
+        )
+        assertFalse(
+            VersionUtils.isRemoteNewer(
+                "0.4.23-beta-autosync",
+                "0.4.23-beta-autosync",
+            )
+        )
+    }
+
+    @Test
+    fun `autosync suffix preserves beta and stable channels`() {
+        assertTrue(VersionUtils.isPrerelease("0.4.24-beta-autosync"))
+        assertFalse(VersionUtils.isPrerelease("0.4.24-autosync"))
+    }
 }
