@@ -33,7 +33,15 @@ jobs:
         uses: gradle/actions/setup-gradle@v6
 
       - name: Create local properties
-        run: touch local.properties
+        run: |
+          cat > local.properties <<'EOF'
+          SIMKL_CLIENT_ID=a0b848cdb58e2e743c8efbce94edc7ca5124cc66f6f793bb91ee1f0470948096
+          SIMKL_REDIRECT_URI=nuvio://auth/simkl
+          SIMKL_APP_NAME=nuvio
+          INTRODB_API_URL=https://api.introdb.app/
+          IMDB_RATINGS_API_BASE_URL=https://seriesgraph.com/
+          IMDB_TAPFRAME_API_BASE_URL=https://imdb.tapframe.space/
+          EOF
 
       - name: Build full debug APK
         run: ./gradlew :androidApp:assembleFullDebug --stacktrace

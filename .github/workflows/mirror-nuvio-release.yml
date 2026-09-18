@@ -160,6 +160,14 @@ jobs:
             echo "NUVIO_RELEASE_STORE_PASSWORD=$STORE_PASSWORD"
             echo "NUVIO_RELEASE_KEY_ALIAS=$KEY_ALIAS"
             echo "NUVIO_RELEASE_KEY_PASSWORD=$KEY_PASSWORD"
+
+            # Public Nuvio integration configuration
+            echo "SIMKL_CLIENT_ID=a0b848cdb58e2e743c8efbce94edc7ca5124cc66f6f793bb91ee1f0470948096"
+            echo "SIMKL_REDIRECT_URI=nuvio://auth/simkl"
+            echo "SIMKL_APP_NAME=nuvio"
+            echo "INTRODB_API_URL=https://api.introdb.app/"
+            echo "IMDB_RATINGS_API_BASE_URL=https://seriesgraph.com/"
+            echo "IMDB_TAPFRAME_API_BASE_URL=https://imdb.tapframe.space/"
           } > local.properties
 
       - name: Build signed AutoSync release APKs
