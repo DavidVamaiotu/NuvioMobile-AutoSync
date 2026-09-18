@@ -513,6 +513,23 @@ internal object AutomaticSubtitleSync {
                 return@supervisorScope cached.toRecommendation(selectedSubtitleUrl)
             }
 
+            val referenceTimingGroups = groupEquivalentReferenceTimelines(referenceTracks)
+            AutoSyncDebugLog.section("REFERENCE TIMING DEDUPLICATION")
+            AutoSyncDebugLog.info(
+                "reference timing timelines=${referenceTimingGroups.size}/${referenceTracks.size} " +
+                    "duplicatesSaved=${referenceTracks.size - referenceTimingGroups.size}",
+            )
+            referenceTimingGroups
+                .filter { it.members.size > 1 }
+                .forEachIndexed { index, group ->
+                    AutoSyncDebugLog.info(
+                        "referenceTiming[$index] reused=${group.members.size} tracks=" +
+                            group.members.joinToString(",") { track ->
+                                "${track.key}:${track.language ?: "<unknown>"}"
+                            },
+                    )
+                }
+
             AutoSyncDebugLog.section("CANDIDATE MATCH SUMMARY")
             val parsedCandidates = mutableListOf<ParsedSubtitleCandidate>()
             val timingBuckets =
@@ -631,7 +648,7 @@ internal object AutomaticSubtitleSync {
                                     state = state,
                                     deferred = async(Dispatchers.Default) {
                                         matchSemaphore.withPermit {
-                                            matchCandidateAgainstReferences(parsed, referenceTracks)
+                                            matchCandidateAgainstReferences(parsed, referenceTimingGroups)
                                         }
                                     },
                                 )
@@ -797,6 +814,55 @@ internal object AutomaticSubtitleSync {
         }
     }
 
+    private fun groupEquivalentReferenceTimelines(
+        referenceTracks: List<ReferenceTrack>,
+    ): List<ReferenceTimingGroup> {
+        val buckets = linkedMapOf<ReferenceTimingFingerprint, MutableList<ReferenceTimingGroup>>()
+        referenceTracks.forEach { track ->
+            val fingerprint = referenceTimingFingerprint(track.cues)
+            val bucket = buckets.getOrPut(fingerprint) { mutableListOf() }
+            val exactGroup = bucket.firstOrNull { group ->
+                sameReferenceTiming(group.members.first().cues, track.cues)
+            }
+            if (exactGroup != null) {
+                exactGroup.members += track
+            } else {
+                bucket += ReferenceTimingGroup(
+                    fingerprint = fingerprint,
+                    members = mutableListOf(track),
+                )
+            }
+        }
+        return buckets.values.flatten()
+    }
+
+    private fun referenceTimingFingerprint(
+        cues: List<SubtitleSyncCue>,
+    ): ReferenceTimingFingerprint {
+        var timingHash = 1_125_899_906_842_597L
+        for (cue in cues) {
+            // AutoSync's alignment model is based on cue start times; cue end times do not
+            // participate in offset, spacing, scale, or consecutive-pattern matching.
+            timingHash = timingHash * 31L + cue.startTimeMs
+        }
+        return ReferenceTimingFingerprint(
+            cueCount = cues.size,
+            firstStartMs = cues.firstOrNull()?.startTimeMs ?: -1L,
+            lastStartMs = cues.lastOrNull()?.startTimeMs ?: -1L,
+            timingHash = timingHash,
+        )
+    }
+
+    private fun sameReferenceTiming(
+        left: List<SubtitleSyncCue>,
+        right: List<SubtitleSyncCue>,
+    ): Boolean {
+        if (left.size != right.size) return false
+        return left.indices.all { index ->
+            left[index].startTimeMs == right[index].startTimeMs
+        }
+    }
+
     private fun groupEquivalentCandidateTimelines(
         parsedCandidates: List<ParsedSubtitleCandidate>,
     ): List<CandidateTimingGroup> {
@@ -848,32 +914,45 @@ internal object AutomaticSubtitleSync {
 
     private fun matchCandidateAgainstReferences(
         parsed: ParsedSubtitleCandidate,
-        referenceTracks: List<ReferenceTrack>,
+        referenceTimingGroups: List<ReferenceTimingGroup>,
     ): CandidateReferenceSummary {
         val attempts = mutableListOf<Pair<ReferenceTrack, AlignmentAttempt>>()
         var bestAccepted: CandidateMatch? = null
         var winningAttempt: AlignmentAttempt? = null
 
-        for (batch in referenceTracks.chunked(REFERENCE_MATCH_BATCH_SIZE)) {
-            for (track in batch) {
-                val attempt = attemptAlignment(
-                    track = track,
+        for (batch in referenceTimingGroups.chunked(REFERENCE_MATCH_BATCH_SIZE)) {
+            for (group in batch) {
+                val representative = group.members.first()
+                val representativeAttempt = attemptAlignment(
+                    track = representative,
                     target = parsed.cues,
                     logDetails = false,
                 )
-                // Detailed evaluation/pair data is needed only for the current winner's verbose log.
-                // Strip it from the all-attempts list so large candidate sets do not retain it all.
-                attempts += track to attempt.copy(debugDetails = null)
-                val alignment = attempt.result ?: continue
-                val match = CandidateMatch(
-                    parsed = parsed,
-                    track = track,
-                    alignment = alignment,
-                )
-                val previousBest = bestAccepted
-                if (previousBest == null || candidateMatchComparator.compare(match, previousBest) < 0) {
-                    bestAccepted = match
-                    winningAttempt = attempt
+
+                group.members.forEachIndexed { memberIndex, track ->
+                    val attempt = if (memberIndex == 0) {
+                        representativeAttempt
+                    } else {
+                        representativeAttempt.forEquivalentReferenceTrack(track)
+                    }
+
+                    // Preserve one logical attempt per embedded track for diagnostics/ranking,
+                    // while the expensive timing calculation above ran only once for the group.
+                    attempts += track to attempt.copy(debugDetails = null)
+                    val alignment = attempt.result ?: return@forEachIndexed
+                    val match = CandidateMatch(
+                        parsed = parsed,
+                        track = track,
+                        alignment = alignment,
+                    )
+                    val previousBest = bestAccepted
+                    if (
+                        previousBest == null ||
+                        candidateMatchComparator.compare(match, previousBest) < 0
+                    ) {
+                        bestAccepted = match
+                        winningAttempt = attempt
+                    }
                 }
             }
 
@@ -902,6 +981,15 @@ internal object AutomaticSubtitleSync {
             attempts = attempts,
         )
     }
+
+    private fun AlignmentAttempt.forEquivalentReferenceTrack(
+        track: ReferenceTrack,
+    ): AlignmentAttempt = copy(
+        result = result?.copy(
+            trackKey = track.key,
+            language = track.language,
+        ),
+    )
 
     private val candidateMatchComparator: Comparator<CandidateMatch> =
         compareByDescending<CandidateMatch> { adjustedAlignmentScore(it) }
@@ -2229,6 +2317,18 @@ internal object AutomaticSubtitleSync {
 
     private data class CachedParsedSubtitle(
         val cues: List<SubtitleSyncCue>,
+    )
+
+    private data class ReferenceTimingFingerprint(
+        val cueCount: Int,
+        val firstStartMs: Long,
+        val lastStartMs: Long,
+        val timingHash: Long,
+    )
+
+    private data class ReferenceTimingGroup(
+        val fingerprint: ReferenceTimingFingerprint,
+        val members: MutableList<ReferenceTrack>,
     )
 
     private data class CandidateTimingFingerprint(
