@@ -142,7 +142,7 @@ internal object AutoSyncDebugLog {
             )
             true
         }.getOrElse {
-            error("clipboard copy failed", it)
+            error(it) { "clipboard copy failed" }
             false
         }
 
