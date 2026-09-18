@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: autosync-upstream-sync
+  group: autosync-branch-update
   cancel-in-progress: false
 
 jobs:
