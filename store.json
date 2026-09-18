@@ -20,6 +20,16 @@
       "category": "entertainment",
       "versions": [
         {
+          "version": "0.4.24",
+          "buildVersion": "129",
+          "date": "2026-09-18T16:34:38Z",
+          "localizedDescription": "- 89223c92 fix(player): remove extra bottom padding on ios @tapframe  \n- 042144f8 fix(player): remember brightness across playback sessions @tapframe  \n- 2a3bb965 fix(player): reset auto-hide timer on control interactions @tapframe  \n- 6cbc9441 feat(player): add runtime toggle and adjust control overflow @tapframe  \n- 4bc0ec42 feat(player): update gesture indicators for new layout @tapframe  \n- 4c3bd0d0 feat(player): follow design parity @tapframe  \n- 6fb46976 feat(settings): add rating visibility controls @tapframe  \n",
+          "downloadURL": "https://github.com/NuvioMedia/NuvioMobile/releases/download/0.4.24-beta/nuvio-0.4.24-full-release.ipa",
+          "size": 51517735,
+          "sha256": "89c458d16340437f9923a0d8e81c5fa6d4ae77be9db5c0f614e73f4ae792b042",
+          "minOSVersion": "16.1"
+        },
+        {
           "version": "0.4.23",
           "buildVersion": "128",
           "date": "2026-09-17T09:40:44Z",
