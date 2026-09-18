@@ -2223,4 +2223,12 @@
         <item quantity="one">%d τίτλος</item>
         <item quantity="other">%d τίτλοι</item>
     </plurals>
+    <string name="layout_overall_ratings">Συνολικές βαθμολογίες</string>
+    <string name="layout_overall_ratings_sub_on">Οι τυπικές βαθμολογίες και οι βαθμολογίες TMDB εμφανίζονται.</string>
+    <string name="layout_overall_ratings_sub_off">Οι τυπικές βαθμολογίες και οι βαθμολογίες TMDB είναι κρυμμένες. Οι ρυθμίσεις παρόχου MDBList έχουν προτεραιότητα στις σελίδες λεπτομερειών.</string>
+    <string name="layout_episode_ratings">Βαθμολογίες επεισοδίων</string>
+    <string name="layout_episode_ratings_sub">Επιλέξτε ποιες βαθμολογίες επεισοδίων είναι ορατές.</string>
+    <string name="layout_ratings_show">Εμφάνιση</string>
+    <string name="layout_ratings_hide">Απόκρυψη</string>
+    <string name="layout_ratings_hide_unwatched">Απόκρυψη μη προβληθέντων</string>
 </resources>

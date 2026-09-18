@@ -2302,4 +2302,12 @@
         <item quantity="one">%d tiêu đề</item>
         <item quantity="other">%d tiêu đề</item>
     </plurals>
+    <string name="layout_overall_ratings">Điểm đánh giá tổng thể</string>
+    <string name="layout_overall_ratings_sub_on">Điểm đánh giá Tiêu chuẩn và TMDB đang được hiển thị.</string>
+    <string name="layout_overall_ratings_sub_off">Ẩn điểm đánh giá Tiêu chuẩn và TMDB. Các cài đặt của nhà cung cấp MDBList sẽ được ưu tiên áp dụng trên các trang chi tiết phim.</string>
+    <string name="layout_episode_ratings">Điểm đánh giá tập phim</string>
+    <string name="layout_episode_ratings_sub">Chọn các điểm đánh giá tập phim được hiển thị.</string>
+    <string name="layout_ratings_show">Hiển thị</string>
+    <string name="layout_ratings_hide">Ẩn</string>
+    <string name="layout_ratings_hide_unwatched">Ẩn mục Chưa xem</string>
 </resources>
