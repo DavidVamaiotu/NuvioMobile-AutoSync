@@ -47,6 +47,17 @@ internal object AutomaticSubtitleSync {
     private const val REFERENCE_DEDUP_WINDOW_MS = 125L
 
     private const val NORMAL_PARTICIPATION_THRESHOLD = 0.55
+    private const val TARGET_PARTICIPATION_THRESHOLD = 0.75
+    private const val MIN_ASYMMETRIC_TARGET_CUES = 40
+    private const val MIN_ASYMMETRIC_SPAN_RATIO = 0.65
+    private const val MIN_ASYMMETRIC_TARGET_DENSITY_PER_MINUTE = 1.5
+
+    private const val UNIT_SCALE_FALLBACK_MIN_MATCHES = 40
+    private const val UNIT_SCALE_FALLBACK_MIN_TARGET_PARTICIPATION = 0.90
+    private const val UNIT_SCALE_FALLBACK_MIN_REFERENCE_COVERAGE = 0.75
+    private const val UNIT_SCALE_FALLBACK_MIN_SCORE = 0.70
+    private const val UNIT_SCALE_FALLBACK_MIN_CONSECUTIVE = 20
+
     private const val STRONG_ACCEPT_MATCHES = 20
     private const val STRONG_ACCEPT_RESIDUAL_MS = 250.0
     private const val STRONG_ACCEPT_AGREEMENT = 0.80
@@ -947,7 +958,7 @@ internal object AutomaticSubtitleSync {
 
         return !isSdhReferenceTrack(match.track) &&
             adjustedAlignmentScore(match) >= EARLY_CANDIDATE_ACCEPT_SCORE &&
-            details.referenceParticipation >= EARLY_CANDIDATE_ACCEPT_PARTICIPATION &&
+            details.effectiveParticipation >= EARLY_CANDIDATE_ACCEPT_PARTICIPATION &&
             match.alignment.residualMs <= EARLY_CANDIDATE_ACCEPT_RESIDUAL_MS &&
             details.margin >= EARLY_CANDIDATE_ACCEPT_MARGIN &&
             attempt.consecutivePatternMatches >= EARLY_CANDIDATE_ACCEPT_CONSECUTIVE &&
@@ -1307,28 +1318,66 @@ internal object AutomaticSubtitleSync {
         }
 
         val referenceParticipation = best.matches.toDouble() / reference.size
-        val normalParticipation = referenceParticipation >= NORMAL_PARTICIPATION_THRESHOLD
+        val targetParticipation = best.matches.toDouble() / target.size
+        val asymmetricTargetEligible = isAsymmetricTargetParticipationEligible(reference, target)
+        val effectiveParticipation = if (asymmetricTargetEligible) {
+            max(referenceParticipation, targetParticipation)
+        } else {
+            referenceParticipation
+        }
+        val normalParticipation =
+            referenceParticipation >= NORMAL_PARTICIPATION_THRESHOLD ||
+                (asymmetricTargetEligible &&
+                    targetParticipation >= TARGET_PARTICIPATION_THRESHOLD)
+
+        val consecutivePatternMatches = longestConsecutivePatternRun(reference, target, best.pairs)
+        val strongConstantOffsetEvidence =
+            asymmetricTargetEligible &&
+                best.matches >= UNIT_SCALE_FALLBACK_MIN_MATCHES &&
+                targetParticipation >= UNIT_SCALE_FALLBACK_MIN_TARGET_PARTICIPATION &&
+                best.referenceCoverage >= UNIT_SCALE_FALLBACK_MIN_REFERENCE_COVERAGE &&
+                best.score >= UNIT_SCALE_FALLBACK_MIN_SCORE &&
+                consecutivePatternMatches >= UNIT_SCALE_FALLBACK_MIN_CONSECUTIVE
+
         val independentScale = estimateIndependentTimelineScale(
             reference = reference,
             target = target,
             expectedOffsetMs = best.offsetMs,
         )
-        val timelineScale = independentScale?.scale
+        val independentTimelineScale = independentScale?.scale
         val matchedPairScale = estimateMatchedPairTimelineScale(reference, target, best.pairs)
-        val scaleDisagreement = if (timelineScale != null && matchedPairScale != null) {
-            abs(timelineScale - matchedPairScale)
+        val scaleDisagreement = if (independentTimelineScale != null && matchedPairScale != null) {
+            abs(independentTimelineScale - matchedPairScale)
         } else {
             0.0
         }
-        val scaleCompatible = timelineScale != null &&
-            abs(timelineScale - 1.0) <= MAX_TIMELINE_SCALE_DEVIATION &&
-            (matchedPairScale == null ||
-                abs(matchedPairScale - 1.0) <= MAX_TIMELINE_SCALE_DEVIATION)
+        val resolvedScale = when {
+            independentTimelineScale != null -> independentTimelineScale
+            matchedPairScale != null -> matchedPairScale
+            strongConstantOffsetEvidence -> 1.0
+            else -> null
+        }
+        val scaleSource = when {
+            independentTimelineScale != null -> "independent"
+            matchedPairScale != null -> "matched-pair"
+            strongConstantOffsetEvidence -> "unit-fallback"
+            else -> "unavailable"
+        }
+        val scaleCompatible = when {
+            independentTimelineScale != null && matchedPairScale != null ->
+                abs(independentTimelineScale - 1.0) <= MAX_TIMELINE_SCALE_DEVIATION &&
+                    abs(matchedPairScale - 1.0) <= MAX_TIMELINE_SCALE_DEVIATION
+            independentTimelineScale != null ->
+                abs(independentTimelineScale - 1.0) <= MAX_TIMELINE_SCALE_DEVIATION
+            matchedPairScale != null ->
+                abs(matchedPairScale - 1.0) <= MAX_TIMELINE_SCALE_DEVIATION
+            strongConstantOffsetEvidence -> true
+            else -> false
+        }
         val scaleEstimatorsAgree =
             matchedPairScale == null ||
-                timelineScale == null ||
+                independentTimelineScale == null ||
                 scaleDisagreement <= MAX_SCALE_ESTIMATOR_DISAGREEMENT
-        val consecutivePatternMatches = longestConsecutivePatternRun(reference, target, best.pairs)
 
         val strongAbsoluteEvidence =
             best.matches >= STRONG_ACCEPT_MATCHES &&
@@ -1381,31 +1430,45 @@ internal object AutomaticSubtitleSync {
             ConfidenceCheck(
                 "timeline scale / FPS",
                 scaleCompatible,
-                if (independentScale == null) {
-                    "insufficient independent anchor evidence for scale validation"
-                } else {
-                    "independent=${"%.6f".format(independentScale.scale)} " +
-                        "matched=${matchedPairScale?.let { "%.6f".format(it) } ?: "<unavailable>"} " +
-                        "deviation=${"%.4f".format(abs(independentScale.scale - 1.0))} " +
-                        "anchors=${independentScale.anchorCount} slopes=${independentScale.slopeCount} " +
-                        "dispersion=${"%.4f".format(independentScale.dispersion)} " +
-                        "<= ${"%.4f".format(MAX_TIMELINE_SCALE_DEVIATION)}"
+                when (scaleSource) {
+                    "independent" ->
+                        "source=independent scale=${resolvedScale?.let { "%.6f".format(it) }} " +
+                            "matched=${matchedPairScale?.let { "%.6f".format(it) } ?: "<unavailable>"} " +
+                            "anchors=${independentScale?.anchorCount ?: 0} " +
+                            "slopes=${independentScale?.slopeCount ?: 0}"
+                    "matched-pair" ->
+                        "source=matched-pair scale=${resolvedScale?.let { "%.6f".format(it) }}; " +
+                            "independent scale unavailable"
+                    "unit-fallback" ->
+                        "source=unit-fallback scale=1.000000; no reliable scale estimate but " +
+                            "constant-offset evidence is exceptionally strong"
+                    else ->
+                        "no reliable scale estimate and constant-offset evidence is insufficient"
                 },
             ),
             ConfidenceCheck(
                 "scale estimator agreement",
                 scaleEstimatorsAgree,
-                if (matchedPairScale == null || timelineScale == null) {
-                    "matched-pair scale unavailable; independent estimator retained"
-                } else {
-                    "difference=${"%.6f".format(scaleDisagreement)} <= " +
-                        "${"%.6f".format(MAX_SCALE_ESTIMATOR_DISAGREEMENT)}"
+                when {
+                    independentTimelineScale != null && matchedPairScale != null ->
+                        "difference=${"%.6f".format(scaleDisagreement)} <= " +
+                            "${"%.6f".format(MAX_SCALE_ESTIMATOR_DISAGREEMENT)}"
+                    independentTimelineScale != null ->
+                        "matched-pair scale unavailable; independent estimator retained"
+                    matchedPairScale != null ->
+                        "independent scale unavailable; matched-pair estimator retained"
+                    strongConstantOffsetEvidence ->
+                        "no scale estimators available; unit scale allowed by strong constant-offset evidence"
+                    else ->
+                        "no scale estimators available"
                 },
             ),
             ConfidenceCheck(
                 "participation OR strong absolute evidence",
                 normalParticipation || strongAbsoluteEvidence,
-                "participation=${fmt(referenceParticipation)} >= ${fmt(NORMAL_PARTICIPATION_THRESHOLD)} " +
+                "referenceParticipation=${fmt(referenceParticipation)} >= ${fmt(NORMAL_PARTICIPATION_THRESHOLD)} " +
+                    "OR targetParticipation=${fmt(targetParticipation)} >= ${fmt(TARGET_PARTICIPATION_THRESHOLD)} " +
+                    "(asymmetricEligible=$asymmetricTargetEligible) " +
                     "OR strongAbsoluteEvidence=$strongAbsoluteEvidence",
             ),
         )
@@ -1413,7 +1476,7 @@ internal object AutomaticSubtitleSync {
         val failedChecks = checks.filterNot { it.passed }.map { it.name }
         val highConfidence = failedChecks.isEmpty()
 
-        val result = if (highConfidence && timelineScale != null) {
+        val result = if (highConfidence && resolvedScale != null) {
             AlignmentResult(
                 trackKey = track.key,
                 language = track.language,
@@ -1421,7 +1484,7 @@ internal object AutomaticSubtitleSync {
                 score = best.score,
                 matches = best.matches,
                 residualMs = best.residualMs,
-                timelineScale = timelineScale,
+                timelineScale = resolvedScale,
                 matchedPairScale = matchedPairScale,
                 scaleDisagreement = scaleDisagreement,
             )
@@ -1435,7 +1498,7 @@ internal object AutomaticSubtitleSync {
             offsetMs = best.offsetMs,
             matches = best.matches,
             residualMs = best.residualMs,
-            timelineScale = timelineScale,
+            timelineScale = resolvedScale,
             matchedPairScale = matchedPairScale,
             scaleDisagreement = scaleDisagreement,
             consecutivePatternMatches = consecutivePatternMatches,
@@ -1447,8 +1510,13 @@ internal object AutomaticSubtitleSync {
                 second = second,
                 margin = margin,
                 referenceParticipation = referenceParticipation,
+                targetParticipation = targetParticipation,
+                effectiveParticipation = effectiveParticipation,
+                asymmetricTargetEligible = asymmetricTargetEligible,
                 normalParticipation = normalParticipation,
                 independentScale = independentScale,
+                scaleSource = scaleSource,
+                strongConstantOffsetEvidence = strongConstantOffsetEvidence,
                 strongAbsoluteEvidence = strongAbsoluteEvidence,
                 checks = checks,
                 highConfidence = highConfidence,
@@ -1493,12 +1561,17 @@ internal object AutomaticSubtitleSync {
 
         AutoSyncDebugLog.info(
             "BEST offset=${best.offsetMs}ms matches=${best.matches}/${reference.size} " +
-                "participation=${fmt(details.referenceParticipation)} coverage=${fmt(best.referenceCoverage)} " +
+                "referenceParticipation=${fmt(details.referenceParticipation)} " +
+                "targetParticipation=${fmt(details.targetParticipation)} " +
+                "effectiveParticipation=${fmt(details.effectiveParticipation)} " +
+                "coverage=${fmt(best.referenceCoverage)} " +
                 "medianResidual=${"%.1f".format(best.residualMs)}ms " +
                 "signedResidual=${"%.1f".format(best.signedResidualMs)}ms " +
                 "agreement=${fmt(best.offsetAgreement)} spacing=${fmt(best.spacingScore)} " +
                 "independentScale=${timelineScale?.let { "%.6f".format(it) } ?: "<unavailable>"} " +
                 "matchedPairScale=${matchedPairScale?.let { "%.6f".format(it) } ?: "<unavailable>"} " +
+                "resolvedScale=${attempt.timelineScale?.let { "%.6f".format(it) } ?: "<unavailable>"} " +
+                "scaleSource=${details.scaleSource} " +
                 "consecutive=${attempt.consecutivePatternMatches} score=${fmt(best.score)}",
         )
 
@@ -1536,7 +1609,15 @@ internal object AutomaticSubtitleSync {
         AutoSyncDebugLog.section("CONFIDENCE")
         AutoSyncDebugLog.info(
             "${if (details.normalParticipation) "PASS" else "FAIL"} normal participation: " +
-                "${fmt(details.referenceParticipation)} >= ${fmt(NORMAL_PARTICIPATION_THRESHOLD)}",
+                "reference=${fmt(details.referenceParticipation)} threshold=${fmt(NORMAL_PARTICIPATION_THRESHOLD)} " +
+                "target=${fmt(details.targetParticipation)} threshold=${fmt(TARGET_PARTICIPATION_THRESHOLD)} " +
+                "asymmetricEligible=${details.asymmetricTargetEligible}",
+        )
+        AutoSyncDebugLog.info(
+            "${if (details.strongConstantOffsetEvidence) "PASS" else "FAIL"} strong constant-offset evidence: " +
+                "targetParticipation=${fmt(details.targetParticipation)} " +
+                "matches=${best.matches} residual=${"%.1f".format(best.residualMs)}ms " +
+                "coverage=${fmt(best.referenceCoverage)} consecutive=${attempt.consecutivePatternMatches}",
         )
         AutoSyncDebugLog.info(
             "${if (details.strongAbsoluteEvidence) "PASS" else "FAIL"} strong absolute evidence: " +
@@ -1967,7 +2048,13 @@ internal object AutomaticSubtitleSync {
         val spacingScore =
             spacingScore(reference, target, referenceIndexes, targetIndexes)
 
-        val participation = residuals.size.toDouble() / reference.size
+        val referenceParticipation = residuals.size.toDouble() / reference.size
+        val targetParticipation = residuals.size.toDouble() / target.size
+        val participation = if (isAsymmetricTargetParticipationEligible(reference, target)) {
+            max(referenceParticipation, targetParticipation)
+        } else {
+            referenceParticipation
+        }
         val residualScore = exp(-residualMs / 900.0)
 
         val score = (
@@ -1989,6 +2076,25 @@ internal object AutomaticSubtitleSync {
             score = score,
             pairs = pairs,
         )
+    }
+
+    private fun isAsymmetricTargetParticipationEligible(
+        reference: List<SubtitleSyncCue>,
+        target: List<SubtitleSyncCue>,
+    ): Boolean {
+        if (target.size < MIN_ASYMMETRIC_TARGET_CUES) return false
+
+        val referenceSpanMs = referenceSpanMs(reference)
+        val targetSpanMs = referenceSpanMs(target)
+        if (referenceSpanMs <= 0L || targetSpanMs <= 0L) return false
+
+        val spanRatio =
+            minOf(referenceSpanMs, targetSpanMs).toDouble() /
+                maxOf(referenceSpanMs, targetSpanMs).toDouble()
+        if (spanRatio < MIN_ASYMMETRIC_SPAN_RATIO) return false
+
+        val targetDensity = target.size * 60_000.0 / targetSpanMs
+        return targetDensity >= MIN_ASYMMETRIC_TARGET_DENSITY_PER_MINUTE
     }
 
     private fun spacingScore(
@@ -2203,8 +2309,13 @@ internal object AutomaticSubtitleSync {
         val second: Evaluation?,
         val margin: Double,
         val referenceParticipation: Double,
+        val targetParticipation: Double,
+        val effectiveParticipation: Double,
+        val asymmetricTargetEligible: Boolean,
         val normalParticipation: Boolean,
         val independentScale: IndependentScaleResult?,
+        val scaleSource: String,
+        val strongConstantOffsetEvidence: Boolean,
         val strongAbsoluteEvidence: Boolean,
         val checks: List<ConfidenceCheck>,
         val highConfidence: Boolean,
