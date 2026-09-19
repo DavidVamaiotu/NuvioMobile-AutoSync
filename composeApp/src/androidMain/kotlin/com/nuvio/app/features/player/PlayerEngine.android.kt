@@ -867,10 +867,16 @@ private fun ExoPlayerSurface(
                             .setSubtitleConfigurations(listOf(subtitleConfig))
                             .build()
                         Log.d(TAG, "setSubtitleUri: newMediaItem subtitleConfigs count=${newMediaItem.localConfiguration?.subtitleConfigurations?.size}")
+                        val currentTextFlags =
+                            exoPlayer.trackSelectionParameters.ignoredTextSelectionFlags
+
                         exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
                             .buildUpon()
                             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
                             .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                            .setIgnoredTextSelectionFlags(
+                                currentTextFlags and C.SELECTION_FLAG_DEFAULT.inv()
+                            )
                             .setPreferredTextRoleFlags(C.ROLE_FLAG_SUBTITLE)
                             .build()
                         Log.d(TAG, "setSubtitleUri: track params set before prepare, textDisabled=${exoPlayer.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)}")
