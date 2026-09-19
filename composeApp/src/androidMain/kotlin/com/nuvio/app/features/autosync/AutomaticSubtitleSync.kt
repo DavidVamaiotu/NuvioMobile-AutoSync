@@ -3,7 +3,9 @@ package com.nuvio.app.features.autosync
 import android.os.SystemClock
 import androidx.media3.common.C
 import com.nuvio.app.features.addons.httpRequestRaw
+import com.nuvio.app.features.player.AutoSyncSubtitleCandidate
 import com.nuvio.app.features.player.PlayerSubtitleCueParser
+import com.nuvio.app.features.player.SubtitleLanguageMatching
 import com.nuvio.app.features.player.SubtitleSyncCue
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -25,8 +27,9 @@ import kotlin.math.abs
  * Otherwise it discovers the whole-film affine transform and runs cue/group DP.
  */
 internal object AutomaticSubtitleSync {
-    private const val MIN_SELECTED_CUES = 4
+    private const val MIN_SELECTED_CUES = 1
     private const val MAX_LOGGED_CUE_SAMPLES = 20
+    private const val MAX_ALTERNATIVE_EXTERNAL_SUBTITLES = 4
 
     private const val MIN_FULL_DIALOGUE_CUES = 8
     private const val MIN_FULL_DIALOGUE_CLASSIFICATION_SPAN_MS = 30_000L
@@ -61,9 +64,10 @@ internal object AutomaticSubtitleSync {
         selectedSubtitleUrl: String,
         selectedSubtitleHeaders: Map<String, String>,
         preferredLanguage: String?,
+        alternativeSubtitles: List<AutoSyncSubtitleCandidate> = emptyList(),
         onReferenceReady: () -> Unit = {},
         sourceHeaders: Map<String, String> = emptyMap(),
-    ): AutoSyncTimelineRetimeResult? {
+    ): AutoSyncResolvedTimeline? {
         AutoSyncDebugLog.start(
             sourceKey = sourceKey,
             subtitleUrl = selectedSubtitleUrl,
@@ -88,23 +92,50 @@ internal object AutomaticSubtitleSync {
 
             AutoSyncDebugLog.section { "SELECTED SUBTITLE" }
             if (selected == null) {
-                AutoSyncDebugLog.warn { "REJECT selected subtitle could not be downloaded or parsed" }
-                return@supervisorScope null
-            }
-            AutoSyncDebugLog.info {
-                "url=$selectedSubtitleUrl cues=${selected.cues.size} " +
-                    "download=${selected.downloadMs}ms parse=${selected.parseMs}ms cached=${selected.cacheHit}"
-            }
-            if (AutoSyncDebugLog.ENABLED) {
-                selected.cues.take(MAX_LOGGED_CUE_SAMPLES).forEachIndexed { index, cue ->
-                    AutoSyncDebugLog.cue(
-                        prefix = "SELECTED ADDON",
-                        index = index,
-                        startMs = cue.startTimeMs,
-                        endMs = cue.endTimeMs,
-                        text = cue.text,
-                    )
+                AutoSyncDebugLog.warn {
+                    "selected subtitle could not be downloaded or parsed; searching alternatives"
                 }
+            } else {
+                logLoadedExternalSubtitle(
+                    label = "SELECTED",
+                    url = selectedSubtitleUrl,
+                    loaded = selected,
+                    sampleLimit = MAX_LOGGED_CUE_SAMPLES,
+                )
+            }
+
+            val selectedMetadata =
+                alternativeSubtitles.firstOrNull { it.url == selectedSubtitleUrl }
+            val selectedLanguage =
+                selectedMetadata?.language?.takeIf { it.isNotBlank() }
+                    ?: preferredLanguage?.takeIf { it.isNotBlank() }
+
+            val alternatives = alternativeSubtitles
+                .asSequence()
+                .filter { it.url.isNotBlank() && it.url != selectedSubtitleUrl }
+                .filter { candidate ->
+                    selectedLanguage.isNullOrBlank() ||
+                        SubtitleLanguageMatching.matchesLanguageCode(
+                            candidate.language,
+                            selectedLanguage,
+                        )
+                }
+                .distinctBy { it.url }
+                .take(MAX_ALTERNATIVE_EXTERNAL_SUBTITLES)
+                .toList()
+
+            var seedTarget = selected?.cues
+            if (seedTarget.isNullOrEmpty() && alternatives.isNotEmpty()) {
+                val loaded = loadSelectedSubtitle(alternatives.first().url, emptyMap())
+                if (loaded != null) seedTarget = loaded.cues
+            }
+
+            if (seedTarget.isNullOrEmpty()) {
+                AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
+                AutoSyncDebugLog.warn {
+                    "REJECT no usable external subtitle candidate could be parsed"
+                }
+                return@supervisorScope null
             }
 
             var referenceTracks: List<ReferenceTrack> = emptyList()
@@ -146,7 +177,7 @@ internal object AutomaticSubtitleSync {
                 referenceTracks = awaitNearCompleteLiveReferences(
                     sourceKey = sourceKey,
                     preferredLanguage = preferredLanguage,
-                    target = selected.cues,
+                    target = seedTarget,
                 )
             }
 
@@ -160,93 +191,198 @@ internal object AutomaticSubtitleSync {
 
             onReferenceReady()
 
-            val referenceTimingGroups = groupEquivalentReferenceTimelines(referenceTracks)
-            AutoSyncDebugLog.section { "REFERENCE TIMING DEDUPLICATION" }
-            AutoSyncDebugLog.info {
-                "reference timing timelines=${referenceTimingGroups.size}/${referenceTracks.size} " +
-                    "duplicatesSaved=${referenceTracks.size - referenceTimingGroups.size}"
-            }
+            if (selected != null) {
+                val selectedEvaluation = evaluateExternalCandidate(
+                    label = "SELECTED",
+                    url = selectedSubtitleUrl,
+                    target = selected.cues,
+                    referenceTracks = referenceTracks,
+                )
+                val selectedBest = selectedEvaluation.best
+                if (selectedBest?.timeline?.confident == true) {
+                    return@supervisorScope AutoSyncResolvedTimeline(
+                        subtitleUrl = selectedSubtitleUrl,
+                        subtitleHeaders = selectedSubtitleHeaders,
+                        timeline = selectedBest.timeline,
+                    )
+                }
 
-            val attempts = withContext(Dispatchers.Default) {
-                referenceTimingGroups.mapNotNull { group ->
-                    val track = group.members.minWithOrNull(
-                        compareBy<ReferenceTrack> { isSdhReferenceTrack(it) }
-                            .thenBy { it.key },
-                    ) ?: return@mapNotNull null
-                    buildTimelineRetimeResult(track, selected.cues)?.let { timeline ->
-                        TimelineRetimeMatch(track, timeline)
-                    }
+                AutoSyncDebugLog.section { "EXTERNAL SUBTITLE FALLBACK" }
+                AutoSyncDebugLog.info {
+                    "selected subtitle did not produce a confident result; " +
+                        "trying up to ${alternatives.size} same-language alternatives"
                 }
             }
 
-            if (AutoSyncDebugLog.ENABLED && attempts.isNotEmpty()) {
-                AutoSyncDebugLog.section { "V2 REFERENCE ATTEMPTS" }
-                attempts.forEach { match ->
-                    val timeline = match.timeline
+            for ((index, candidate) in alternatives.withIndex()) {
+                val loaded = loadSelectedSubtitle(
+                    url = candidate.url,
+                    headers = emptyMap(),
+                ) ?: continue
+
+                logLoadedExternalSubtitle(
+                    label = "ALTERNATIVE[$index]",
+                    url = candidate.url,
+                    loaded = loaded,
+                    sampleLimit = 3,
+                )
+
+                val evaluation = evaluateExternalCandidate(
+                    label = "ALTERNATIVE[$index]",
+                    url = candidate.url,
+                    target = loaded.cues,
+                    referenceTracks = referenceTracks,
+                )
+                val best = evaluation.best
+                if (best?.timeline?.confident == true) {
+                    AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
                     AutoSyncDebugLog.info {
-                        "reference=${match.track.key} label=${match.track.label ?: "<none>"} " +
-                            "sdh=${isSdhReferenceTrack(match.track)} quality=${fmt(directTimelineQualityScore(match))} " +
-                            "decision=${if (timeline.confident) "ACCEPT" else "REJECT"} " +
-                            "alignment=${timeline.alignmentSource} scale=${"%.6f".format(timeline.alignmentScale)} " +
-                            "intercept=${"%.1f".format(timeline.alignmentInterceptMs)}ms " +
-                            "activityScore=${fmt(timeline.activityScore)} activityMargin=${fmt(timeline.activityMargin)} " +
-                            "targetCoverage=${fmt(timeline.targetCoverage)} referenceCoverage=${fmt(timeline.referenceCoverage)} " +
-                            "longestTargetSkip=${timeline.longestTargetSkipRun} avgGroupCost=${fmt(timeline.averageGroupCost)} " +
-                            "coverageSegments=${timeline.coverageSegmentsPassed}/3 simpleRatio=${fmt(timeline.simpleGroupRatio)}"
+                        "V2 selected better external subtitle index=$index " +
+                            "url=${candidate.url} name=${candidate.name ?: "<none>"} " +
+                            "cues=${loaded.cues.size} alignment=${best.timeline.alignmentSource} " +
+                            "quality=${fmt(directTimelineQualityScore(best))}"
                     }
+                    return@supervisorScope AutoSyncResolvedTimeline(
+                        subtitleUrl = candidate.url,
+                        subtitleHeaders = emptyMap(),
+                        timeline = best.timeline,
+                    )
                 }
-            }
-
-            val best = attempts.maxWithOrNull(
-                compareBy<TimelineRetimeMatch> { if (it.timeline.confident) 1 else 0 }
-                    .thenBy(::directTimelineQualityScore),
-            )
-
-            AutoSyncDebugLog.section { "TIMELINE RETIME V2" }
-            if (best == null) {
-                AutoSyncDebugLog.warn {
-                    "REJECT selected subtitle has no usable whole-timeline activity alignment"
-                }
-                return@supervisorScope null
-            }
-
-            val timeline = best.timeline
-            AutoSyncDebugLog.info {
-                "selected=$selectedSubtitleUrl reference=${best.track.key} " +
-                    "referenceLabel=${best.track.label ?: "<none>"} referencesTried=${attempts.size} " +
-                    "groups=${timeline.groups.size} targetCoverage=${fmt(timeline.targetCoverage)} " +
-                    "referenceCoverage=${fmt(timeline.referenceCoverage)} skipTarget=${timeline.skippedTargetCues} " +
-                    "skipReference=${timeline.skippedReferenceCues} longestTargetSkip=${timeline.longestTargetSkipRun} " +
-                    "avgGroupCost=${fmt(timeline.averageGroupCost)} groups11=${timeline.oneToOneGroups} " +
-                    "groups12=${timeline.oneToTwoGroups} groups21=${timeline.twoToOneGroups} " +
-                    "groups13=${timeline.oneToThreeGroups} groups31=${timeline.threeToOneGroups} " +
-                    "groups22=${timeline.twoToTwoGroups} alignment=${timeline.alignmentSource} " +
-                    "scale=${"%.6f".format(timeline.alignmentScale)} " +
-                    "intercept=${"%.1f".format(timeline.alignmentInterceptMs)}ms " +
-                    "activityScore=${fmt(timeline.activityScore)} activityMargin=${fmt(timeline.activityMargin)} " +
-                    "coverageSegments=${timeline.coverageSegmentsPassed}/3 simpleRatio=${fmt(timeline.simpleGroupRatio)} " +
-                    "decision=${if (timeline.confident) "ACCEPT" else "REJECT"}"
-            }
-
-            if (!timeline.confident) {
-                AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
-                AutoSyncDebugLog.warn {
-                    "REJECT V2 did not reach delay-only or direct-timeline confidence"
-                }
-                return@supervisorScope null
             }
 
             AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
-            AutoSyncDebugLog.info {
-                if (timeline.alignmentSource == "delay-only") {
-                    "V2 delay-only fast path accepted selected subtitle; " +
-                        "scale=1.000000 offset=${"%.1f".format(timeline.alignmentInterceptMs)}ms"
-                } else {
-                    "V2 direct timeline accepted selected subtitle; corrected timeline is ready for sidecar apply"
-                }
+            AutoSyncDebugLog.warn {
+                "REJECT no confident match found; original subtitle timing should be kept"
             }
-            timeline
+            null
         }
+    }
+
+    private suspend fun evaluateExternalCandidate(
+        label: String,
+        url: String,
+        target: List<SubtitleSyncCue>,
+        referenceTracks: List<ReferenceTrack>,
+    ): CandidateEvaluation = withContext(Dispatchers.Default) {
+        val timingGroups = groupEquivalentReferenceTimelines(referenceTracks)
+        val representatives = timingGroups.mapNotNull { group ->
+            group.members.minWithOrNull(
+                compareBy<ReferenceTrack> { isSdhReferenceTrack(it) }
+                    .thenBy { it.key },
+            )
+        }.sortedWith(
+            compareByDescending<ReferenceTrack> {
+                referenceSuitabilityScore(it, target)
+            }.thenBy {
+                isSdhReferenceTrack(it)
+            }.thenBy {
+                it.key
+            },
+        )
+
+        AutoSyncDebugLog.section { "$label EMBEDDED REFERENCE ORDER" }
+        representatives.forEachIndexed { index, track ->
+            AutoSyncDebugLog.info {
+                "[$index] reference=${track.key} label=${track.label ?: "<none>"} " +
+                    "sdh=${isSdhReferenceTrack(track)} cues=${track.cues.size} " +
+                    "cueRatio=${fmt(referenceCueRatio(track, target))} " +
+                    "suitability=${fmt(referenceSuitabilityScore(track, target))}"
+            }
+        }
+
+        val attempts = ArrayList<TimelineRetimeMatch>(representatives.size)
+        for (track in representatives) {
+            val timeline = buildTimelineRetimeResult(track, target) ?: continue
+            val match = TimelineRetimeMatch(track, timeline)
+            attempts += match
+
+            AutoSyncDebugLog.info {
+                "$label reference=${track.key} quality=${fmt(directTimelineQualityScore(match))} " +
+                    "decision=${if (timeline.confident) "ACCEPT" else "REJECT"} " +
+                    "alignment=${timeline.alignmentSource} scale=${"%.6f".format(timeline.alignmentScale)} " +
+                    "intercept=${"%.1f".format(timeline.alignmentInterceptMs)}ms " +
+                    "activityScore=${fmt(timeline.activityScore)} activityMargin=${fmt(timeline.activityMargin)} " +
+                    "targetCoverage=${fmt(timeline.targetCoverage)} referenceCoverage=${fmt(timeline.referenceCoverage)} " +
+                    "avgGroupCost=${fmt(timeline.averageGroupCost)} simpleRatio=${fmt(timeline.simpleGroupRatio)}"
+            }
+
+            if (timeline.confident && timeline.alignmentSource == "delay-only") {
+                AutoSyncDebugLog.section { "$label RESULT" }
+                AutoSyncDebugLog.info {
+                    "delay-only accepted url=$url reference=${track.key} " +
+                        "scale=1.000000 offset=${"%.1f".format(timeline.alignmentInterceptMs)}ms"
+                }
+                return@withContext CandidateEvaluation(best = match, attempts = attempts)
+            }
+        }
+
+        val best = attempts.maxWithOrNull(
+            compareBy<TimelineRetimeMatch> { if (it.timeline.confident) 1 else 0 }
+                .thenBy(::directTimelineQualityScore),
+        )
+
+        AutoSyncDebugLog.section { "$label RESULT" }
+        if (best == null) {
+            AutoSyncDebugLog.warn { "no usable whole-timeline alignment url=$url" }
+        } else {
+            val timeline = best.timeline
+            AutoSyncDebugLog.info {
+                "url=$url reference=${best.track.key} groups=${timeline.groups.size} " +
+                    "quality=${fmt(directTimelineQualityScore(best))} " +
+                    "alignment=${timeline.alignmentSource} scale=${"%.6f".format(timeline.alignmentScale)} " +
+                    "decision=${if (timeline.confident) "ACCEPT" else "REJECT"}"
+            }
+        }
+
+        CandidateEvaluation(best = best, attempts = attempts)
+    }
+
+    private fun logLoadedExternalSubtitle(
+        label: String,
+        url: String,
+        loaded: LoadedSubtitle,
+        sampleLimit: Int,
+    ) {
+        AutoSyncDebugLog.info {
+            "$label url=$url cues=${loaded.cues.size} " +
+                "download=${loaded.downloadMs}ms parse=${loaded.parseMs}ms cached=${loaded.cacheHit}"
+        }
+        if (AutoSyncDebugLog.ENABLED) {
+            loaded.cues.take(sampleLimit).forEachIndexed { index, cue ->
+                AutoSyncDebugLog.cue(
+                    prefix = label,
+                    index = index,
+                    startMs = cue.startTimeMs,
+                    endMs = cue.endTimeMs,
+                    text = cue.text,
+                )
+            }
+        }
+    }
+
+    private fun referenceCueRatio(
+        track: ReferenceTrack,
+        target: List<SubtitleSyncCue>,
+    ): Double {
+        if (track.cues.isEmpty() || target.isEmpty()) return 0.0
+        val smaller = minOf(track.cues.size, target.size).toDouble()
+        val larger = maxOf(track.cues.size, target.size).toDouble()
+        return if (larger <= 0.0) 0.0 else smaller / larger
+    }
+
+    private fun referenceSuitabilityScore(
+        track: ReferenceTrack,
+        target: List<SubtitleSyncCue>,
+    ): Double {
+        if (track.cues.isEmpty() || target.isEmpty()) return 0.0
+        val cueRatio = referenceCueRatio(track, target)
+        val referenceSpan = referenceSpanMs(track.cues).coerceAtLeast(1L)
+        val targetSpan = referenceSpanMs(target).coerceAtLeast(1L)
+        val spanRatio =
+            minOf(referenceSpan, targetSpan).toDouble() /
+                maxOf(referenceSpan, targetSpan).toDouble()
+        val nonSdhBonus = if (isSdhReferenceTrack(track)) 0.0 else 0.08
+        return cueRatio * 0.60 + spanRatio * 0.32 + nonSdhBonus
     }
 
     private suspend fun loadSelectedSubtitle(
@@ -510,6 +646,8 @@ internal object AutomaticSubtitleSync {
         if ((track.roleFlags and C.ROLE_FLAG_DESCRIBES_MUSIC_AND_SOUND) != 0) return true
         val label = track.label.orEmpty().lowercase()
         return label.contains("sdh") ||
+            label.contains("shd") ||
+            label.contains("hoh") ||
             label.contains("hearing impaired") ||
             label.contains("hearing-impaired") ||
             label.contains("closed caption")
@@ -617,11 +755,22 @@ internal object AutomaticSubtitleSync {
         val fullDialogue: Boolean,
         val rankingScore: Double,
     )
+    private data class CandidateEvaluation(
+        val best: TimelineRetimeMatch?,
+        val attempts: List<TimelineRetimeMatch>,
+    )
+
     private data class TimelineRetimeMatch(
         val track: ReferenceTrack,
         val timeline: AutoSyncTimelineRetimeResult,
     )
 }
+
+internal data class AutoSyncResolvedTimeline(
+    val subtitleUrl: String,
+    val subtitleHeaders: Map<String, String>,
+    val timeline: AutoSyncTimelineRetimeResult,
+)
 
 internal data class ReferenceTrack(
     val key: String,

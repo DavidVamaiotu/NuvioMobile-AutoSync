@@ -20,7 +20,7 @@ import kotlin.math.roundToLong
  * without Android, Media3, networking, or playback state.
  */
 internal object AutoSyncTimelineRetimer {
-    private const val MIN_CUES = 8
+    private const val MIN_CUES = 4
     private const val BAND_RADIUS_CUES = 28
 
     private const val SKIP_REFERENCE_COST = 1.35
@@ -55,12 +55,17 @@ internal object AutoSyncTimelineRetimer {
     // Cheap delay-only fast path. It always APPLIES scale=1.0; the segment drift tolerance
     // merely allows near-1.0 timelines to qualify when one constant delay remains visually valid.
     private const val DELAY_ONLY_MIN_CUES = 4
+    private const val DELAY_ONLY_SCALE_TOLERANCE = 0.0015
     private const val DELAY_ONLY_MIN_SCORE = 0.78
     private const val DELAY_ONLY_MIN_MARGIN = 0.02
     private const val DELAY_ONLY_MIN_SEGMENT_SCORE = 0.68
     private const val DELAY_ONLY_SEGMENT_SEARCH_RADIUS_MS = 1_000L
     private const val DELAY_ONLY_MAX_SEGMENT_OFFSET_DELTA_MS = 500L
     private const val DELAY_ONLY_DISTINCT_OFFSET_MS = 3_000L
+    private const val SMALL_SAMPLE_CUE_LIMIT = 8
+    private const val SMALL_SAMPLE_ACTIVITY_MIN_SCORE = 0.72
+    private const val SMALL_SAMPLE_ACTIVITY_MIN_MARGIN = 0.03
+    private const val SMALL_SAMPLE_REQUIRED_COVERAGE_SEGMENTS = 2
 
     // Activity correlation only finds the global corridor. The existing cue/group DP remains
     // the final authority before embedded timestamps can replace external timing.
@@ -99,11 +104,14 @@ internal object AutoSyncTimelineRetimer {
             )
         }
 
-        findDelayOnlyAlignment(reference, target)?.let { delayOnly ->
-            return buildDelayOnlyTimeline(target, delayOnly)
+        val alignment = discoverActivityAlignment(reference, target) ?: return null
+
+        if (abs(alignment.scale - 1.0) <= DELAY_ONLY_SCALE_TOLERANCE) {
+            findDelayOnlyAlignment(reference, target)?.let { delayOnly ->
+                return buildDelayOnlyTimeline(target, delayOnly)
+            }
         }
 
-        val alignment = discoverActivityAlignment(reference, target) ?: return null
         val result = retimeWithSeed(
             reference = reference,
             target = target,
@@ -113,11 +121,19 @@ internal object AutoSyncTimelineRetimer {
 
         val coverageSegments = coverageSegmentsPassed(result, target.size)
         val simpleRatio = simpleGroupRatio(result)
+        val smallSample = target.size < SMALL_SAMPLE_CUE_LIMIT
+        val requiredActivityScore =
+            if (smallSample) SMALL_SAMPLE_ACTIVITY_MIN_SCORE else ACTIVITY_MIN_SCORE
+        val requiredActivityMargin =
+            if (smallSample) SMALL_SAMPLE_ACTIVITY_MIN_MARGIN else ACTIVITY_MIN_MARGIN
+        val requiredCoverageSegments =
+            if (smallSample) SMALL_SAMPLE_REQUIRED_COVERAGE_SEGMENTS else 3
+
         val confirmed =
             result.confident &&
-                alignment.score >= ACTIVITY_MIN_SCORE &&
-                alignment.margin >= ACTIVITY_MIN_MARGIN &&
-                coverageSegments == 3 &&
+                alignment.score >= requiredActivityScore &&
+                alignment.margin >= requiredActivityMargin &&
+                coverageSegments >= requiredCoverageSegments &&
                 result.targetCoverage >= DISCOVERED_MIN_TARGET_COVERAGE &&
                 result.averageGroupCost <= DISCOVERED_MAX_AVERAGE_GROUP_COST &&
                 result.longestTargetSkipRun <= MAX_LONGEST_TARGET_SKIP_RUN &&
@@ -446,7 +462,7 @@ internal object AutoSyncTimelineRetimer {
             }
         }
 
-        val requiredSegments = if (target.size < MIN_CUES) 2 else 3
+        val requiredSegments = if (target.size < SMALL_SAMPLE_CUE_LIMIT) 2 else 3
         if (availableSegments < requiredSegments || passedSegments < requiredSegments) return null
 
         return AutoSyncDelayOnlyAlignment(
@@ -744,7 +760,7 @@ internal object AutoSyncTimelineRetimer {
         result: AutoSyncTimelineRetimeResult,
         targetSize: Int,
     ): Int {
-        if (targetSize < 3 || result.groups.isEmpty()) return 0
+        if (targetSize < MIN_CUES || result.groups.isEmpty()) return 0
         val matched = BooleanArray(targetSize)
         val costs = Array(3) { mutableListOf<Double>() }
         result.groups.forEach { group ->
@@ -767,10 +783,11 @@ internal object AutoSyncTimelineRetimer {
             val segmentCosts = costs[segment]
             val averageCost =
                 if (segmentCosts.isEmpty()) Double.POSITIVE_INFINITY else segmentCosts.average()
+            val requiredGroups = min(COVERAGE_SEGMENT_MIN_GROUPS, length)
             if (
                 coverage >= COVERAGE_SEGMENT_MIN_COVERAGE &&
                 averageCost <= COVERAGE_SEGMENT_MAX_AVERAGE_COST &&
-                segmentCosts.size >= COVERAGE_SEGMENT_MIN_GROUPS
+                segmentCosts.size >= requiredGroups
             ) {
                 passed++
             }

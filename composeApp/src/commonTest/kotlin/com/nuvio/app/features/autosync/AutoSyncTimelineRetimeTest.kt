@@ -68,6 +68,23 @@ class AutoSyncTimelineRetimeTest {
     }
 
     @Test
+    fun fullV2StillRunsWithSixCues() {
+        val reference = irregularTimeline(6)
+        val target = shift(reference, -2_200L)
+        val result = assertNotNull(
+            AutoSyncTimelineRetimer.retime(
+                reference = reference,
+                target = target,
+                coarseScale = 1.0,
+                coarseInterceptMs = 2_200.0,
+                discoverAlignment = false,
+            ),
+        )
+        assertTrue(result.confident)
+        assertEquals(1.0, result.targetCoverage)
+    }
+
+    @Test
     fun activityAlignmentFindsCommonFpsDrift() {
         val reference = irregularTimeline(260)
         val scale = 25.0 / 23.976

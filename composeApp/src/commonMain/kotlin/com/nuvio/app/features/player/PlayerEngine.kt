@@ -3,6 +3,12 @@ package com.nuvio.app.features.player
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 
+data class AutoSyncSubtitleCandidate(
+    val url: String,
+    val language: String,
+    val name: String? = null,
+)
+
 interface PlayerEngineController {
     fun play()
     fun pause()
@@ -17,6 +23,7 @@ interface PlayerEngineController {
     fun selectAudioTrack(index: Int)
     fun selectSubtitleTrack(index: Int)
     fun setSubtitleUri(url: String)
+    fun setAutoSyncSubtitleCandidates(candidates: List<AutoSyncSubtitleCandidate>) {}
     fun setSubtitleUriWithAutoSync(url: String) {
         setSubtitleUri(url)
         runSubtitleAutoSync(url)

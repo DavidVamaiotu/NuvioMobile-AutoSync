@@ -108,6 +108,18 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi() {
     val gestureCallbacks = rememberSurfaceGestureCallbacks()
     val playbackGesturesEnabled = initialLoadCompleted && errorMessage == null
 
+    LaunchedEffect(playerController, addonSubtitles) {
+        playerController?.setAutoSyncSubtitleCandidates(
+            addonSubtitles.map { subtitle ->
+                AutoSyncSubtitleCandidate(
+                    url = subtitle.url,
+                    language = subtitle.language,
+                    name = subtitle.display,
+                )
+            },
+        )
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
