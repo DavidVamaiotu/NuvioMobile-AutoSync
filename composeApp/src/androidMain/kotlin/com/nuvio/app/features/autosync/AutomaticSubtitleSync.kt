@@ -238,7 +238,7 @@ internal object AutomaticSubtitleSync {
 
             AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
             AutoSyncDebugLog.info {
-                "V2 direct timeline accepted selected subtitle; native Media3 parser retiming is ready"
+                "V2 direct timeline accepted selected subtitle; corrected timeline is ready for sidecar apply"
             }
             timeline
         }

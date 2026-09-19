@@ -68,8 +68,6 @@ import androidx.media3.ui.CaptionStyleCompat
 import com.nuvio.app.R
 import com.nuvio.app.features.autosync.AutoSyncDebugLog
 import com.nuvio.app.features.autosync.AutoSyncExtractorsFactory
-import com.nuvio.app.features.autosync.AutoSyncNativeSubtitleTimelines
-import com.nuvio.app.features.autosync.AutoSyncSubtitleParserFactory
 import com.nuvio.app.features.autosync.AutomaticSubtitleSync
 import com.nuvio.app.features.streams.normalizeStreamType
 import `is`.xyz.mpv.BaseMPVView
@@ -320,12 +318,9 @@ private fun ExoPlayerSurface(
         )
     }
 
-    val autoSyncSubtitleParserFactory = remember { AutoSyncSubtitleParserFactory() }
-
     fun ExoPlayer.setPlaybackMediaItem(videoMediaItem: MediaItem, startPositionMs: Long? = null) {
         if (!sourceAudioUrl.isNullOrBlank()) {
             val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, extractorsFactory)
-                .setSubtitleParserFactory(autoSyncSubtitleParserFactory)
             val videoSource = mediaSourceFactory.createMediaSource(videoMediaItem)
             val audioSource = mediaSourceFactory.createMediaSource(playbackMediaItemFromUrl(sourceAudioUrl))
             val mergedSource = MergingMediaSource(videoSource, audioSource)
@@ -419,7 +414,7 @@ private fun ExoPlayerSurface(
             val mediaSourceFactory = DefaultMediaSourceFactory(
                 dataSourceFactory,
                 extractorsFactory,
-            ).setSubtitleParserFactory(autoSyncSubtitleParserFactory)
+            )
 
             ExoPlayer.Builder(context)
                 .setRenderersFactory(renderersFactory)
@@ -495,7 +490,6 @@ private fun ExoPlayerSurface(
     val pendingAudioTrackSelection = remember { mutableListOf<TrackSelectionSnapshot>() }
     var subtitleSelectionJob by remember { mutableStateOf<Job?>(null) }
     var automaticSubtitleSyncJob by remember(playerSourceKey) { mutableStateOf<Job?>(null) }
-    var autoSyncApplyingSubtitleUrl by remember(playerSourceKey) { mutableStateOf<String?>(null) }
     var autoSyncAppliedListener by remember {
         mutableStateOf<((subtitleUrl: String, delayMs: Int) -> Unit)?>(null)
     }
@@ -810,19 +804,9 @@ private fun ExoPlayerSurface(
                 override fun setSubtitleUri(url: String) {
                     Log.d(TAG, "setSubtitleUri: url=$url")
                     subtitleSelectionJob?.cancel()
+                    automaticSubtitleSyncJob?.cancel()
 
-                    val isAutoSyncRecommendation = autoSyncApplyingSubtitleUrl == url
-                    if (isAutoSyncRecommendation) {
-                        autoSyncApplyingSubtitleUrl = null
-                    } else {
-                        automaticSubtitleSyncJob?.cancel()
-                        AutoSyncNativeSubtitleTimelines.clear(url)
-                    }
-
-                    if (
-                        !isAutoSyncRecommendation &&
-                        sidecarController.canAttachAddonSubtitleViaSidecar(url, useLibass)
-                    ) {
+                    if (sidecarController.canAttachAddonSubtitleViaSidecar(url, useLibass)) {
                         Log.d(TAG, "setSubtitleUri: using buffer-preserving sidecar for url=$url")
                         val headers = externalSubtitles.firstOrNull { it.url == url }?.headers.orEmpty()
                         val attached = sidecarController.startSidecarAddonSubtitle(
@@ -839,6 +823,7 @@ private fun ExoPlayerSurface(
                             return
                         }
                     }
+
                     sidecarController.stopSidecarAddonSubtitle(clearView = true)
                     subtitleSelectionJob = coroutineScope.launch {
                         val currentPosition = exoPlayer.currentPosition
@@ -847,14 +832,11 @@ private fun ExoPlayerSurface(
                             Log.e(TAG, "setSubtitleUri: currentMediaItem is null, aborting")
                             return@launch
                         }
-                        preserveAudioSelectionForReload(
-                            if (isAutoSyncRecommendation) "AutoSync subtitle switch" else "setSubtitleUri",
-                        )
+                        preserveAudioSelectionForReload("setSubtitleUri")
                         val resolvedMime = PlayerSubtitleUtils.mimeTypeFromUrl(url)
                         selectedExternalSubtitleMimeType = resolvedMime
                         Log.d(TAG, "setSubtitleUri: currentPosition=$currentPosition, wasPlaying=$wasPlaying")
                         val subtitleConfig = MediaItem.SubtitleConfiguration.Builder(Uri.parse(url))
-                            .setId(AutoSyncNativeSubtitleTimelines.formatId(url))
                             .setMimeType(resolvedMime)
                             .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
                             .setRoleFlags(C.ROLE_FLAG_SUBTITLE)
@@ -869,7 +851,6 @@ private fun ExoPlayerSurface(
                         Log.d(TAG, "setSubtitleUri: newMediaItem subtitleConfigs count=${newMediaItem.localConfiguration?.subtitleConfigurations?.size}")
                         val currentTextFlags =
                             exoPlayer.trackSelectionParameters.ignoredTextSelectionFlags
-
                         exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
                             .buildUpon()
                             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
@@ -895,6 +876,41 @@ private fun ExoPlayerSurface(
                     val subtitleHeaders =
                         externalSubtitles.firstOrNull { it.url == url }?.headers.orEmpty()
 
+                    if (!sidecarController.canAttachAddonSubtitleViaSidecar(url, useLibass)) {
+                        if (attachSubtitleOnReject) {
+                            setSubtitleUri(url)
+                        }
+                        Toast.makeText(
+                            context,
+                            "Auto Sync V2: seamless retiming is unavailable for this subtitle renderer",
+                            Toast.LENGTH_LONG,
+                        ).show()
+                        return
+                    }
+
+                    val attached = sidecarController.startSidecarAddonSubtitle(
+                        url = url,
+                        headers = subtitleHeaders,
+                        useLibass = useLibass,
+                    )
+                    if (!attached) {
+                        if (attachSubtitleOnReject) {
+                            setSubtitleUri(url)
+                        }
+                        Toast.makeText(
+                            context,
+                            "Auto Sync V2: subtitle could not be attached without reloading playback",
+                            Toast.LENGTH_LONG,
+                        ).show()
+                        return
+                    }
+
+                    selectedExternalSubtitleMimeType = PlayerSubtitleUtils.mimeTypeFromUrl(url)
+                    exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                        .buildUpon()
+                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                        .build()
+
                     automaticSubtitleSyncJob = coroutineScope.launch {
                         Toast.makeText(
                             context,
@@ -918,16 +934,10 @@ private fun ExoPlayerSurface(
                         )
 
                         if (timeline == null) {
-                            AutoSyncNativeSubtitleTimelines.clear(url)
-                            if (attachSubtitleOnReject) {
-                                autoSyncApplyingSubtitleUrl = url
-                                setSubtitleUri(url)
-                            }
-
                             val copied = if (AutoSyncDebugLog.ENABLED) {
                                 AutoSyncDebugLog.finishAndCopy(
                                     context = context,
-                                    decision = "REJECT V2 - no reliable direct timeline",
+                                    decision = "REJECT V2 - original sidecar timing kept",
                                 )
                             } else {
                                 false
@@ -935,25 +945,36 @@ private fun ExoPlayerSurface(
                             Toast.makeText(
                                 context,
                                 if (copied) {
-                                    "Auto Sync V2: no reliable match — original subtitle selected • debug log copied"
-                                } else if (attachSubtitleOnReject) {
-                                    "Auto Sync V2: no reliable match — original subtitle selected"
+                                    "Auto Sync V2: no reliable match — original subtitle kept • debug log copied"
                                 } else {
-                                    "Auto Sync V2: no reliable match"
+                                    "Auto Sync V2: no reliable match — original subtitle kept"
                                 },
                                 Toast.LENGTH_LONG,
                             ).show()
                             return@launch
                         }
 
-                        AutoSyncNativeSubtitleTimelines.register(url, timeline)
-                        autoSyncApplyingSubtitleUrl = url
-                        setSubtitleUri(url)
+                        val applied = sidecarController.applyAutoSyncTimeline(url, timeline)
+                        if (!applied) {
+                            if (AutoSyncDebugLog.ENABLED) {
+                                AutoSyncDebugLog.finishAndCopy(
+                                    context = context,
+                                    decision = "REJECT V2 - sidecar changed or was unavailable before apply",
+                                )
+                            }
+                            Toast.makeText(
+                                context,
+                                "Auto Sync V2: match found but subtitle changed — original timing kept",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                            return@launch
+                        }
+
                         subtitleDelayMs = 0
                         autoSyncAppliedListener?.invoke(url, 0)
 
                         AutoSyncDebugLog.info {
-                            "AUTO APPLY V2 nativeMedia3=true groups=${timeline.groups.size} " +
+                            "AUTO APPLY V2 sidecar=true bufferPreserved=true groups=${timeline.groups.size} " +
                                 "targetCoverage=${"%.4f".format(timeline.targetCoverage)} " +
                                 "referenceCoverage=${"%.4f".format(timeline.referenceCoverage)} finalDelay=0ms"
                         }
@@ -961,19 +982,19 @@ private fun ExoPlayerSurface(
                             AutoSyncDebugLog.finishAndCopy(
                                 context = context,
                                 decision =
-                                    "APPLIED V2 native Media3 timeline url=$url groups=${timeline.groups.size} " +
+                                    "APPLIED V2 sidecar timeline bufferPreserved=true url=$url groups=${timeline.groups.size} " +
                                         "targetCoverage=${"%.4f".format(timeline.targetCoverage)} " +
                                         "referenceCoverage=${"%.4f".format(timeline.referenceCoverage)}",
                             )
                         }
                         Toast.makeText(
                             context,
-                            "Auto Sync V2: native timeline matched • ${"%.0f".format(timeline.targetCoverage * 100.0)}%",
+                            "Auto Sync V2: seamless timeline matched • ${"%.0f".format(timeline.targetCoverage * 100.0)}%",
                             Toast.LENGTH_LONG,
                         ).show()
                         Log.i(
                             TAG,
-                            "Automatic subtitle V2 native Media3 timeline prepared url=$url " +
+                            "Automatic subtitle V2 applied through buffer-preserving sidecar url=$url " +
                                 "groups=${timeline.groups.size} finalDelay=0ms",
                         )
                     }

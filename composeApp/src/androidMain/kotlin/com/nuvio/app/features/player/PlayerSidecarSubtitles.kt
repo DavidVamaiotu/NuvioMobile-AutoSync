@@ -27,7 +27,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.lang.ref.WeakReference
-import kotlin.math.abs
+import kotlin.math.roundToLong
 
 private const val SIDECAR_TAG = "NuvioSidecar"
 private val sidecarParserFactory = DefaultSubtitleParserFactory()
@@ -54,8 +54,8 @@ internal class SidecarSubtitleController(
 
     /**
      * Atomically replaces only the timing of the currently parsed sidecar cues.
-     * Cue text/spans/positioning remain the Media3-parsed originals. A parser-sequence mismatch
-     * refuses V2 so the caller can use the existing delay-based AutoSync unchanged.
+     * Cue text/spans/positioning remain the Media3-parsed originals. Media3 event boundaries are
+     * mapped onto V2's corrected cue boundaries, with the accepted affine alignment as fallback.
      */
     suspend fun applyAutoSyncTimeline(
         url: String,
@@ -76,7 +76,7 @@ internal class SidecarSubtitleController(
         } ?: return false
 
         if (activeSidecarSubtitleKey != url) return false
-        val retimed = retimeSidecarTimedCues(current, timeline) ?: return false
+        val retimed = retimeSidecarTimedCues(current, timeline)
         sidecarTimedCues = retimed
         lastSidecarCueSignature = null
         Log.i(
@@ -370,40 +370,91 @@ private fun normalizeSidecarCuePosition(cue: Cue): Cue {
         .build()
 }
 
+private const val AUTO_SYNC_BOUNDARY_TOLERANCE_MS = 500L
+
+private data class AutoSyncTimingBoundary(
+    val originalMs: Long,
+    val retimedMs: Long,
+)
+
 private fun retimeSidecarTimedCues(
     source: List<CuesWithTiming>,
     timeline: AutoSyncTimelineRetimeResult,
-): List<CuesWithTiming>? {
-    val replacement = timeline.cues
-    if (source.size != replacement.size) {
-        Log.w(
-            SIDECAR_TAG,
-            "AutoSync V2 cue-count mismatch sidecar=${source.size} timeline=${replacement.size}; using V1 fallback",
-        )
-        return null
+): List<CuesWithTiming> {
+    val boundaries = ArrayList<AutoSyncTimingBoundary>(timeline.cues.size * 2)
+    timeline.cues.forEach { cue ->
+        boundaries += AutoSyncTimingBoundary(cue.originalStartTimeMs, cue.startTimeMs)
+        boundaries += AutoSyncTimingBoundary(cue.originalEndTimeMs, cue.endTimeMs)
+    }
+    boundaries.sortBy { it.originalMs }
+
+    var boundaryMapped = 0
+    var affineFallback = 0
+
+    fun mapTime(originalMs: Long): Long {
+        if (boundaries.isNotEmpty()) {
+            var low = 0
+            var high = boundaries.size
+            while (low < high) {
+                val mid = (low + high) ushr 1
+                if (boundaries[mid].originalMs < originalMs) low = mid + 1 else high = mid
+            }
+
+            val first = (low - 2).coerceAtLeast(0)
+            val last = (low + 2).coerceAtMost(boundaries.lastIndex)
+            var best: AutoSyncTimingBoundary? = null
+            var bestError = Long.MAX_VALUE
+            if (first <= last) {
+                for (index in first..last) {
+                    val candidate = boundaries[index]
+                    val error = kotlin.math.abs(candidate.originalMs - originalMs)
+                    if (error < bestError) {
+                        best = candidate
+                        bestError = error
+                    }
+                }
+            }
+            if (best != null && bestError <= AUTO_SYNC_BOUNDARY_TOLERANCE_MS) {
+                boundaryMapped += 1
+                return best.retimedMs.coerceAtLeast(0L)
+            }
+        }
+
+        affineFallback += 1
+        return (
+            originalMs.toDouble() * timeline.alignmentScale +
+                timeline.alignmentInterceptMs
+            ).roundToLong().coerceAtLeast(0L)
     }
 
     val out = ArrayList<CuesWithTiming>(source.size)
-    for (index in source.indices) {
-        val entry = source[index]
-        val timing = replacement[index]
-        val originalStartMs = entry.startTimeUs / 1_000L
-        if (abs(originalStartMs - timing.originalStartTimeMs) > 750L) {
-            Log.w(
-                SIDECAR_TAG,
-                "AutoSync V2 cue-order mismatch index=$index sidecarStart=$originalStartMs " +
-                    "parsedStart=${timing.originalStartTimeMs}; using V1 fallback",
-            )
-            return null
+    source.forEach { entry ->
+        if (entry.startTimeUs == C.TIME_UNSET) {
+            out += entry
+            return@forEach
         }
 
-        val startUs = timing.startTimeMs.coerceAtLeast(0L) * 1_000L
-        val endUs = timing.endTimeMs.coerceAtLeast(timing.startTimeMs + 1L) * 1_000L
+        val originalStartMs = entry.startTimeUs / 1_000L
+        val originalEndMs = when {
+            entry.endTimeUs != C.TIME_UNSET -> entry.endTimeUs / 1_000L
+            entry.durationUs != C.TIME_UNSET ->
+                originalStartMs + entry.durationUs / 1_000L
+            else -> originalStartMs + 1L
+        }.coerceAtLeast(originalStartMs + 1L)
+
+        val startMs = mapTime(originalStartMs)
+        val endMs = mapTime(originalEndMs).coerceAtLeast(startMs + 1L)
         out += CuesWithTiming(
             entry.cues,
-            startUs,
-            (endUs - startUs).coerceAtLeast(1L),
+            startMs * 1_000L,
+            (endMs - startMs) * 1_000L,
         )
     }
+
+    Log.d(
+        SIDECAR_TAG,
+        "AutoSync V2 retime mapped sidecar=${source.size} " +
+            "boundaryMapped=$boundaryMapped affineFallback=$affineFallback",
+    )
     return out
 }
