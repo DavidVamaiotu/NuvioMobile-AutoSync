@@ -107,21 +107,28 @@ internal object AutoSyncTimelineRetimer {
 
         val alignment = discoverActivityAlignment(reference, target) ?: return null
 
-        if (abs(alignment.scale - 1.0) <= DELAY_ONLY_SCALE_TOLERANCE) {
+        // Delay-only remains the cheap candidate finder, but it must now pass through
+        // the normal V2 cue/group validator before its correction can be applied.
+        val delayOnly = if (abs(alignment.scale - 1.0) <= DELAY_ONLY_SCALE_TOLERANCE) {
             findDelayOnlyAlignment(
                 reference = reference,
                 target = target,
                 allowAmbiguousMargin = allowAmbiguousDelayOnlyMargin,
-            )?.let { delayOnly ->
-                return buildDelayOnlyTimeline(target, delayOnly)
-            }
+            )
+        } else {
+            null
         }
+
+        val candidateScale = if (delayOnly != null) 1.0 else alignment.scale
+        val candidateInterceptMs = delayOnly?.offsetMs ?: alignment.interceptMs
+        val candidateActivityScore = delayOnly?.score ?: alignment.score
+        val candidateActivityMargin = delayOnly?.margin ?: alignment.margin
 
         val result = retimeWithSeed(
             reference = reference,
             target = target,
-            coarseScale = alignment.scale,
-            coarseInterceptMs = alignment.interceptMs,
+            coarseScale = candidateScale,
+            coarseInterceptMs = candidateInterceptMs,
         ) ?: return null
 
         val coverageSegments = coverageSegmentsPassed(result, target.size)
@@ -133,11 +140,14 @@ internal object AutoSyncTimelineRetimer {
             if (smallSample) SMALL_SAMPLE_ACTIVITY_MIN_MARGIN else ACTIVITY_MIN_MARGIN
         val requiredCoverageSegments =
             if (smallSample) SMALL_SAMPLE_REQUIRED_COVERAGE_SEGMENTS else 3
+        val activityMarginAccepted =
+            candidateActivityMargin >= requiredActivityMargin ||
+                (delayOnly != null && allowAmbiguousDelayOnlyMargin)
 
         val confirmed =
             result.confident &&
-                alignment.score >= requiredActivityScore &&
-                alignment.margin >= requiredActivityMargin &&
+                candidateActivityScore >= requiredActivityScore &&
+                activityMarginAccepted &&
                 coverageSegments >= requiredCoverageSegments &&
                 result.targetCoverage >= DISCOVERED_MIN_TARGET_COVERAGE &&
                 result.averageGroupCost <= DISCOVERED_MAX_AVERAGE_GROUP_COST &&
@@ -146,11 +156,11 @@ internal object AutoSyncTimelineRetimer {
 
         return result.copy(
             confident = confirmed,
-            alignmentSource = "activity-correlation",
-            alignmentScale = alignment.scale,
-            alignmentInterceptMs = alignment.interceptMs,
-            activityScore = alignment.score,
-            activityMargin = alignment.margin,
+            alignmentSource = if (delayOnly != null) "delay-only-validated" else "activity-correlation",
+            alignmentScale = candidateScale,
+            alignmentInterceptMs = candidateInterceptMs,
+            activityScore = candidateActivityScore,
+            activityMargin = candidateActivityMargin,
             coverageSegmentsPassed = coverageSegments,
             simpleGroupRatio = simpleRatio,
         )
