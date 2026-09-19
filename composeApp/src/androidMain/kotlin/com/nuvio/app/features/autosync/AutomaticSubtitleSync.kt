@@ -222,6 +222,7 @@ internal object AutomaticSubtitleSync {
                     sourceKey = sourceKey,
                     preferredLanguage = preferredLanguage,
                     target = seedTarget,
+                    waitMs = if (indexedTimeline?.skipLiveFallbackWait == true) 0L else LIVE_REFERENCE_WAIT_MS,
                 )
             }
 
@@ -528,12 +529,13 @@ internal object AutomaticSubtitleSync {
         sourceKey: String,
         preferredLanguage: String?,
         target: List<SubtitleSyncCue>,
+        waitMs: Long = LIVE_REFERENCE_WAIT_MS,
     ): List<ReferenceTrack> {
         val targetSpan = referenceSpanMs(target).coerceAtLeast(1L)
         val started = SystemClock.elapsedRealtime()
         var lastSignature = ""
 
-        while (SystemClock.elapsedRealtime() - started < LIVE_REFERENCE_WAIT_MS) {
+        while (true) {
             currentCoroutineContext().ensureActive()
             val prepared = EmbeddedSubtitleCueStore
                 .candidateTracks(sourceKey, preferredLanguage)
@@ -564,11 +566,20 @@ internal object AutomaticSubtitleSync {
             if (ready.isNotEmpty()) {
                 return ready.map { it.track.copy(cues = it.track.cues.toList()) }
             }
-            delay(LIVE_REFERENCE_POLL_MS)
+
+            val elapsedMs = SystemClock.elapsedRealtime() - started
+            if (elapsedMs >= waitMs) break
+            delay(minOf(LIVE_REFERENCE_POLL_MS, waitMs - elapsedMs))
         }
 
-        AutoSyncDebugLog.info {
-            "Media3 did not expose a near-complete reference within ${LIVE_REFERENCE_WAIT_MS}ms"
+        if (waitMs == 0L) {
+            AutoSyncDebugLog.info {
+                "Media3 live wait skipped because Matroska Cues has no subtitle entries"
+            }
+        } else {
+            AutoSyncDebugLog.info {
+                "Media3 did not expose a near-complete reference within ${waitMs}ms"
+            }
         }
         return emptyList()
     }

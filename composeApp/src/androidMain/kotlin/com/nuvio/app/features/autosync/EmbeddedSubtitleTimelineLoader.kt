@@ -349,6 +349,20 @@ internal object EmbeddedSubtitleTimelineLoader {
             "MKV index subtitleCueCounts=$subtitleCueCounts"
         }
 
+        if (subtitleTracks.all { track -> parsedCues[track.number].orEmpty().isEmpty() }) {
+            AutoSyncDebugLog.warn {
+                "MKV index no subtitle Cue entries; skipping Media3 wait"
+            }
+            return IndexedEmbeddedTimeline(
+                tracks = emptyList(),
+                source = "matroska-cues-no-subtitle-entries",
+                bytesDownloaded = stats.bytesDownloaded,
+                rangeRequests = stats.requests,
+                loadMs = (System.nanoTime() - startedAtNs) / 1_000_000L,
+                skipLiveFallbackWait = true,
+            )
+        }
+
         val referenceTracks = subtitleTracks.mapNotNull { track ->
             val cues = parsedCues[track.number]
                 .orEmpty()
@@ -1585,4 +1599,5 @@ internal data class IndexedEmbeddedTimeline(
     val bytesDownloaded: Long,
     val rangeRequests: Int,
     val loadMs: Long,
+    val skipLiveFallbackWait: Boolean = false,
 )
