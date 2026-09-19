@@ -56,7 +56,6 @@ internal object AutoSyncTimelineRetimer {
     // the final authority before embedded timestamps can replace external timing.
     private const val DISCOVERED_MIN_TARGET_COVERAGE = 0.90
     private const val DISCOVERED_MAX_AVERAGE_GROUP_COST = 1.10
-    private const val DISCOVERED_MAX_TARGET_SKIP_RUN = 8
     private const val DISCOVERED_MIN_SIMPLE_GROUP_RATIO = 0.55
     private const val COVERAGE_SEGMENT_MIN_COVERAGE = 0.72
     private const val COVERAGE_SEGMENT_MAX_AVERAGE_COST = 1.35
@@ -107,7 +106,7 @@ internal object AutoSyncTimelineRetimer {
                 coverageSegments == 3 &&
                 result.targetCoverage >= DISCOVERED_MIN_TARGET_COVERAGE &&
                 result.averageGroupCost <= DISCOVERED_MAX_AVERAGE_GROUP_COST &&
-                result.longestTargetSkipRun <= DISCOVERED_MAX_TARGET_SKIP_RUN &&
+                result.longestTargetSkipRun <= MAX_LONGEST_TARGET_SKIP_RUN &&
                 simpleRatio >= DISCOVERED_MIN_SIMPLE_GROUP_RATIO
 
         return result.copy(
