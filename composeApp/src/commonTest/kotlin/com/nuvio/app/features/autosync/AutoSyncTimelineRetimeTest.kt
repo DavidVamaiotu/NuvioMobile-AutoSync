@@ -133,10 +133,36 @@ class AutoSyncTimelineRetimeTest {
         )
 
         assertTrue(result.confident)
-        assertEquals("independent", result.seedSource)
+        assertEquals("independent-chain", result.seedSource)
         assertEquals(3, result.anchorSegmentsPassed)
+        assertEquals(3, result.seedAnchorSegments)
+        assertTrue(result.seedAnchorCount >= 10)
+        assertTrue(result.seedAnchorSpanRatio >= 0.76)
+        assertTrue(result.seedCandidatesEvaluated in 1..3)
         assertTrue(abs(result.seedInterceptMs - 2_500.0) <= 750.0)
         assertTrue(result.targetCoverage > 0.95)
+    }
+
+    @Test
+    fun independentChainRejectsTwoSegmentCoincidence() {
+        val reference = irregularTimeline(180)
+        val target = reference.mapIndexed { index, cue ->
+            val shiftMs = if (index < 120) -2_500L else 57_500L
+            cue.copy(
+                startTimeMs = cue.startTimeMs + shiftMs,
+                endTimeMs = cue.endTimeMs + shiftMs,
+            )
+        }
+
+        val result = AutoSyncTimelineRetimer.retime(
+            reference = reference,
+            target = target,
+            coarseScale = 1.0,
+            coarseInterceptMs = 52_500.0,
+            requireIndependentAnchors = true,
+        )
+
+        assertTrue(result == null || !result.confident)
     }
 
     @Test

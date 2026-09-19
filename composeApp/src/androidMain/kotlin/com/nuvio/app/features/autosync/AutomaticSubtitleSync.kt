@@ -738,12 +738,27 @@ internal object AutomaticSubtitleSync {
                 }
             }
             val selectedSummary = selectedGroupResult?.summary
-            val selectedTimelineChoice = if (selectedParsed != null && selectedSummary != null) {
+            val selectedTimelineAttempts = if (
+                selectedParsed != null &&
+                selectedSummary != null
+            ) {
+                // Exact-timing duplicate embedded tracks produce the same V2 result. Run the
+                // expensive direct retimer once per timing family and prefer a non-SDH
+                // representative when two tracks have identical timestamps.
                 selectedSummary.attempts
-                    .mapNotNull { (track, storedAttempt) ->
+                    .groupBy { (track, _) -> referenceTimingFingerprint(track.cues) }
+                    .values
+                    .mapNotNull { equivalentAttempts ->
+                        val (track, storedAttempt) = equivalentAttempts.minWithOrNull(
+                            compareBy<Pair<ReferenceTrack, AlignmentAttempt>> {
+                                isSdhReferenceTrack(it.first)
+                            }.thenBy { it.first.key },
+                        ) ?: return@mapNotNull null
+
                         val attempt = selectedSummary.winningAttempt
                             ?.takeIf { winning -> winning.result?.trackKey == track.key }
                             ?: storedAttempt
+
                         buildTimelineRetimeResult(
                             track = track,
                             target = selectedParsed.cues,
@@ -752,14 +767,39 @@ internal object AutomaticSubtitleSync {
                             TimelineRetimeMatch(track = track, timeline = timeline)
                         }
                     }
-                    .maxWithOrNull(
-                        compareBy<TimelineRetimeMatch> {
-                            if (it.timeline.confident) 1 else 0
-                        }.thenBy(::directTimelineQualityScore),
-                    )
             } else {
-                null
+                emptyList()
             }
+
+            if (AutoSyncDebugLog.ENABLED && selectedTimelineAttempts.isNotEmpty()) {
+                AutoSyncDebugLog.section { "V2 REFERENCE ATTEMPTS" }
+                selectedTimelineAttempts.forEach { match ->
+                    val timeline = match.timeline
+                    AutoSyncDebugLog.info {
+                        "reference=${match.track.key} label=${match.track.label ?: "<none>"} " +
+                            "sdh=${isSdhReferenceTrack(match.track)} " +
+                            "quality=${fmt(directTimelineQualityScore(match))} " +
+                            "decision=${if (timeline.confident) "ACCEPT" else "REJECT"} " +
+                            "seed=${timeline.seedSource} " +
+                            "seedIntercept=${"%.1f".format(timeline.seedInterceptMs)}ms " +
+                            "seedAnchors=${timeline.seedAnchorCount} " +
+                            "seedAnchorSegments=${timeline.seedAnchorSegments}/3 " +
+                            "seedSpan=${fmt(timeline.seedAnchorSpanRatio)} " +
+                            "seedCandidates=${timeline.seedCandidatesEvaluated} " +
+                            "targetCoverage=${fmt(timeline.targetCoverage)} " +
+                            "referenceCoverage=${fmt(timeline.referenceCoverage)} " +
+                            "longestTargetSkip=${timeline.longestTargetSkipRun} " +
+                            "avgGroupCost=${fmt(timeline.averageGroupCost)} " +
+                            "simpleRatio=${fmt(timeline.simpleGroupRatio)}"
+                    }
+                }
+            }
+
+            val selectedTimelineChoice = selectedTimelineAttempts.maxWithOrNull(
+                compareBy<TimelineRetimeMatch> {
+                    if (it.timeline.confident) 1 else 0
+                }.thenBy(::directTimelineQualityScore),
+            )
             val selectedTimelineRetime = selectedTimelineChoice?.timeline
 
             AutoSyncDebugLog.section { "TIMELINE RETIME V2" }
@@ -789,6 +829,10 @@ internal object AutomaticSubtitleSync {
                         "groups22=${selectedTimelineRetime.twoToTwoGroups} " +
                         "seed=${selectedTimelineRetime.seedSource} " +
                         "seedIntercept=${"%.1f".format(selectedTimelineRetime.seedInterceptMs)}ms " +
+                        "seedAnchors=${selectedTimelineRetime.seedAnchorCount} " +
+                        "seedAnchorSegments=${selectedTimelineRetime.seedAnchorSegments}/3 " +
+                        "seedSpan=${fmt(selectedTimelineRetime.seedAnchorSpanRatio)} " +
+                        "seedCandidates=${selectedTimelineRetime.seedCandidatesEvaluated} " +
                         "coverageSegments=${selectedTimelineRetime.anchorSegmentsPassed}/3 " +
                         "simpleRatio=${fmt(selectedTimelineRetime.simpleGroupRatio)} " +
                         "decision=${if (selectedTimelineRetime.confident) "ACCEPT" else "REJECT"}"
