@@ -20,6 +20,16 @@
       "category": "entertainment",
       "versions": [
         {
+          "version": "0.4.25",
+          "buildVersion": "130",
+          "date": "2026-09-19T15:15:17Z",
+          "localizedDescription": "- b5163558 fix(home): prevent hero flash when cycling @tapframe  \r\n- 656f368c fix(pr): update workflow @tapframe  \r\n- [i18n(el): sync Greek translations with the current English strings (#1991)](https://github.com/NuvioMedia/NuvioMobile/pull/1991) @nosvasedis  \r\n- 98be8514 revert(ui): restore previous surface and chip styles @tapframe  \r\n- [i18n(vi): update latest Vietnamese strings (#1990)](https://github.com/NuvioMedia/NuvioMobile/pull/1990) @blueocean2308  \r\n- [fix(simkl): three bugs in the shared Simkl read and write paths (#1988)](https://github.com/NuvioMedia/NuvioMobile/pull/1988) @Judzim  \r\n- 99ced26a feat(player): add Infuse playback callbacks @tapframe  \r\n- [fix(ios): bundle CJK font for subtitles (#1833)](https://github.com/NuvioMedia/NuvioMobile/pull/1833) @tinyKyuu  \r\n",
+          "downloadURL": "https://github.com/NuvioMedia/NuvioMobile/releases/download/0.4.25-beta/nuvio-0.4.25-full-release.ipa",
+          "size": 65152407,
+          "sha256": "794c90209bc4ae414bf97576257e045696bb8b3be1e385c981f84de897340626",
+          "minOSVersion": "16.1"
+        },
+        {
           "version": "0.4.24",
           "buildVersion": "129",
           "date": "2026-09-18T16:34:38Z",
