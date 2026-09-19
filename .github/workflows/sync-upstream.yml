@@ -35,7 +35,16 @@ jobs:
 
       - name: Merge upstream
         run: |
+          BEFORE_MERGE="$(git rev-parse HEAD)"
           git merge --no-edit upstream/cmp-rewrite
+
+          # Keep this fork's own Actions workflows. Upstream workflow files
+          # cannot be pushed by GITHUB_TOKEN and are unrelated to AutoSync.
+          git restore --source="$BEFORE_MERGE" --staged --worktree -- .github/workflows
+
+          if ! git diff --quiet HEAD -- .github/workflows; then
+            git commit --amend --no-edit
+          fi
 
       - name: Set up Java
         uses: actions/setup-java@v5
