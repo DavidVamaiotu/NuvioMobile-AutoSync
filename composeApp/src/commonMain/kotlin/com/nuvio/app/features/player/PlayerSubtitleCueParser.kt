@@ -220,8 +220,9 @@ object PlayerSubtitleCueParser {
         return if (body.isBlank()) null else SubtitleSyncCue(startTimeMs = start, endTimeMs = end, text = body)
     }
 
-    private fun parseTtml(text: String): List<SubtitleSyncCue> =
-        Regex("""(?is)<p\b([^>]*)>(.*?)</p>""")
+    private fun parseTtml(text: String): List<SubtitleSyncCue> {
+        val frameRate = parseTtmlFrameRate(text)
+        return Regex("""(?is)<p\b([^>]*)>(.*?)</p>""")
             .findAll(text)
             .mapNotNull { match ->
                 val attrs = match.groupValues[1]
@@ -229,8 +230,8 @@ object PlayerSubtitleCueParser {
                     ?: attrs.attributeValue("start")
                     ?: return@mapNotNull null
                 val endRaw = attrs.attributeValue("end")
-                val start = parseTtmlTimestamp(startRaw) ?: return@mapNotNull null
-                val end = endRaw?.let { parseTtmlTimestamp(it) } ?: (start + 3000L)
+                val start = parseTtmlTimestamp(startRaw, frameRate) ?: return@mapNotNull null
+                val end = endRaw?.let { parseTtmlTimestamp(it, frameRate) } ?: (start + 3000L)
                 if (end - start <= 0) return@mapNotNull null
                 val body = normalizeCueText(
                     match.groupValues[2]
@@ -240,12 +241,44 @@ object PlayerSubtitleCueParser {
             }
             .sortedBy { it.startTimeMs }
             .toList()
+    }
 
-    private fun parseTtmlTimestamp(raw: String): Long? {
+    private fun parseTtmlFrameRate(text: String): Double {
+        val rootAttributes = Regex("""(?is)<tt\b([^>]*)>""")
+            .find(text)
+            ?.groupValues
+            ?.getOrNull(1)
+            .orEmpty()
+        val baseFrameRate =
+            rootAttributes.attributeValue("ttp:frameRate")?.toDoubleOrNull()
+                ?: rootAttributes.attributeValue("frameRate")?.toDoubleOrNull()
+                ?: 30.0
+        val multiplierRaw =
+            rootAttributes.attributeValue("ttp:frameRateMultiplier")
+                ?: rootAttributes.attributeValue("frameRateMultiplier")
+        val multiplier = multiplierRaw
+            ?.trim()
+            ?.split(Regex("""\s+"""))
+            ?.takeIf { it.size == 2 }
+            ?.let { parts ->
+                val numerator = parts[0].toDoubleOrNull()
+                val denominator = parts[1].toDoubleOrNull()
+                if (numerator != null && denominator != null && denominator > 0.0) {
+                    numerator / denominator
+                } else {
+                    null
+                }
+            }
+            ?: 1.0
+        val effective = baseFrameRate * multiplier
+        return effective.takeIf { it.isFinite() && it > 0.0 } ?: 30.0
+    }
+
+    private fun parseTtmlTimestamp(raw: String, frameRate: Double): Long? {
         val cleaned = raw.trim().substringBefore(' ')
         if (cleaned.isBlank()) return null
 
-        parseClockTimeWithFrames(cleaned)?.let { return it }
+        parseClockTimeWithFrames(cleaned, frameRate)?.let { return it }
         parseTimestampMs(cleaned)?.let { return it }
 
         val match = Regex("""^([0-9]+(?:\.[0-9]+)?)(ms|h|m|s)$""", RegexOption.IGNORE_CASE)
@@ -262,15 +295,20 @@ object PlayerSubtitleCueParser {
         return max(0L, (value * multiplier).toLong())
     }
 
-    private fun parseClockTimeWithFrames(raw: String): Long? {
+    private fun parseClockTimeWithFrames(raw: String, frameRate: Double): Long? {
+        if (!frameRate.isFinite() || frameRate <= 0.0) return null
         val parts = raw.split(':')
         if (parts.size != 4) return null
 
         val hours = parts[0].toLongOrNull() ?: return null
         val minutes = parts[1].toLongOrNull() ?: return null
         val seconds = parts[2].toLongOrNull() ?: return null
-        val frames = parts[3].substringBefore('.').toLongOrNull() ?: return null
-        return max(0L, hours * 3_600_000L + minutes * 60_000L + seconds * 1_000L + frames * 1_000L / 30L)
+        val frames = parts[3].toDoubleOrNull() ?: return null
+        val frameMs = frames * 1_000.0 / frameRate
+        return max(
+            0L,
+            (hours * 3_600_000.0 + minutes * 60_000.0 + seconds * 1_000.0 + frameMs).toLong(),
+        )
     }
 
     private fun isWebVttMetadataBlockHeader(line: String): Boolean {

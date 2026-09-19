@@ -14,7 +14,8 @@ import kotlin.math.roundToLong
  * The existing AutoSync matcher supplies a coarse affine transform that puts an add-on subtitle
  * near an embedded subtitle timeline. This aligner then walks both ordered cue sequences and
  * resolves local 1:1 / 1:2 / 2:1 / 1:3 / 3:1 / 2:2 groupings plus skips. Matched add-on groups
- * inherit the embedded timing envelope; unmatched add-on cues retain the coarse affine timing.
+ * are locally anchored to embedded starts while preserving the add-on cue durations; unmatched
+ * add-on cues retain the coarse affine timing.
  *
  * This file is deliberately commonMain and player-independent so the algorithm can be unit-tested
  * without Android, Media3, networking, or playback state.
@@ -899,32 +900,22 @@ internal object AutoSyncTimelineRetimer {
         group: AutoSyncCueGroup,
         output: MutableList<AutoSyncRetimedCue>,
     ) {
-        val referenceStart = reference[group.referenceStartIndex].startTimeMs
-        val referenceEnd = reference[group.referenceStartIndex + group.referenceCount - 1].endTimeMs
-            .coerceAtLeast(referenceStart + 1L)
-
         val targetStartIndex = group.targetStartIndex
         val targetEndIndex = group.targetStartIndex + group.targetCount - 1
-        val targetEnvelopeStart = target[targetStartIndex].startTimeMs
-        val targetEnvelopeEnd = target[targetEndIndex].endTimeMs.coerceAtLeast(targetEnvelopeStart + 1L)
-        val targetEnvelopeDuration = (targetEnvelopeEnd - targetEnvelopeStart).toDouble()
-        val referenceDuration = (referenceEnd - referenceStart).toDouble()
+        val referenceStart = reference[group.referenceStartIndex].startTimeMs
+
+        // The affine pass already preserves each external cue's duration (including FPS scaling).
+        // Move the matched group as one unit so its first cue starts with the embedded reference,
+        // but never inherit a foreign-language or estimated reference end time.
+        val groupShiftMs = referenceStart - output[targetStartIndex].startTimeMs
 
         for (index in targetStartIndex..targetEndIndex) {
-            val cue = target[index]
-            val relativeStart = ((cue.startTimeMs - targetEnvelopeStart) / targetEnvelopeDuration)
-                .coerceIn(0.0, 1.0)
-            val relativeEnd = ((cue.endTimeMs - targetEnvelopeStart) / targetEnvelopeDuration)
-                .coerceIn(relativeStart, 1.0)
-
-            val newStart = (referenceStart + relativeStart * referenceDuration).roundToLong()
-            val newEnd = (referenceStart + relativeEnd * referenceDuration)
-                .roundToLong()
-                .coerceAtLeast(newStart + 1L)
-
-            output[index] = output[index].copy(
+            val cue = output[index]
+            val durationMs = (cue.endTimeMs - cue.startTimeMs).coerceAtLeast(1L)
+            val newStart = (cue.startTimeMs + groupShiftMs).coerceAtLeast(0L)
+            output[index] = cue.copy(
                 startTimeMs = newStart,
-                endTimeMs = newEnd,
+                endTimeMs = newStart + durationMs,
             )
         }
     }

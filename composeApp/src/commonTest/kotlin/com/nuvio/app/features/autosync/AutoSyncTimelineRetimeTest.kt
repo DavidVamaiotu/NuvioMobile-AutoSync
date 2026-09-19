@@ -132,6 +132,38 @@ class AutoSyncTimelineRetimeTest {
     }
 
     @Test
+    fun matchedGroupsPreserveExternalCueDurations() {
+        val reference = irregularTimeline(80).map { cue ->
+            cue.copy(endTimeMs = cue.startTimeMs + 4_800L)
+        }
+        val target = shift(
+            reference.mapIndexed { index, cue ->
+                cue.copy(
+                    endTimeMs = cue.startTimeMs + 700L + (index % 5) * 180L,
+                    text = "translated $index",
+                )
+            },
+            -1_300L,
+        )
+
+        val originalDurations = target.map { it.endTimeMs - it.startTimeMs }
+        val result = assertNotNull(
+            AutoSyncTimelineRetimer.retime(
+                reference = reference,
+                target = target,
+                coarseScale = 1.0,
+                coarseInterceptMs = 1_300.0,
+            ),
+        )
+
+        assertTrue(result.confident)
+        assertEquals(
+            originalDurations,
+            result.cues.map { it.endTimeMs - it.startTimeMs },
+        )
+    }
+
+    @Test
     fun splitCuesAreStillHandledByExistingDp() {
         val reference = irregularTimeline(100)
         val target = buildList {

@@ -45,6 +45,8 @@ internal object EmbeddedSubtitleTimelineLoader {
     private const val MAX_SEEK_HEAD_HOPS = 4
     private const val DEFAULT_TIMESTAMP_SCALE_NS = 1_000_000L
     private const val DEFAULT_CUE_DURATION_MS = 5_000L
+    private const val LAST_MKV_CUE_ESTIMATED_DURATION_MS = 2_000L
+    private const val MAX_MKV_INTER_CUE_ESTIMATED_DURATION_MS = 4_000L
     private const val MIN_INDEXED_CUES = 8
     private const val MIN_INDEXED_SPAN_MS = 30_000L
     private const val MAX_CACHE_ENTRIES = 2
@@ -1121,7 +1123,7 @@ internal object EmbeddedSubtitleTimelineLoader {
         if (root.id != ID_CUES) return emptyMap()
         val rootEnd = root.endWithin(cuesElement.size) ?: return emptyMap()
         val subtitleTrackNumbers = subtitleTracks.mapTo(mutableSetOf()) { it.number }
-        val cuesByTrack = subtitleTrackNumbers.associateWith { mutableListOf<SubtitleSyncCue>() }
+        val pendingByTrack = subtitleTrackNumbers.associateWith { mutableListOf<PendingIndexedCue>() }
             .toMutableMap()
 
         forEachChild(cuesElement, root.dataStart, rootEnd) { cuePoint ->
@@ -1157,17 +1159,38 @@ internal object EmbeddedSubtitleTimelineLoader {
                 val durationMs = position.durationTicks
                     ?.let { ticksToMs(it, timestampScaleNs) }
                     ?.takeIf { it > 0L }
-                    ?: DEFAULT_CUE_DURATION_MS
-                cuesByTrack[position.trackNumber]?.add(
-                    SubtitleSyncCue(
+                pendingByTrack[position.trackNumber]?.add(
+                    PendingIndexedCue(
                         startTimeMs = startMs,
-                        endTimeMs = startMs + durationMs,
-                        text = "",
+                        explicitDurationMs = durationMs,
                     ),
                 )
             }
         }
-        return cuesByTrack
+
+        return pendingByTrack.mapValues { (_, pending) ->
+            val sorted = pending
+                .sortedBy { it.startTimeMs }
+                .distinctBy { it.startTimeMs }
+
+            sorted.mapIndexed { index, cue ->
+                val durationMs = cue.explicitDurationMs ?: run {
+                    val nextStartMs = sorted.getOrNull(index + 1)?.startTimeMs
+                    if (nextStartMs != null && nextStartMs > cue.startTimeMs) {
+                        (nextStartMs - cue.startTimeMs)
+                            .coerceAtMost(MAX_MKV_INTER_CUE_ESTIMATED_DURATION_MS)
+                            .coerceAtLeast(1L)
+                    } else {
+                        LAST_MKV_CUE_ESTIMATED_DURATION_MS
+                    }
+                }
+                SubtitleSyncCue(
+                    startTimeMs = cue.startTimeMs,
+                    endTimeMs = cue.startTimeMs + durationMs,
+                    text = "",
+                )
+            }
+        }
     }
 
     private fun buildFallbackTrackLabel(track: MatroskaSubtitleTrack): String {
@@ -1590,6 +1613,11 @@ internal object EmbeddedSubtitleTimelineLoader {
     private data class CueTrackPosition(
         val trackNumber: Int,
         val durationTicks: Long?,
+    )
+
+    private data class PendingIndexedCue(
+        val startTimeMs: Long,
+        val explicitDurationMs: Long?,
     )
 }
 

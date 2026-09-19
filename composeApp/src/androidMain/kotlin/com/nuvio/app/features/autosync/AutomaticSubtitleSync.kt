@@ -30,6 +30,14 @@ internal object AutomaticSubtitleSync {
     private const val MIN_SELECTED_CUES = 1
     private const val MAX_LOGGED_CUE_SAMPLES = 20
     private const val MAX_ALTERNATIVE_EXTERNAL_SUBTITLES = 4
+    private const val EXCEPTIONAL_MATCH_QUALITY = 0.95
+    private const val EXCEPTIONAL_MATCH_TARGET_COVERAGE = 0.99
+    private const val EXCEPTIONAL_MATCH_REFERENCE_COVERAGE = 0.97
+    private const val EXCEPTIONAL_MATCH_SIMPLE_RATIO = 0.98
+    private const val REFERENCE_SEARCH_CHECKPOINT = 6
+    private const val STRONG_CHECKPOINT_QUALITY = 0.92
+    private const val STRONG_CHECKPOINT_TARGET_COVERAGE = 0.98
+    private const val STRONG_CHECKPOINT_REFERENCE_COVERAGE = 0.90
     private const val FALLBACK_CANDIDATE_POLL_MS = 250L
     private const val FALLBACK_CANDIDATE_WAIT_MS = 10_000L
 
@@ -264,6 +272,12 @@ internal object AutomaticSubtitleSync {
                 }
             }
 
+            var bestAlternative: AutoSyncResolvedTimeline? = null
+            var bestAlternativeMatch: TimelineRetimeMatch? = null
+            var bestAlternativeIndex = -1
+            var bestAlternativeName: String? = null
+            var bestAlternativeCueCount = 0
+
             for ((index, candidate) in alternatives.withIndex()) {
                 val loaded = loadSelectedSubtitle(
                     url = candidate.url,
@@ -283,21 +297,40 @@ internal object AutomaticSubtitleSync {
                     target = loaded.cues,
                     referenceTracks = referenceTracks,
                 )
-                val best = evaluation.best
-                if (best?.timeline?.confident == true) {
-                    AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
-                    AutoSyncDebugLog.info {
-                        "V2 selected better external subtitle index=$index " +
-                            "url=${candidate.url} name=${candidate.name ?: "<none>"} " +
-                            "cues=${loaded.cues.size} alignment=${best.timeline.alignmentSource} " +
-                            "quality=${fmt(directTimelineQualityScore(best))}"
-                    }
-                    return@supervisorScope AutoSyncResolvedTimeline(
+                val best = evaluation.best ?: continue
+                if (!best.timeline.confident) continue
+
+                val previous = bestAlternativeMatch
+                if (
+                    previous == null ||
+                    directTimelineQualityScore(best) > directTimelineQualityScore(previous)
+                ) {
+                    bestAlternativeMatch = best
+                    bestAlternative = AutoSyncResolvedTimeline(
                         subtitleUrl = candidate.url,
                         subtitleHeaders = emptyMap(),
                         timeline = best.timeline,
                     )
+                    bestAlternativeIndex = index
+                    bestAlternativeName = candidate.name
+                    bestAlternativeCueCount = loaded.cues.size
                 }
+
+                if (isExceptionalMatch(best)) break
+            }
+
+            val chosenAlternative = bestAlternative
+            val chosenAlternativeMatch = bestAlternativeMatch
+            if (chosenAlternative != null && chosenAlternativeMatch != null) {
+                AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
+                AutoSyncDebugLog.info {
+                    "V2 selected best external subtitle index=$bestAlternativeIndex " +
+                        "url=${chosenAlternative.subtitleUrl} name=${bestAlternativeName ?: "<none>"} " +
+                        "cues=$bestAlternativeCueCount " +
+                        "alignment=${chosenAlternative.timeline.alignmentSource} " +
+                        "quality=${fmt(directTimelineQualityScore(chosenAlternativeMatch))}"
+                }
+                return@supervisorScope chosenAlternative
             }
 
             AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
@@ -341,7 +374,9 @@ internal object AutomaticSubtitleSync {
         }
 
         val attempts = ArrayList<TimelineRetimeMatch>(representatives.size)
-        for (track in representatives) {
+        var bestConfident: TimelineRetimeMatch? = null
+
+        for ((index, track) in representatives.withIndex()) {
             val timeline = buildTimelineRetimeResult(track, target) ?: continue
             val match = TimelineRetimeMatch(track, timeline)
             attempts += match
@@ -356,30 +391,33 @@ internal object AutomaticSubtitleSync {
                     "avgGroupCost=${fmt(timeline.averageGroupCost)} simpleRatio=${fmt(timeline.simpleGroupRatio)}"
             }
 
-            if (timeline.confident && timeline.alignmentSource == "delay-only-validated") {
-                val currentQuality = directTimelineQualityScore(match)
-                val betterPrior = attempts
-                    .dropLast(1)
-                    .asSequence()
-                    .filter { it.timeline.confident }
-                    .maxByOrNull(::directTimelineQualityScore)
-
+            if (timeline.confident) {
+                val previous = bestConfident
                 if (
-                    betterPrior == null ||
-                    currentQuality >= directTimelineQualityScore(betterPrior)
+                    previous == null ||
+                    directTimelineQualityScore(match) > directTimelineQualityScore(previous)
                 ) {
-                    AutoSyncDebugLog.section { "$label RESULT" }
+                    bestConfident = match
+                }
+
+                if (isExceptionalMatch(match)) {
                     AutoSyncDebugLog.info {
-                        "delay-only accepted url=$url reference=${track.key} " +
-                            "scale=1.000000 offset=${"%.1f".format(timeline.alignmentInterceptMs)}ms"
+                        "$label exceptional reference accepted early reference=${track.key} " +
+                            "quality=${fmt(directTimelineQualityScore(match))}"
                     }
                     return@withContext CandidateEvaluation(best = match, attempts = attempts)
                 }
+            }
 
-                AutoSyncDebugLog.info {
-                    "delay-only not preferred reference=${track.key} " +
-                        "quality=${fmt(currentQuality)} betterPrior=${betterPrior.track.key} " +
-                        "betterQuality=${fmt(directTimelineQualityScore(betterPrior))}"
+            if (attempts.size >= REFERENCE_SEARCH_CHECKPOINT) {
+                val checkpointBest = bestConfident
+                if (checkpointBest != null && isStrongCheckpointMatch(checkpointBest)) {
+                    AutoSyncDebugLog.info {
+                        "$label reference search stopped after ${attempts.size} usable candidates " +
+                            "best=${checkpointBest.track.key} " +
+                            "quality=${fmt(directTimelineQualityScore(checkpointBest))}"
+                    }
+                    break
                 }
             }
         }
@@ -784,6 +822,23 @@ internal object AutomaticSubtitleSync {
             result.simpleGroupRatio * 0.20 -
             skipPenalty -
             sdhPenalty
+    }
+
+    private fun isExceptionalMatch(match: TimelineRetimeMatch): Boolean {
+        val result = match.timeline
+        return result.confident &&
+            directTimelineQualityScore(match) >= EXCEPTIONAL_MATCH_QUALITY &&
+            result.targetCoverage >= EXCEPTIONAL_MATCH_TARGET_COVERAGE &&
+            result.referenceCoverage >= EXCEPTIONAL_MATCH_REFERENCE_COVERAGE &&
+            result.simpleGroupRatio >= EXCEPTIONAL_MATCH_SIMPLE_RATIO
+    }
+
+    private fun isStrongCheckpointMatch(match: TimelineRetimeMatch): Boolean {
+        val result = match.timeline
+        return result.confident &&
+            directTimelineQualityScore(match) >= STRONG_CHECKPOINT_QUALITY &&
+            result.targetCoverage >= STRONG_CHECKPOINT_TARGET_COVERAGE &&
+            result.referenceCoverage >= STRONG_CHECKPOINT_REFERENCE_COVERAGE
     }
 
     private fun buildTimelineRetimeResult(
