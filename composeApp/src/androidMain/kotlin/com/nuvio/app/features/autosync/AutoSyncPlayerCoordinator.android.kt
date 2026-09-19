@@ -1,0 +1,215 @@
+@file:OptIn(androidx.media3.common.util.UnstableApi::class)
+
+package com.nuvio.app.features.autosync
+
+import android.content.Context
+import android.util.Log
+import android.widget.Toast
+import androidx.media3.common.C
+import androidx.media3.exoplayer.ExoPlayer
+import com.nuvio.app.features.player.AutoSyncSubtitleCandidate
+import com.nuvio.app.features.player.PlayerSubtitleUtils
+import com.nuvio.app.features.player.SidecarSubtitleController
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+
+private const val TAG = "NuvioAutoSyncPlayer"
+
+internal class AutoSyncPlayerCoordinator(
+    private val context: Context,
+    private val scope: CoroutineScope,
+    private val player: ExoPlayer,
+    private val sidecar: SidecarSubtitleController,
+    private val sourceUrl: String,
+    private val sourceHeaders: Map<String, String>,
+    private val getSubtitleHeaders: (String) -> Map<String, String>,
+    private val getUseLibass: () -> Boolean,
+    private val getPreferredLanguage: () -> String?,
+    private val onMimeTypeSelected: (String) -> Unit,
+    private val onSubtitleDelayChanged: (Int) -> Unit,
+) {
+    private var job: Job? = null
+    private var candidates: List<AutoSyncSubtitleCandidate> = emptyList()
+    private var appliedListener: ((subtitleUrl: String, delayMs: Int) -> Unit)? = null
+
+    fun setCandidates(value: List<AutoSyncSubtitleCandidate>) {
+        candidates = value.distinctBy { it.url }
+    }
+
+    fun setAppliedListener(
+        listener: ((subtitleUrl: String, delayMs: Int) -> Unit)?,
+    ) {
+        appliedListener = listener
+    }
+
+    fun cancel() {
+        job?.cancel()
+        job = null
+    }
+
+    fun dispose() {
+        cancel()
+        appliedListener = null
+    }
+
+    fun start(
+        url: String,
+        attachSubtitleOnReject: Boolean,
+        fallbackAttach: (String) -> Unit,
+    ) {
+        cancel()
+
+        val useLibass = getUseLibass()
+        val subtitleHeaders = getSubtitleHeaders(url)
+        if (!sidecar.canAttachAddonSubtitleViaSidecar(url, useLibass)) {
+            if (attachSubtitleOnReject) fallbackAttach(url)
+            Toast.makeText(
+                context,
+                "Auto Sync V2: seamless retiming is unavailable for this subtitle renderer",
+                Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
+
+        if (!sidecar.startSidecarAddonSubtitle(url, subtitleHeaders, useLibass)) {
+            if (attachSubtitleOnReject) fallbackAttach(url)
+            Toast.makeText(
+                context,
+                "Auto Sync V2: subtitle could not be attached without reloading playback",
+                Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
+
+        onMimeTypeSelected(PlayerSubtitleUtils.mimeTypeFromUrl(url))
+        player.trackSelectionParameters = player.trackSelectionParameters
+            .buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+            .build()
+
+        job = scope.launch {
+            Toast.makeText(
+                context,
+                "Auto Sync V2: building embedded timeline…",
+                Toast.LENGTH_SHORT,
+            ).show()
+
+            val resolved = AutomaticSubtitleSync.findTimelineRetime(
+                sourceKey = sourceUrl,
+                sourceHeaders = sourceHeaders,
+                selectedSubtitleUrl = url,
+                selectedSubtitleHeaders = subtitleHeaders,
+                preferredLanguage = getPreferredLanguage(),
+                alternativeSubtitles = candidates,
+                onReferenceReady = {
+                    Toast.makeText(
+                        context,
+                        "Auto Sync V2: matching timelines…",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                },
+            )
+
+            if (resolved == null) {
+                val copied = if (AutoSyncDebugLog.ENABLED) {
+                    AutoSyncDebugLog.finishAndCopy(
+                        context = context,
+                        decision = "REJECT V2 - original sidecar timing kept",
+                    )
+                } else {
+                    false
+                }
+                Toast.makeText(
+                    context,
+                    if (copied) {
+                        "Auto Sync V2: no reliable match — original subtitle kept • debug log copied"
+                    } else {
+                        "Auto Sync V2: no reliable match — original subtitle kept"
+                    },
+                    Toast.LENGTH_LONG,
+                ).show()
+                return@launch
+            }
+
+            val chosenUrl = resolved.subtitleUrl
+            val timeline = resolved.timeline
+            val applied = if (chosenUrl == url) {
+                applyAutoSyncSidecarTimeline(
+                    sidecar = sidecar,
+                    url = url,
+                    timeline = timeline,
+                )
+            } else {
+                replaceAutoSyncSidecarSubtitle(
+                    sidecar = sidecar,
+                    expectedCurrentUrl = url,
+                    url = chosenUrl,
+                    headers = resolved.subtitleHeaders,
+                    useLibass = useLibass,
+                    timeline = timeline,
+                )
+            }
+
+            if (!applied) {
+                if (AutoSyncDebugLog.ENABLED) {
+                    AutoSyncDebugLog.finishAndCopy(
+                        context = context,
+                        decision =
+                            if (chosenUrl == url) {
+                                "REJECT V2 - sidecar changed or was unavailable before apply"
+                            } else {
+                                "REJECT V2 replacement - original sidecar preserved"
+                            },
+                    )
+                }
+                Toast.makeText(
+                    context,
+                    if (chosenUrl == url) {
+                        "Auto Sync V2: match found but subtitle changed — original timing kept"
+                    } else {
+                        "Auto Sync V2: better subtitle could not be prepared — original subtitle kept"
+                    },
+                    Toast.LENGTH_LONG,
+                ).show()
+                return@launch
+            }
+
+            if (chosenUrl != url) {
+                onMimeTypeSelected(PlayerSubtitleUtils.mimeTypeFromUrl(chosenUrl))
+            }
+            onSubtitleDelayChanged(0)
+            appliedListener?.invoke(chosenUrl, 0)
+
+            AutoSyncDebugLog.info {
+                "AUTO APPLY V2 sidecar=true bufferPreserved=true " +
+                    "externalChanged=${chosenUrl != url} groups=${timeline.groups.size} " +
+                    "alignment=${timeline.alignmentSource} " +
+                    "targetCoverage=${"%.4f".format(timeline.targetCoverage)} " +
+                    "referenceCoverage=${"%.4f".format(timeline.referenceCoverage)} finalDelay=0ms"
+            }
+            if (AutoSyncDebugLog.ENABLED) {
+                AutoSyncDebugLog.finishAndCopy(
+                    context = context,
+                    decision =
+                        "APPLIED V2 sidecar timeline bufferPreserved=true " +
+                            "externalChanged=${chosenUrl != url} url=$chosenUrl " +
+                            "alignment=${timeline.alignmentSource}",
+                )
+            }
+            Toast.makeText(
+                context,
+                if (chosenUrl == url) {
+                    "Auto Sync V2: seamless match applied"
+                } else {
+                    "Auto Sync V2: switched to a better subtitle and synchronized it"
+                },
+                Toast.LENGTH_LONG,
+            ).show()
+            Log.i(
+                TAG,
+                "applied selected=$url chosen=$chosenUrl alignment=${timeline.alignmentSource}",
+            )
+        }
+    }
+}

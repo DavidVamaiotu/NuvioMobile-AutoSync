@@ -17,7 +17,6 @@ import androidx.media3.extractor.text.SubtitleParser
 import androidx.media3.ui.SubtitleView
 import com.nuvio.app.R
 import com.nuvio.app.features.addons.httpGetTextWithHeaders
-import com.nuvio.app.features.autosync.AutoSyncTimelineRetimeResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -25,17 +24,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import java.lang.ref.WeakReference
-import kotlin.math.roundToLong
 
 private const val SIDECAR_TAG = "NuvioSidecar"
 private val sidecarParserFactory = DefaultSubtitleParserFactory()
 private val mainHandler = Handler(Looper.getMainLooper())
 private const val SIDECAR_RENDER_INTERVAL_MS = 100L
-private const val AUTO_SYNC_SIDECAR_WAIT_MS = 15_000L
-private const val AUTO_SYNC_SIDECAR_WAIT_POLL_MS = 25L
-private const val EMPTY_CUE_SIGNATURE = 0x4E5556494FL // "NUVIO
+private const val EMPTY_CUE_SIGNATURE = 0x4E5556494FL // "NUVIO"
 
 internal class SidecarSubtitleController(
     private val scope: CoroutineScope,
@@ -53,37 +48,35 @@ internal class SidecarSubtitleController(
     fun isSidecarActive(): Boolean = activeSidecarSubtitleKey != null
 
     /**
-     * Atomically replaces only the timing of the currently parsed sidecar cues.
-     * Cue text/spans/positioning remain the Media3-parsed originals. Media3 event boundaries are
-     * mapped onto V2's corrected cue boundaries, with the accepted affine alignment as fallback.
+     * Commits already-prepared cues only if the expected subtitle is still active.
      */
-    suspend fun applyAutoSyncTimeline(
-        url: String,
-        timeline: AutoSyncTimelineRetimeResult,
+    internal fun commitPreparedSidecarSubtitle(
+        expectedCurrentUrl: String,
+        newUrl: String,
+        cues: List<CuesWithTiming>,
     ): Boolean {
-        if (!timeline.confident) return false
-        if (activeSidecarSubtitleKey != url) return false
+        if (cues.isEmpty() || activeSidecarSubtitleKey != expectedCurrentUrl) return false
 
-        val current = sidecarTimedCues.takeIf { it.isNotEmpty() } ?: withTimeoutOrNull(
-            AUTO_SYNC_SIDECAR_WAIT_MS,
-        ) {
-            while (activeSidecarSubtitleKey == url && sidecarTimedCues.isEmpty()) {
-                delay(AUTO_SYNC_SIDECAR_WAIT_POLL_MS)
-            }
-            sidecarTimedCues.takeIf {
-                activeSidecarSubtitleKey == url && it.isNotEmpty()
-            }
-        } ?: return false
+        if (newUrl != expectedCurrentUrl) {
+            sidecarSubtitleJob?.cancel()
+            activeSidecarSubtitleKey = newUrl
+        }
 
-        if (activeSidecarSubtitleKey != url) return false
-        val retimed = retimeSidecarTimedCues(current, timeline)
-        sidecarTimedCues = retimed
+        sidecarTimedCues = cues
         lastSidecarCueSignature = null
-        Log.i(
-            SIDECAR_TAG,
-            "Applied AutoSync V2 timeline url=$url cues=${retimed.size} " +
-                "coverage=${"%.3f".format(timeline.targetCoverage)}",
-        )
+        postToSubtitleView { view ->
+            view.setTag(R.id.player_view_sidecar_generation_tag, newUrl)
+        }
+        renderSidecarCuesAtCurrentPosition()
+
+        if (newUrl != expectedCurrentUrl) {
+            sidecarSubtitleJob = scope.launch {
+                while (isActive && activeSidecarSubtitleKey == newUrl) {
+                    renderSidecarCuesAtCurrentPosition()
+                    delay(SIDECAR_RENDER_INTERVAL_MS)
+                }
+            }
+        }
         return true
     }
 
@@ -169,7 +162,7 @@ internal class SidecarSubtitleController(
                 sidecarTimedCues = parseResult.cues
                 Log.d(
                     SIDECAR_TAG,
-                    "Sidecar subtitle ready url=$url cues=${sidecarTimedCues.size} mime=${parseResult.effectiveMime} source=${parseResult.source} (buffer preserved)"
+                    "Sidecar subtitle ready url=$url cues=${parseResult.cues.size} mime=${parseResult.effectiveMime} source=${parseResult.source} (buffer preserved)"
                 )
 
                 while (isActive && activeSidecarSubtitleKey == subtitleKey) {
@@ -368,93 +361,4 @@ private fun normalizeSidecarCuePosition(cue: Cue): Cue {
         .setLine(Cue.DIMEN_UNSET, Cue.TYPE_UNSET)
         .setLineAnchor(Cue.TYPE_UNSET)
         .build()
-}
-
-private const val AUTO_SYNC_BOUNDARY_TOLERANCE_MS = 500L
-
-private data class AutoSyncTimingBoundary(
-    val originalMs: Long,
-    val retimedMs: Long,
-)
-
-private fun retimeSidecarTimedCues(
-    source: List<CuesWithTiming>,
-    timeline: AutoSyncTimelineRetimeResult,
-): List<CuesWithTiming> {
-    val boundaries = ArrayList<AutoSyncTimingBoundary>(timeline.cues.size * 2)
-    timeline.cues.forEach { cue ->
-        boundaries += AutoSyncTimingBoundary(cue.originalStartTimeMs, cue.startTimeMs)
-        boundaries += AutoSyncTimingBoundary(cue.originalEndTimeMs, cue.endTimeMs)
-    }
-    boundaries.sortBy { it.originalMs }
-
-    var boundaryMapped = 0
-    var affineFallback = 0
-
-    fun mapTime(originalMs: Long): Long {
-        if (boundaries.isNotEmpty()) {
-            var low = 0
-            var high = boundaries.size
-            while (low < high) {
-                val mid = (low + high) ushr 1
-                if (boundaries[mid].originalMs < originalMs) low = mid + 1 else high = mid
-            }
-
-            val first = (low - 2).coerceAtLeast(0)
-            val last = (low + 2).coerceAtMost(boundaries.lastIndex)
-            var best: AutoSyncTimingBoundary? = null
-            var bestError = Long.MAX_VALUE
-            if (first <= last) {
-                for (index in first..last) {
-                    val candidate = boundaries[index]
-                    val error = kotlin.math.abs(candidate.originalMs - originalMs)
-                    if (error < bestError) {
-                        best = candidate
-                        bestError = error
-                    }
-                }
-            }
-            if (best != null && bestError <= AUTO_SYNC_BOUNDARY_TOLERANCE_MS) {
-                boundaryMapped += 1
-                return best.retimedMs.coerceAtLeast(0L)
-            }
-        }
-
-        affineFallback += 1
-        return (
-            originalMs.toDouble() * timeline.alignmentScale +
-                timeline.alignmentInterceptMs
-            ).roundToLong().coerceAtLeast(0L)
-    }
-
-    val out = ArrayList<CuesWithTiming>(source.size)
-    source.forEach { entry ->
-        if (entry.startTimeUs == C.TIME_UNSET) {
-            out += entry
-            return@forEach
-        }
-
-        val originalStartMs = entry.startTimeUs / 1_000L
-        val originalEndMs = when {
-            entry.endTimeUs != C.TIME_UNSET -> entry.endTimeUs / 1_000L
-            entry.durationUs != C.TIME_UNSET ->
-                originalStartMs + entry.durationUs / 1_000L
-            else -> originalStartMs + 1L
-        }.coerceAtLeast(originalStartMs + 1L)
-
-        val startMs = mapTime(originalStartMs)
-        val endMs = mapTime(originalEndMs).coerceAtLeast(startMs + 1L)
-        out += CuesWithTiming(
-            entry.cues,
-            startMs * 1_000L,
-            (endMs - startMs) * 1_000L,
-        )
-    }
-
-    Log.d(
-        SIDECAR_TAG,
-        "AutoSync V2 retime mapped sidecar=${source.size} " +
-            "boundaryMapped=$boundaryMapped affineFallback=$affineFallback",
-    )
-    return out
 }

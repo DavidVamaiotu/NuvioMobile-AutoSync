@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
 import com.nuvio.app.features.p2p.P2pStreamingState
@@ -109,17 +108,7 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi() {
     val gestureCallbacks = rememberSurfaceGestureCallbacks()
     val playbackGesturesEnabled = initialLoadCompleted && errorMessage == null
 
-    LaunchedEffect(playerController, addonSubtitles) {
-        playerController?.setAutoSyncSubtitleCandidates(
-            addonSubtitles.map { subtitle ->
-                AutoSyncSubtitleCandidate(
-                    url = subtitle.url,
-                    language = subtitle.language,
-                    name = subtitle.display,
-                )
-            },
-        )
-    }
+    BindAutoSyncRuntimeEffects()
 
     Box(
         modifier = Modifier
@@ -177,26 +166,7 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi() {
                 onControllerReady = { controller ->
                     playerController = controller
                     playerControllerSourceUrl = activeSourceUrl
-                    controller.setAutoSyncAppliedListener { subtitleUrl, delayMs ->
-                        val appliedSubtitle = addonSubtitles.firstOrNull { it.url == subtitleUrl }
-                        selectedAddonSubtitleId = appliedSubtitle?.selectionKey ?: subtitleUrl
-                        selectedSubtitleIndex = -1
-                        useCustomSubtitles = true
-                        preferredSubtitleSelectionApplied = true
-                        if (appliedSubtitle != null) {
-                            persistAddonSubtitlePreference(appliedSubtitle)
-                        }
-
-                        val appliedDelayMs = delayMs.coerceIn(
-                            SUBTITLE_DELAY_MIN_MS,
-                            SUBTITLE_DELAY_MAX_MS,
-                        )
-                        subtitleDelayMs = appliedDelayMs
-                        PlayerTrackPreferenceStorage.saveSubtitleDelayMs(
-                            playbackSession.videoId,
-                            appliedDelayMs,
-                        )
-                    }
+                    configureAutoSyncController(controller)
                 },
                 onSnapshot = { snapshot ->
                     updatePlaybackSnapshot(snapshot)
@@ -548,11 +518,7 @@ private fun PlayerScreenRuntime.RenderPlayerModals(displayedPositionMs: Long) {
         onAutoSyncCapture = { captureSubtitleAutoSyncTime() },
         onAutoSyncCueSelected = { cue -> applySubtitleAutoSyncCue(cue) },
         onAutoSyncReload = { loadSubtitleAutoSyncCues(force = true) },
-        onAutomaticAutoSync = {
-            selectedAddonSubtitle?.let { subtitle ->
-                playerController?.runSubtitleAutoSync(subtitle.url)
-            }
-        },
+        onAutomaticAutoSync = { runSelectedAddonAutoSync() },
         onSubtitleModalDismissed = { showSubtitleModal = false },
         showVideoSettingsModal = showVideoSettingsModal,
         playerSettings = playerSettingsUiState,

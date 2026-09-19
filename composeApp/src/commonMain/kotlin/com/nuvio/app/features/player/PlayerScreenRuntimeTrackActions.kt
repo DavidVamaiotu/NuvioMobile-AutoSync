@@ -1,7 +1,5 @@
 package com.nuvio.app.features.player
 
-import com.nuvio.app.features.autosync.AutoSyncPreferencesRepository
-
 internal val PlayerScreenRuntime.subtitleStyle: SubtitleStyleState
     get() = playerSettingsUiState.subtitleStyle
 
@@ -345,34 +343,6 @@ private fun PlayerScreenRuntime.tryAutoSelectPreferredSubtitleFromAvailableTrack
         disableAutomaticSubtitleSelection()
         preferredSubtitleSelectionApplied = true
     }
-}
-
-
-private fun PlayerScreenRuntime.maybeAutoSyncRestoredSubtitleAtStart(url: String): Boolean {
-    val controller = playerController ?: return false
-    val videoKey = activeVideoId?.takeIf { it.isNotBlank() } ?: activeSourceUrl
-    if (!AutoSyncPreferencesRepository.claimStartupRun(hashCode(), videoKey)) return false
-    controller.setSubtitleUriWithAutoSync(url)
-    return true
-}
-
-private fun PlayerScreenRuntime.maybeAutoSyncPreferredSubtitleAtStart(
-    subtitle: AddonSubtitle,
-): Boolean {
-    if (isUserExplicitSubtitleSelection) return false
-    val preferredLanguage =
-        normalizeLanguageCode(playerSettingsUiState.preferredSubtitleLanguage) ?: return false
-    if (
-        preferredLanguage.isBlank() ||
-        preferredLanguage == SubtitleLanguageOption.NONE ||
-        preferredLanguage == SubtitleLanguageOption.FORCED
-    ) return false
-    val controller = playerController ?: return false
-    val videoKey = activeVideoId?.takeIf { it.isNotBlank() } ?: activeSourceUrl
-
-    if (!AutoSyncPreferencesRepository.claimStartupRun(hashCode(), videoKey)) return false
-    controller.setSubtitleUriWithAutoSync(subtitle.url)
-    return true
 }
 
 private fun PlayerScreenRuntime.disableAutomaticSubtitleSelection() {
