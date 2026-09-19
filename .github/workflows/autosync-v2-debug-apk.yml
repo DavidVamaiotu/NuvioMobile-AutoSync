@@ -1,0 +1,55 @@
+name: Build AutoSync V2 Debug APK
+
+on:
+  push:
+    branches:
+      - autosync-v2-timeline
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build AutoSync V2 full debug APK
+    runs-on: ubuntu-latest
+
+    env:
+      NUVIO_SUPABASE_URL: ${{ secrets.NUVIO_SUPABASE_URL }}
+      NUVIO_SUPABASE_ANON_KEY: ${{ secrets.NUVIO_SUPABASE_ANON_KEY }}
+      NUVIO_SUPABASE_FALLBACK_URL: ${{ secrets.NUVIO_SUPABASE_FALLBACK_URL }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Create local properties
+        run: |
+          cat > local.properties <<'PROPS'
+          SIMKL_CLIENT_ID=a0b848cdb58e2e743c8efbce94edc7ca5124cc66f6f793bb91ee1f0470948096
+          SIMKL_REDIRECT_URI=nuvio://auth/simkl
+          SIMKL_APP_NAME=nuvio
+          INTRODB_API_URL=https://api.introdb.app/
+          IMDB_RATINGS_API_BASE_URL=https://seriesgraph.com/
+          IMDB_TAPFRAME_API_BASE_URL=https://imdb.tapframe.space/
+          PROPS
+
+      - name: Build full debug APK
+        run: ./gradlew :androidApp:assembleFullDebug --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: NuvioMobile-AutoSync-V2-debug
+          path: androidApp/build/outputs/apk/full/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
