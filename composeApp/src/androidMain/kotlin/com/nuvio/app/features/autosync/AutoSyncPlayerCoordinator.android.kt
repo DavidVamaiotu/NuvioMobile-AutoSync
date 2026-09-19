@@ -13,6 +13,8 @@ import com.nuvio.app.features.player.SidecarSubtitleController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 private const val TAG = "NuvioAutoSyncPlayer"
 
@@ -60,14 +62,20 @@ internal class AutoSyncPlayerCoordinator(
     ) {
         cancel()
 
+        Toast.makeText(
+            context,
+            "Auto Sync V2 started",
+            Toast.LENGTH_SHORT,
+        ).show()
+
         val useLibass = getUseLibass()
         val subtitleHeaders = getSubtitleHeaders(url)
         if (!sidecar.canAttachAddonSubtitleViaSidecar(url, useLibass)) {
             if (attachSubtitleOnReject) fallbackAttach(url)
             Toast.makeText(
                 context,
-                "Auto Sync V2: seamless retiming is unavailable for this subtitle renderer",
-                Toast.LENGTH_LONG,
+                "Auto Sync V2 failed: unsupported subtitle renderer",
+                Toast.LENGTH_SHORT,
             ).show()
             return
         }
@@ -76,8 +84,8 @@ internal class AutoSyncPlayerCoordinator(
             if (attachSubtitleOnReject) fallbackAttach(url)
             Toast.makeText(
                 context,
-                "Auto Sync V2: subtitle could not be attached without reloading playback",
-                Toast.LENGTH_LONG,
+                "Auto Sync V2 failed: subtitle could not be loaded",
+                Toast.LENGTH_SHORT,
             ).show()
             return
         }
@@ -89,12 +97,6 @@ internal class AutoSyncPlayerCoordinator(
             .build()
 
         job = scope.launch {
-            Toast.makeText(
-                context,
-                "Auto Sync V2: building embedded timeline…",
-                Toast.LENGTH_SHORT,
-            ).show()
-
             val resolved = AutomaticSubtitleSync.findTimelineRetime(
                 sourceKey = sourceUrl,
                 sourceHeaders = sourceHeaders,
@@ -103,32 +105,20 @@ internal class AutoSyncPlayerCoordinator(
                 preferredLanguage = getPreferredLanguage(),
                 alternativeSubtitles = candidates,
                 alternativeSubtitlesProvider = { candidates },
-                onReferenceReady = {
-                    Toast.makeText(
-                        context,
-                        "Auto Sync V2: matching timelines…",
-                        Toast.LENGTH_SHORT,
-                    ).show()
-                },
+                onReferenceReady = {},
             )
 
             if (resolved == null) {
-                val copied = if (AutoSyncDebugLog.ENABLED) {
+                if (AutoSyncDebugLog.ENABLED) {
                     AutoSyncDebugLog.finishAndCopy(
                         context = context,
                         decision = "REJECT V2 - original sidecar timing kept",
                     )
-                } else {
-                    false
                 }
                 Toast.makeText(
                     context,
-                    if (copied) {
-                        "Auto Sync V2: no reliable match — original subtitle kept • debug log copied"
-                    } else {
-                        "Auto Sync V2: no reliable match — original subtitle kept"
-                    },
-                    Toast.LENGTH_LONG,
+                    "Auto Sync V2 failed: no reliable match",
+                    Toast.LENGTH_SHORT,
                 ).show()
                 return@launch
             }
@@ -182,12 +172,8 @@ internal class AutoSyncPlayerCoordinator(
                 }
                 Toast.makeText(
                     context,
-                    if (chosenUrl == url) {
-                        "Auto Sync V2: match found but subtitle changed — original timing kept"
-                    } else {
-                        "Auto Sync V2: better subtitle could not be prepared — original subtitle kept"
-                    },
-                    Toast.LENGTH_LONG,
+                    "Auto Sync V2 failed: could not apply sync",
+                    Toast.LENGTH_SHORT,
                 ).show()
                 return@launch
             }
@@ -216,12 +202,12 @@ internal class AutoSyncPlayerCoordinator(
             }
             Toast.makeText(
                 context,
-                if (chosenUrl == url) {
-                    "Auto Sync V2: seamless match applied"
-                } else {
-                    "Auto Sync V2: switched to a better subtitle and synchronized it"
-                },
-                Toast.LENGTH_LONG,
+                buildAutoSyncSuccessToast(
+                    replacedSubtitle = chosenUrl != url,
+                    scale = timeline.alignmentScale,
+                    interceptMs = timeline.alignmentInterceptMs,
+                ),
+                Toast.LENGTH_SHORT,
             ).show()
             Log.i(
                 TAG,
@@ -229,4 +215,35 @@ internal class AutoSyncPlayerCoordinator(
             )
         }
     }
+}
+
+private fun buildAutoSyncSuccessToast(
+    replacedSubtitle: Boolean,
+    scale: Double,
+    interceptMs: Double,
+): String {
+    val driftCorrected = abs(scale - 1.0) >= 0.0005
+    val prefix = if (replacedSubtitle) {
+        "Auto Sync V2: subtitle replaced"
+    } else {
+        "Auto Sync V2 succeeded"
+    }
+
+    return when {
+        driftCorrected -> "$prefix • drift corrected"
+        abs(interceptMs) >= 50.0 -> "$prefix • ${formatAutoSyncOffset(interceptMs)}"
+        else -> "$prefix • already in sync"
+    }
+}
+
+private fun formatAutoSyncOffset(offsetMs: Double): String {
+    val roundedMs = offsetMs.roundToInt()
+    if (abs(roundedMs) < 1_000) {
+        return "${if (roundedMs > 0) "+" else ""}$roundedMs ms"
+    }
+
+    val tenths = (roundedMs / 100.0).roundToInt()
+    val whole = tenths / 10
+    val decimal = abs(tenths % 10)
+    return "${if (tenths > 0) "+" else ""}$whole.$decimal s"
 }
