@@ -73,6 +73,8 @@ internal object AutoSyncTimelineRetimer {
     private const val DISCOVERED_MIN_TARGET_COVERAGE = 0.90
     private const val DISCOVERED_MAX_AVERAGE_GROUP_COST = 1.10
     private const val DISCOVERED_MIN_SIMPLE_GROUP_RATIO = 0.55
+    private const val SEGMENTATION_IMBALANCE_RATIO = 1.60
+    private const val SEGMENTATION_MIN_TIMELINE_COVERAGE = 0.80
     private const val COVERAGE_SEGMENT_MIN_COVERAGE = 0.72
     private const val COVERAGE_SEGMENT_MAX_AVERAGE_COST = 1.35
     private const val COVERAGE_SEGMENT_MIN_GROUPS = 4
@@ -102,7 +104,11 @@ internal object AutoSyncTimelineRetimer {
                 alignmentScale = coarseScale,
                 alignmentInterceptMs = coarseInterceptMs,
                 coverageSegmentsPassed = coverageSegmentsPassed(result, target.size),
-                simpleGroupRatio = simpleGroupRatio(result),
+                simpleGroupRatio = structuralGroupRatio(
+                    result = result,
+                    referenceSize = reference.size,
+                    targetSize = target.size,
+                ),
             )
         }
 
@@ -133,7 +139,11 @@ internal object AutoSyncTimelineRetimer {
         ) ?: return null
 
         val coverageSegments = coverageSegmentsPassed(result, target.size)
-        val simpleRatio = simpleGroupRatio(result)
+        val simpleRatio = structuralGroupRatio(
+            result = result,
+            referenceSize = reference.size,
+            targetSize = target.size,
+        )
         val smallSample = target.size < SMALL_SAMPLE_CUE_LIMIT
         val requiredActivityScore =
             if (smallSample) SMALL_SAMPLE_ACTIVITY_MIN_SCORE else ACTIVITY_MIN_SCORE
@@ -878,14 +888,38 @@ internal object AutoSyncTimelineRetimer {
         return passed
     }
 
-    private fun simpleGroupRatio(result: AutoSyncTimelineRetimeResult): Double {
+    private fun structuralGroupRatio(
+        result: AutoSyncTimelineRetimeResult,
+        referenceSize: Int,
+        targetSize: Int,
+    ): Double {
         if (result.groups.isEmpty()) return 0.0
-        val simple =
+
+        var compatible =
             result.oneToOneGroups +
                 result.oneToTwoGroups +
                 result.twoToOneGroups +
                 result.twoToTwoGroups
-        return simple.toDouble() / result.groups.size
+
+        val enoughTimelineCoverage =
+            result.targetCoverage >= SEGMENTATION_MIN_TIMELINE_COVERAGE &&
+                result.referenceCoverage >= SEGMENTATION_MIN_TIMELINE_COVERAGE
+
+        if (enoughTimelineCoverage) {
+            val referencePerTarget =
+                referenceSize.toDouble() / targetSize.coerceAtLeast(1).toDouble()
+            val targetPerReference =
+                targetSize.toDouble() / referenceSize.coerceAtLeast(1).toDouble()
+
+            if (referencePerTarget >= SEGMENTATION_IMBALANCE_RATIO) {
+                compatible += result.threeToOneGroups
+            }
+            if (targetPerReference >= SEGMENTATION_IMBALANCE_RATIO) {
+                compatible += result.oneToThreeGroups
+            }
+        }
+
+        return compatible.toDouble() / result.groups.size
     }
 
     private data class ActivityTimeline(

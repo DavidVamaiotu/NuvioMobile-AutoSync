@@ -202,6 +202,34 @@ class AutoSyncTimelineRetimeTest {
     }
 
     @Test
+    fun heavilyMergedTranslationAcceptsExpectedThreeToOneGrouping() {
+        val reference = irregularTimeline(180)
+        val target = reference.chunked(3).mapIndexed { index, group ->
+            SubtitleSyncCue(
+                startTimeMs = group.first().startTimeMs,
+                endTimeMs = group.last().endTimeMs,
+                text = "merged translation $index",
+            )
+        }
+
+        val result = assertNotNull(
+            AutoSyncTimelineRetimer.retime(
+                reference = reference,
+                target = target,
+                coarseScale = 1.0,
+                coarseInterceptMs = 0.0,
+                discoverAlignment = true,
+            ),
+        )
+
+        assertTrue(result.confident)
+        assertTrue(result.threeToOneGroups > 0)
+        assertTrue(result.targetCoverage >= 0.90)
+        assertTrue(result.referenceCoverage >= 0.80)
+        assertTrue(result.simpleGroupRatio >= 0.55)
+    }
+
+    @Test
     fun splitCuesAreStillHandledByExistingDp() {
         val reference = irregularTimeline(100)
         val target = buildList {
