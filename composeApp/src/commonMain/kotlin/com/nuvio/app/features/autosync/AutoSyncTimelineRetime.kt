@@ -2,8 +2,10 @@ package com.nuvio.app.features.autosync
 
 import com.nuvio.app.features.player.SubtitleSyncCue
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
 /**
@@ -35,28 +37,30 @@ internal object AutoSyncTimelineRetimer {
     private const val MAX_AVERAGE_GROUP_COST = 2.35
     private const val MAX_LONGEST_TARGET_SKIP_RUN = 12
 
-    // Rejected/ambiguous V1 seeds must earn independent full-film evidence before V2 can apply.
-    private const val INDEPENDENT_SEED_SAMPLES = 42
-    private const val INDEPENDENT_SEED_SEARCH_WINDOW_MS = 180_000L
-    private const val INDEPENDENT_PATTERN_RADIUS_CUES = 5
-    private const val INDEPENDENT_PATTERN_DISTANCE_TOLERANCE_MS = 900.0
-    private const val INDEPENDENT_PATTERN_MAX_COST = 1.20
-    private const val INDEPENDENT_ANCHOR_CANDIDATES_PER_SAMPLE = 4
-    private const val INDEPENDENT_CHAIN_INTERCEPT_TOLERANCE_MS = 8_000.0
-    private const val INDEPENDENT_CHAIN_MIN_ANCHORS = 10
-    private const val INDEPENDENT_CHAIN_MIN_SEGMENTS = 3
-    private const val INDEPENDENT_CHAIN_MAX_AVERAGE_COST = 1.00
-    private const val INDEPENDENT_CHAIN_EDGE_FRACTION = 0.12
-    private const val INDEPENDENT_CHAIN_MIN_SPAN_RATIO = 0.76
-    private const val MAX_INDEPENDENT_SEEDS = 3
-    private const val SEED_DEDUP_BUCKET_MS = 250.0
-    private const val AMBIGUOUS_MIN_TARGET_COVERAGE = 0.90
-    private const val AMBIGUOUS_MAX_AVERAGE_GROUP_COST = 1.10
-    private const val AMBIGUOUS_MAX_TARGET_SKIP_RUN = 8
-    private const val AMBIGUOUS_MIN_SIMPLE_GROUP_RATIO = 0.55
-    private const val ANCHOR_SEGMENT_MIN_COVERAGE = 0.72
-    private const val ANCHOR_SEGMENT_MAX_AVERAGE_COST = 1.35
-    private const val ANCHOR_SEGMENT_MIN_GROUPS = 4
+    // Whole-timeline subtitle activity correlation. This is deliberately global:
+    // mid-film cuts/splits are rejected rather than growing another piecewise synchronization layer.
+    private const val ACTIVITY_COARSE_BIN_MS = 500L
+    private const val ACTIVITY_FINE_BIN_MS = 100L
+    private const val ACTIVITY_MAX_OFFSET_MS = 180_000L
+    private const val ACTIVITY_FINE_RADIUS_MS = 750L
+    private const val ACTIVITY_MAX_CUE_DURATION_MS = 20_000L
+    private const val ACTIVITY_MAX_TIMELINE_MS = 8L * 60L * 60L * 1_000L
+    private const val ACTIVITY_MIN_SCORE = 0.55
+    private const val ACTIVITY_MIN_MARGIN = 0.02
+    private const val ACTIVITY_DISTINCT_TRANSFORM_MS = 3_000.0
+    private const val ACTIVITY_MIN_SCALE = 0.94
+    private const val ACTIVITY_MAX_SCALE = 1.06
+    private const val ACTIVITY_SCALE_DEDUP = 0.00035
+
+    // Activity correlation only finds the global corridor. The existing cue/group DP remains
+    // the final authority before embedded timestamps can replace external timing.
+    private const val DISCOVERED_MIN_TARGET_COVERAGE = 0.90
+    private const val DISCOVERED_MAX_AVERAGE_GROUP_COST = 1.10
+    private const val DISCOVERED_MAX_TARGET_SKIP_RUN = 8
+    private const val DISCOVERED_MIN_SIMPLE_GROUP_RATIO = 0.55
+    private const val COVERAGE_SEGMENT_MIN_COVERAGE = 0.72
+    private const val COVERAGE_SEGMENT_MAX_AVERAGE_COST = 1.35
+    private const val COVERAGE_SEGMENT_MIN_GROUPS = 4
 
     private val groupShapes = arrayOf(
         GroupShape(referenceCount = 1, targetCount = 1),
@@ -72,73 +76,49 @@ internal object AutoSyncTimelineRetimer {
         target: List<SubtitleSyncCue>,
         coarseScale: Double,
         coarseInterceptMs: Double,
-        requireIndependentAnchors: Boolean = false,
+        discoverAlignment: Boolean = false,
     ): AutoSyncTimelineRetimeResult? {
-        if (!requireIndependentAnchors) {
+        if (!discoverAlignment) {
             val result = retimeWithSeed(reference, target, coarseScale, coarseInterceptMs)
                 ?: return null
             return result.copy(
-                seedSource = "coarse",
-                seedInterceptMs = coarseInterceptMs,
-                anchorSegmentsPassed = anchorSegmentsPassed(result, target.size),
+                alignmentSource = "provided",
+                alignmentScale = coarseScale,
+                alignmentInterceptMs = coarseInterceptMs,
+                coverageSegmentsPassed = coverageSegmentsPassed(result, target.size),
                 simpleGroupRatio = simpleGroupRatio(result),
             )
         }
 
-        val seeds = independentSeedCandidates(
+        val alignment = discoverActivityAlignment(reference, target) ?: return null
+        val result = retimeWithSeed(
             reference = reference,
             target = target,
-            scale = coarseScale,
-        )
-        if (seeds.isEmpty()) return null
-
-        val evaluated = seeds.mapNotNull { seed ->
-            retimeWithSeed(reference, target, coarseScale, seed.interceptMs)?.let { result ->
-                val coverageSegments = anchorSegmentsPassed(result, target.size)
-                val simpleRatio = simpleGroupRatio(result)
-                val independentlyConfirmed =
-                    result.confident &&
-                        seed.anchorSegments >= INDEPENDENT_CHAIN_MIN_SEGMENTS &&
-                        seed.anchorSpanRatio >= INDEPENDENT_CHAIN_MIN_SPAN_RATIO &&
-                        coverageSegments == 3 &&
-                        result.targetCoverage >= AMBIGUOUS_MIN_TARGET_COVERAGE &&
-                        result.averageGroupCost <= AMBIGUOUS_MAX_AVERAGE_GROUP_COST &&
-                        result.longestTargetSkipRun <= AMBIGUOUS_MAX_TARGET_SKIP_RUN &&
-                        simpleRatio >= AMBIGUOUS_MIN_SIMPLE_GROUP_RATIO
-
-                SeedEvaluation(
-                    seed = seed,
-                    result = result,
-                    coverageSegments = coverageSegments,
-                    simpleGroupRatio = simpleRatio,
-                    independentlyConfirmed = independentlyConfirmed,
-                )
-            }
-        }
-
-        // Prefer an independently-derived seed that actually passes the final safety gate.
-        // Otherwise a slightly higher raw DP score can suppress a safe seed and force a reject.
-        val best = evaluated.maxWithOrNull(
-            compareBy<SeedEvaluation> {
-                if (it.independentlyConfirmed) 1 else 0
-            }
-                .thenBy { timelineQualityScore(it.result) }
-                .thenBy { it.seed.anchorSpanRatio }
-                .thenBy { it.seed.anchorCount }
-                .thenBy { -it.seed.anchorAverageCost }
-                .thenBy { -it.seed.anchorInterceptMadMs },
+            coarseScale = alignment.scale,
+            coarseInterceptMs = alignment.interceptMs,
         ) ?: return null
 
-        return best.result.copy(
-            confident = best.independentlyConfirmed,
-            seedSource = "independent-chain",
-            seedInterceptMs = best.seed.interceptMs,
-            anchorSegmentsPassed = best.coverageSegments,
-            simpleGroupRatio = best.simpleGroupRatio,
-            seedAnchorCount = best.seed.anchorCount,
-            seedAnchorSegments = best.seed.anchorSegments,
-            seedAnchorSpanRatio = best.seed.anchorSpanRatio,
-            seedCandidatesEvaluated = evaluated.size,
+        val coverageSegments = coverageSegmentsPassed(result, target.size)
+        val simpleRatio = simpleGroupRatio(result)
+        val confirmed =
+            result.confident &&
+                alignment.score >= ACTIVITY_MIN_SCORE &&
+                alignment.margin >= ACTIVITY_MIN_MARGIN &&
+                coverageSegments == 3 &&
+                result.targetCoverage >= DISCOVERED_MIN_TARGET_COVERAGE &&
+                result.averageGroupCost <= DISCOVERED_MAX_AVERAGE_GROUP_COST &&
+                result.longestTargetSkipRun <= DISCOVERED_MAX_TARGET_SKIP_RUN &&
+                simpleRatio >= DISCOVERED_MIN_SIMPLE_GROUP_RATIO
+
+        return result.copy(
+            confident = confirmed,
+            alignmentSource = "activity-correlation",
+            alignmentScale = alignment.scale,
+            alignmentInterceptMs = alignment.interceptMs,
+            activityScore = alignment.score,
+            activityMargin = alignment.margin,
+            coverageSegmentsPassed = coverageSegments,
+            simpleGroupRatio = simpleRatio,
         )
     }
 
@@ -354,292 +334,205 @@ internal object AutoSyncTimelineRetimer {
         )
     }
 
-    private fun independentSeedCandidates(
+    private fun discoverActivityAlignment(
         reference: List<SubtitleSyncCue>,
         target: List<SubtitleSyncCue>,
-        scale: Double,
-    ): List<SeedCandidate> {
-        if (reference.size < MIN_CUES || target.size < MIN_CUES) return emptyList()
-        val targetSpan = target.last().startTimeMs - target.first().startTimeMs
-        val referenceSpan = reference.last().startTimeMs - reference.first().startTimeMs
-        if (targetSpan <= 0L || referenceSpan <= 0L) return emptyList()
+    ): ActivityAlignment? {
+        if (reference.size < MIN_CUES || target.size < MIN_CUES) return null
 
-        val sampledTargetIndexes = evenlySampleTargetIndexes(
-            cueCount = target.size,
-            maxSamples = INDEPENDENT_SEED_SAMPLES,
-        )
-        val minimumAnchorCount = min(
-            INDEPENDENT_CHAIN_MIN_ANCHORS,
-            max(6, (sampledTargetIndexes.size + 3) / 4),
-        )
+        val referenceCoarse = buildActivityTimeline(reference, 1.0, ACTIVITY_COARSE_BIN_MS)
+            ?: return null
+        val coarseCandidates = mutableListOf<ActivityCandidate>()
+        val maxOffsetBins = (ACTIVITY_MAX_OFFSET_MS / ACTIVITY_COARSE_BIN_MS).toInt()
 
-        // Keep only the few best local candidates per sample. Weak repetitive cadence matches
-        // no longer accumulate global votes simply because there are many of them.
-        val anchors = mutableListOf<SpacingAnchor>()
-        for (targetIndex in sampledTargetIndexes) {
-            val targetCue = target[targetIndex]
-            val progress =
-                (targetCue.startTimeMs - target.first().startTimeMs).toDouble() /
-                    targetSpan.toDouble()
-            val expectedReferenceTime =
-                (reference.first().startTimeMs + progress * referenceSpan).roundToLong()
-            val from = lowerBoundReference(
-                reference,
-                expectedReferenceTime - INDEPENDENT_SEED_SEARCH_WINDOW_MS,
-            )
-            val to = lowerBoundReference(
-                reference,
-                expectedReferenceTime + INDEPENDENT_SEED_SEARCH_WINDOW_MS,
-            )
-
-            val localCandidates = mutableListOf<SpacingAnchor>()
-            for (referenceIndex in from until to) {
-                val patternCost = spacingPatternCost(
-                    reference = reference,
-                    referenceIndex = referenceIndex,
-                    target = target,
-                    targetIndex = targetIndex,
+        for (scale in activityScaleCandidates(reference, target)) {
+            val targetActivity = buildActivityTimeline(target, scale, ACTIVITY_COARSE_BIN_MS)
+                ?: continue
+            for (offsetBins in -maxOffsetBins..maxOffsetBins) {
+                val score = scoreActivityOffset(referenceCoarse, targetActivity, offsetBins)
+                    ?: continue
+                coarseCandidates += ActivityCandidate(
                     scale = scale,
-                )
-                if (!patternCost.isFinite() || patternCost > INDEPENDENT_PATTERN_MAX_COST) {
-                    continue
-                }
-
-                localCandidates += SpacingAnchor(
-                    targetIndex = targetIndex,
-                    referenceIndex = referenceIndex,
-                    interceptMs =
-                        reference[referenceIndex].startTimeMs.toDouble() -
-                            targetCue.startTimeMs.toDouble() * scale,
-                    patternCost = patternCost,
+                    interceptMs = offsetBins * ACTIVITY_COARSE_BIN_MS,
+                    score = score,
                 )
             }
-
-            localCandidates
-                .sortedWith(
-                    compareBy<SpacingAnchor> { it.patternCost }
-                        .thenBy { it.referenceIndex },
-                )
-                .take(INDEPENDENT_ANCHOR_CANDIDATES_PER_SAMPLE)
-                .forEach(anchors::add)
         }
 
-        if (anchors.isEmpty()) return emptyList()
-
-        // Windows are centered on real anchor candidates instead of fixed offset buckets, so a
-        // correct chain cannot be split just because its offset lands on a bucket boundary.
-        return anchors
-            .asSequence()
-            .map { center ->
-                anchors.filter { anchor ->
-                    abs(anchor.interceptMs - center.interceptMs) <=
-                        INDEPENDENT_CHAIN_INTERCEPT_TOLERANCE_MS
-                }
+        val coarseBest = coarseCandidates.maxByOrNull { it.score } ?: return null
+        val targetEndMs = target.maxOf { it.endTimeMs }.toDouble()
+        val secondDistinct = coarseCandidates.asSequence()
+            .filter { candidate ->
+                candidate !== coarseBest &&
+                    isDistinctActivityTransform(coarseBest, candidate, targetEndMs)
             }
-            .mapNotNull { nearby ->
-                buildIndependentSeedFromAnchors(
-                    anchors = nearby,
-                    targetSize = target.size,
-                    minimumAnchorCount = minimumAnchorCount,
+            .maxByOrNull { it.score }
+        val margin = coarseBest.score - (secondDistinct?.score ?: 0.0)
+
+        val referenceFine = buildActivityTimeline(reference, 1.0, ACTIVITY_FINE_BIN_MS)
+            ?: return null
+        val targetFine = buildActivityTimeline(target, coarseBest.scale, ACTIVITY_FINE_BIN_MS)
+            ?: return null
+
+        var fineBest: ActivityCandidate? = null
+        var offsetMs = coarseBest.interceptMs - ACTIVITY_FINE_RADIUS_MS
+        while (offsetMs <= coarseBest.interceptMs + ACTIVITY_FINE_RADIUS_MS) {
+            val offsetBins = (offsetMs.toDouble() / ACTIVITY_FINE_BIN_MS.toDouble()).roundToInt()
+            val score = scoreActivityOffset(referenceFine, targetFine, offsetBins)
+            if (score != null) {
+                val candidate = ActivityCandidate(
+                    scale = coarseBest.scale,
+                    interceptMs = offsetBins * ACTIVITY_FINE_BIN_MS,
+                    score = score,
                 )
+                val current = fineBest
+                if (current == null || candidate.score > current.score) fineBest = candidate
             }
-            .sortedWith(
-                compareByDescending<SeedCandidate> { it.anchorSpanRatio }
-                    .thenByDescending { it.anchorCount }
-                    .thenBy { it.anchorAverageCost }
-                    .thenBy { it.anchorInterceptMadMs }
-                    .thenBy { abs(it.interceptMs) },
-            )
-            .distinctBy { seed ->
-                (seed.interceptMs / SEED_DEDUP_BUCKET_MS).roundToLong()
-            }
-            .take(MAX_INDEPENDENT_SEEDS)
-            .toList()
-    }
-
-    private fun buildIndependentSeedFromAnchors(
-        anchors: List<SpacingAnchor>,
-        targetSize: Int,
-        minimumAnchorCount: Int,
-    ): SeedCandidate? {
-        if (anchors.isEmpty() || targetSize <= 1) return null
-
-        val ordered = anchors
-            .groupBy { it.targetIndex }
-            .values
-            .mapNotNull { candidates ->
-                candidates.minWithOrNull(
-                    compareBy<SpacingAnchor> { it.patternCost }
-                        .thenBy { it.referenceIndex },
-                )
-            }
-            .sortedBy { it.targetIndex }
-
-        val chain = longestMonotonicAnchorChain(ordered)
-        if (chain.size < minimumAnchorCount) return null
-
-        var segmentMask = 0
-        chain.forEach { anchor ->
-            val segment =
-                ((anchor.targetIndex.toLong() * 3L) / targetSize)
-                    .toInt()
-                    .coerceIn(0, 2)
-            segmentMask = segmentMask or (1 shl segment)
+            offsetMs += ACTIVITY_FINE_BIN_MS
         }
-        val anchorSegments = spacingSegmentCount(segmentMask)
-        if (anchorSegments < INDEPENDENT_CHAIN_MIN_SEGMENTS) return null
 
-        val denominator = (targetSize - 1).coerceAtLeast(1).toDouble()
-        val firstFraction = chain.first().targetIndex / denominator
-        val lastFraction = chain.last().targetIndex / denominator
-        val spanRatio = (lastFraction - firstFraction).coerceIn(0.0, 1.0)
-
-        if (firstFraction > INDEPENDENT_CHAIN_EDGE_FRACTION) return null
-        if (lastFraction < 1.0 - INDEPENDENT_CHAIN_EDGE_FRACTION) return null
-        if (spanRatio < INDEPENDENT_CHAIN_MIN_SPAN_RATIO) return null
-
-        val averageCost = chain.map { it.patternCost }.average()
-        if (averageCost > INDEPENDENT_CHAIN_MAX_AVERAGE_COST) return null
-
-        val intercepts = chain.map { it.interceptMs }
-        val intercept = medianDouble(intercepts)
-        val interceptMad = medianDouble(
-            intercepts.map { value -> abs(value - intercept) },
-        )
-
-        return SeedCandidate(
-            interceptMs = intercept,
-            anchorCount = chain.size,
-            anchorSegments = anchorSegments,
-            anchorSpanRatio = spanRatio,
-            anchorAverageCost = averageCost,
-            anchorInterceptMadMs = interceptMad,
+        val best = fineBest ?: coarseBest
+        return ActivityAlignment(
+            scale = best.scale,
+            interceptMs = best.interceptMs.toDouble(),
+            score = best.score,
+            margin = margin,
         )
     }
 
-    private fun longestMonotonicAnchorChain(
-        anchors: List<SpacingAnchor>,
-    ): List<SpacingAnchor> {
-        if (anchors.isEmpty()) return emptyList()
-
-        val lengths = IntArray(anchors.size) { 1 }
-        val costs = DoubleArray(anchors.size) { index -> anchors[index].patternCost }
-        val previous = IntArray(anchors.size) { -1 }
-
-        for (index in anchors.indices) {
-            for (earlier in 0 until index) {
-                if (
-                    anchors[earlier].targetIndex >= anchors[index].targetIndex ||
-                    anchors[earlier].referenceIndex >= anchors[index].referenceIndex
-                ) {
-                    continue
-                }
-
-                val candidateLength = lengths[earlier] + 1
-                val candidateCost = costs[earlier] + anchors[index].patternCost
-                if (
-                    candidateLength > lengths[index] ||
-                    (candidateLength == lengths[index] && candidateCost < costs[index])
-                ) {
-                    lengths[index] = candidateLength
-                    costs[index] = candidateCost
-                    previous[index] = earlier
-                }
-            }
-        }
-
-        var bestEnd = 0
-        for (index in 1 until anchors.size) {
-            if (
-                lengths[index] > lengths[bestEnd] ||
-                (lengths[index] == lengths[bestEnd] && costs[index] < costs[bestEnd])
-            ) {
-                bestEnd = index
-            }
-        }
-
-        val reversed = mutableListOf<SpacingAnchor>()
-        var cursor = bestEnd
-        while (cursor >= 0) {
-            reversed += anchors[cursor]
-            cursor = previous[cursor]
-        }
-        reversed.reverse()
-        return reversed
-    }
-
-    private fun spacingPatternCost(
-        reference: List<SubtitleSyncCue>,
-        referenceIndex: Int,
-        target: List<SubtitleSyncCue>,
-        targetIndex: Int,
-        scale: Double,
-    ): Double {
-        val referencePattern = localSpacingPattern(reference, referenceIndex, 1.0)
-        val targetPattern = localSpacingPattern(target, targetIndex, scale)
-        if (referencePattern.size < 4 || targetPattern.size < 4) {
-            return Double.POSITIVE_INFINITY
-        }
-
-        val targetToReference = directedSpacingPatternCost(targetPattern, referencePattern)
-        val referenceToTarget = directedSpacingPatternCost(referencePattern, targetPattern)
-        return (targetToReference + referenceToTarget) * 0.5
-    }
-
-    private fun localSpacingPattern(
+    private fun buildActivityTimeline(
         cues: List<SubtitleSyncCue>,
-        index: Int,
         scale: Double,
-    ): List<Double> {
-        val anchor = cues[index].startTimeMs
-        return buildList {
-            for (distance in 1..INDEPENDENT_PATTERN_RADIUS_CUES) {
-                val previous = index - distance
-                if (previous >= 0) {
-                    add(-(anchor - cues[previous].startTimeMs).toDouble() * scale)
-                }
-                val next = index + distance
-                if (next < cues.size) {
-                    add((cues[next].startTimeMs - anchor).toDouble() * scale)
-                }
+        binMs: Long,
+    ): ActivityTimeline? {
+        if (!scale.isFinite() || scale !in ACTIVITY_MIN_SCALE..ACTIVITY_MAX_SCALE) return null
+        if (cues.isEmpty() || binMs <= 0L) return null
+
+        val scaled = ArrayList<Pair<Long, Long>>(cues.size)
+        var maxEndMs = 0L
+        for (cue in cues) {
+            val safeStart = cue.startTimeMs.coerceAtLeast(0L)
+            val safeEnd = cue.endTimeMs
+                .coerceAtLeast(safeStart + 1L)
+                .coerceAtMost(safeStart + ACTIVITY_MAX_CUE_DURATION_MS)
+            val start = (safeStart * scale).roundToLong().coerceAtLeast(0L)
+            val end = (safeEnd * scale).roundToLong().coerceAtLeast(start + 1L)
+            if (end > ACTIVITY_MAX_TIMELINE_MS) return null
+            scaled += start to end
+            maxEndMs = max(maxEndMs, end)
+        }
+
+        val binCount = max(1, ceil((maxEndMs + 1L).toDouble() / binMs.toDouble()).toInt())
+        val bins = BooleanArray(binCount)
+        for ((start, end) in scaled) {
+            val first = (start / binMs).toInt().coerceIn(0, binCount - 1)
+            val lastExclusive = ceil(end.toDouble() / binMs.toDouble())
+                .toInt()
+                .coerceIn(first + 1, binCount)
+            for (index in first until lastExclusive) bins[index] = true
+        }
+
+        var activeCount = 0
+        for (active in bins) if (active) activeCount++
+        if (activeCount == 0) return null
+
+        val activeIndexes = IntArray(activeCount)
+        val prefix = IntArray(binCount + 1)
+        var cursor = 0
+        for (index in bins.indices) {
+            if (bins[index]) {
+                activeIndexes[cursor++] = index
+                prefix[index + 1] = prefix[index] + 1
+            } else {
+                prefix[index + 1] = prefix[index]
             }
         }
+        return ActivityTimeline(
+            bins = bins,
+            activeIndexes = activeIndexes,
+            prefix = prefix,
+            firstActive = activeIndexes.first(),
+            lastActive = activeIndexes.last(),
+        )
     }
 
-    private fun directedSpacingPatternCost(
-        source: List<Double>,
-        target: List<Double>,
-    ): Double {
-        val residuals = source.map { sourceDistance ->
-            target.minOf { targetDistance -> abs(targetDistance - sourceDistance) }
-        }.sorted()
-        if (residuals.isEmpty()) return Double.POSITIVE_INFINITY
+    private fun scoreActivityOffset(
+        reference: ActivityTimeline,
+        target: ActivityTimeline,
+        offsetBins: Int,
+    ): Double? {
+        val sourceStart = max(0, -offsetBins)
+        val sourceEnd = min(target.bins.lastIndex, reference.bins.lastIndex - offsetBins)
+        if (sourceEnd < sourceStart) return null
+        val visibleTarget = target.prefix[sourceEnd + 1] - target.prefix[sourceStart]
+        if (visibleTarget <= 0) return null
 
-        // Keep the best 70% so a split/merged cue does not destroy an otherwise distinctive
-        // local timing shape. The opposite direction still penalizes excessive extra cues.
-        val keep = max(4, (residuals.size * 7 + 9) / 10).coerceAtMost(residuals.size)
-        return residuals.take(keep).average() / INDEPENDENT_PATTERN_DISTANCE_TOLERANCE_MS
-    }
-
-    private fun evenlySampleTargetIndexes(
-        cueCount: Int,
-        maxSamples: Int,
-    ): List<Int> {
-        if (cueCount <= 0) return emptyList()
-        if (cueCount <= maxSamples) return (0 until cueCount).toList()
-        if (maxSamples <= 1) return listOf(cueCount / 2)
-        val lastIndex = cueCount - 1
-        return (0 until maxSamples)
-            .map { sampleIndex ->
-                (sampleIndex.toLong() * lastIndex / (maxSamples - 1)).toInt()
+        var intersection = 0
+        for (targetIndex in target.activeIndexes) {
+            val shiftedIndex = targetIndex + offsetBins
+            if (shiftedIndex in reference.bins.indices && reference.bins[shiftedIndex]) {
+                intersection++
             }
-            .distinct()
+        }
+
+        val referenceWindowStart = max(0, target.firstActive + offsetBins)
+        val referenceWindowEnd = min(reference.bins.lastIndex, target.lastActive + offsetBins)
+        if (referenceWindowEnd < referenceWindowStart) return null
+        val referenceInWindow =
+            reference.prefix[referenceWindowEnd + 1] - reference.prefix[referenceWindowStart]
+        if (referenceInWindow <= 0) return null
+
+        val precision = intersection.toDouble() / visibleTarget.toDouble()
+        val recall = intersection.toDouble() / referenceInWindow.toDouble()
+        val visibility = visibleTarget.toDouble() / target.activeIndexes.size.toDouble()
+        return (precision * 0.72 + recall * 0.28) *
+            (0.85 + 0.15 * visibility.coerceIn(0.0, 1.0))
     }
 
-    private fun spacingSegmentCount(mask: Int): Int =
-        (0..2).count { segment -> (mask and (1 shl segment)) != 0 }
+    private fun activityScaleCandidates(
+        reference: List<SubtitleSyncCue>,
+        target: List<SubtitleSyncCue>,
+    ): List<Double> {
+        val candidates = mutableListOf(
+            1.0,
+            25.0 / 23.976,
+            23.976 / 25.0,
+            25.0 / 24.0,
+            24.0 / 25.0,
+            24.0 / 23.976,
+            23.976 / 24.0,
+        )
+        val referenceSpan = reference.last().startTimeMs - reference.first().startTimeMs
+        val targetSpan = target.last().startTimeMs - target.first().startTimeMs
+        if (referenceSpan > 0L && targetSpan > 0L) {
+            val spanRatio = referenceSpan.toDouble() / targetSpan.toDouble()
+            if (spanRatio in ACTIVITY_MIN_SCALE..ACTIVITY_MAX_SCALE) candidates += spanRatio
+        }
 
-    private fun anchorSegmentsPassed(
+        val unique = mutableListOf<Double>()
+        candidates
+            .filter { it.isFinite() && it in ACTIVITY_MIN_SCALE..ACTIVITY_MAX_SCALE }
+            .sorted()
+            .forEach { candidate ->
+                if (unique.none { abs(it - candidate) < ACTIVITY_SCALE_DEDUP }) unique += candidate
+            }
+        return unique
+    }
+
+    private fun isDistinctActivityTransform(
+        first: ActivityCandidate,
+        second: ActivityCandidate,
+        targetEndMs: Double,
+    ): Boolean {
+        val startDifference = abs(first.interceptMs - second.interceptMs).toDouble()
+        val endDifference = abs(
+            targetEndMs * first.scale + first.interceptMs -
+                (targetEndMs * second.scale + second.interceptMs),
+        )
+        return max(startDifference, endDifference) >= ACTIVITY_DISTINCT_TRANSFORM_MS
+    }
+
+    private fun coverageSegmentsPassed(
         result: AutoSyncTimelineRetimeResult,
         targetSize: Int,
     ): Int {
@@ -667,9 +560,9 @@ internal object AutoSyncTimelineRetimer {
             val averageCost =
                 if (segmentCosts.isEmpty()) Double.POSITIVE_INFINITY else segmentCosts.average()
             if (
-                coverage >= ANCHOR_SEGMENT_MIN_COVERAGE &&
-                averageCost <= ANCHOR_SEGMENT_MAX_AVERAGE_COST &&
-                segmentCosts.size >= ANCHOR_SEGMENT_MIN_GROUPS
+                coverage >= COVERAGE_SEGMENT_MIN_COVERAGE &&
+                averageCost <= COVERAGE_SEGMENT_MAX_AVERAGE_COST &&
+                segmentCosts.size >= COVERAGE_SEGMENT_MIN_GROUPS
             ) {
                 passed++
             }
@@ -687,50 +580,25 @@ internal object AutoSyncTimelineRetimer {
         return simple.toDouble() / result.groups.size
     }
 
-    private fun timelineQualityScore(result: AutoSyncTimelineRetimeResult): Double {
-        val simple = simpleGroupRatio(result)
-        val costScore = 1.0 / (1.0 + result.averageGroupCost.coerceAtLeast(0.0))
-        val skipPenalty = min(result.longestTargetSkipRun, 20) * 0.004
-        return result.targetCoverage * 0.42 +
-            result.referenceCoverage * 0.15 +
-            costScore * 0.23 +
-            simple * 0.20 -
-            skipPenalty
-    }
-
-    private fun medianDouble(values: List<Double>): Double {
-        if (values.isEmpty()) return Double.NaN
-        val sorted = values.sorted()
-        val middle = sorted.size / 2
-        return if (sorted.size % 2 == 0) {
-            (sorted[middle - 1] + sorted[middle]) / 2.0
-        } else {
-            sorted[middle]
-        }
-    }
-
-    private data class SpacingAnchor(
-        val targetIndex: Int,
-        val referenceIndex: Int,
-        val interceptMs: Double,
-        val patternCost: Double,
+    private data class ActivityTimeline(
+        val bins: BooleanArray,
+        val activeIndexes: IntArray,
+        val prefix: IntArray,
+        val firstActive: Int,
+        val lastActive: Int,
     )
 
-    private data class SeedCandidate(
-        val interceptMs: Double,
-        val anchorCount: Int,
-        val anchorSegments: Int,
-        val anchorSpanRatio: Double,
-        val anchorAverageCost: Double,
-        val anchorInterceptMadMs: Double,
+    private data class ActivityCandidate(
+        val scale: Double,
+        val interceptMs: Long,
+        val score: Double,
     )
 
-    private data class SeedEvaluation(
-        val seed: SeedCandidate,
-        val result: AutoSyncTimelineRetimeResult,
-        val coverageSegments: Int,
-        val simpleGroupRatio: Double,
-        val independentlyConfirmed: Boolean,
+    private data class ActivityAlignment(
+        val scale: Double,
+        val interceptMs: Double,
+        val score: Double,
+        val margin: Double,
     )
 
     private fun transplantGroupTiming(
@@ -974,12 +842,11 @@ internal data class AutoSyncTimelineRetimeResult(
     val threeToOneGroups: Int,
     val twoToTwoGroups: Int,
     val confident: Boolean,
-    val seedSource: String = "coarse",
-    val seedInterceptMs: Double = 0.0,
-    val anchorSegmentsPassed: Int = 0,
+    val alignmentSource: String = "provided",
+    val alignmentScale: Double = 1.0,
+    val alignmentInterceptMs: Double = 0.0,
+    val activityScore: Double = 0.0,
+    val activityMargin: Double = 0.0,
+    val coverageSegmentsPassed: Int = 0,
     val simpleGroupRatio: Double = 0.0,
-    val seedAnchorCount: Int = 0,
-    val seedAnchorSegments: Int = 0,
-    val seedAnchorSpanRatio: Double = 0.0,
-    val seedCandidatesEvaluated: Int = 0,
 )

@@ -558,23 +558,54 @@ internal object AutomaticSubtitleSync {
                 }
             }
 
+            suspend fun queueParsedCandidateForMatch(
+                candidateIndex: Int,
+                parsed: ParsedSubtitleCandidate,
+            ) {
+                val fingerprint = candidateTimingFingerprint(parsed.cues)
+                val bucket = timingBuckets.getOrPut(fingerprint) { mutableListOf() }
+                val existingState = bucket.firstOrNull { state ->
+                    sameCandidateTiming(state.group.members.first().cues, parsed.cues)
+                }
+                if (existingState != null) {
+                    existingState.group.members += parsed
+                    existingState.summary?.let { summary ->
+                        addMemberResult(parsed, summary, reusedTiming = true)
+                    }
+                    return
+                }
+
+                val rankedReferences = withContext(Dispatchers.Default) {
+                    rankReferenceTimingGroups(parsed.cues, referenceTimingGroups)
+                }
+                val group = CandidateTimingGroup(
+                    fingerprint = fingerprint,
+                    members = mutableListOf(parsed),
+                )
+                val state = PipelineTimingGroupState(
+                    group = group,
+                    rankedReferences = rankedReferences,
+                    priorityScore = (rankedReferences.firstOrNull()?.affinity ?: 0.0) +
+                        if (parsed.candidate.url == selectedSubtitleUrl) 2.0 else 0.0,
+                    candidateOrder = candidateIndex,
+                )
+                bucket += state
+                queuedMatchStates += state
+            }
+
             suspend fun registerParsedCandidate(
                 candidateIndex: Int,
                 parsed: ParsedSubtitleCandidate?,
+                queueForMatching: Boolean = true,
             ) {
                 if (parsed == null) return
-
                 parsedCandidates += parsed
                 AutoSyncDebugLog.info { "candidate[$candidateIndex] name=${parsed.candidate.displayName} " +
                         "lang=${parsed.candidate.language.ifBlank { "<unknown>" }} " +
                         "selected=${parsed.candidate.url == selectedSubtitleUrl} cues=${parsed.cues.size} " +
                         "download=${parsed.downloadMs}ms parse=${parsed.parseMs}ms cached=${parsed.cacheHit}" }
 
-                if (
-                    AutoSyncDebugLog.ENABLED &&
-                    !selectedCueSamplesLogged &&
-                    parsed.candidate.url == selectedSubtitleUrl
-                ) {
+                if (AutoSyncDebugLog.ENABLED && !selectedCueSamplesLogged && parsed.candidate.url == selectedSubtitleUrl) {
                     selectedCueSamplesLogged = true
                     parsed.cues.take(MAX_LOGGED_CUE_SAMPLES).forEachIndexed { index, cue ->
                         AutoSyncDebugLog.cue(
@@ -586,43 +617,7 @@ internal object AutomaticSubtitleSync {
                         )
                     }
                 }
-
-                val fingerprint = candidateTimingFingerprint(parsed.cues)
-                val bucket = timingBuckets.getOrPut(fingerprint) { mutableListOf() }
-                val existingState = bucket.firstOrNull { state ->
-                    sameCandidateTiming(state.group.members.first().cues, parsed.cues)
-                }
-
-                if (existingState != null) {
-                    existingState.group.members += parsed
-                    existingState.summary?.let { summary ->
-                        addMemberResult(parsed, summary, reusedTiming = true)
-                    }
-                    return
-                }
-
-                // Cheap timing affinity is only a scheduling/order hint. It never accepts or rejects
-                // a subtitle; every authoritative decision still comes from attemptAlignment().
-                val rankedReferences = withContext(Dispatchers.Default) {
-                    rankReferenceTimingGroups(parsed.cues, referenceTimingGroups)
-                }
-                val group = CandidateTimingGroup(
-                    fingerprint = fingerprint,
-                    members = mutableListOf(parsed),
-                )
-                val state = PipelineTimingGroupState(
-                    group = group,
-                    rankedReferences = rankedReferences,
-                    // V2 direct-timeline retiming operates on the subtitle the user actually chose.
-                    // Give that timing family first crack at a matcher slot without changing any
-                    // authoritative acceptance/ranking rules.
-                    priorityScore = (rankedReferences.firstOrNull()?.affinity ?: 0.0) +
-                        if (parsed.candidate.url == selectedSubtitleUrl) 2.0 else 0.0,
-                    candidateOrder = candidateIndex,
-                    allowReferenceEarlyStop = parsed.candidate.url != selectedSubtitleUrl,
-                )
-                bucket += state
-                queuedMatchStates += state
+                if (queueForMatching) queueParsedCandidateForMatch(candidateIndex, parsed)
             }
 
             fun startQueuedMatches() {
@@ -646,7 +641,6 @@ internal object AutomaticSubtitleSync {
                                 matchCandidateAgainstReferences(
                                     parsed = parsed,
                                     rankedReferenceTimingGroups = state.rankedReferences,
-                                    allowEarlyStop = state.allowReferenceEarlyStop,
                                 )
                             }
                         },
@@ -720,56 +714,24 @@ internal object AutomaticSubtitleSync {
                 }
             }
 
-            drainCandidatePipeline()
-
-            val timingGroupCount = timingBuckets.values.sumOf { it.size }
-            AutoSyncDebugLog.info { "timing timelines=$timingGroupCount/${parsedCandidates.size} " +
-                    "duplicatesSaved=${parsedCandidates.size - timingGroupCount} earlyStop=$earlyStopped" }
-
-            // V2 primary path: only the subtitle the user selected has been downloaded so far.
-            // Try that timing against every eligible embedded reference. Only if V2 cannot prove a
-            // reliable direct timeline do we start the existing V1 same-language candidate search.
-            val selectedParsed = parsedCandidates.firstOrNull { parsed ->
-                parsed.candidate.url == selectedSubtitleUrl
+            val selectedLoad = pendingLoads.firstOrNull { it.index == selectedCandidateIndex }
+            val selectedParsed = selectedLoad?.let { load ->
+                pendingLoads.remove(load)
+                val parsed = load.deferred.await()
+                registerParsedCandidate(load.index, parsed, queueForMatching = false)
+                parsed
             }
-            val selectedGroupResult = groupResults.firstOrNull { result ->
-                result.group.members.any { member ->
-                    member.candidate.url == selectedSubtitleUrl
-                }
-            }
-            val selectedSummary = selectedGroupResult?.summary
-            val selectedTimelineAttempts = if (
-                selectedParsed != null &&
-                selectedSummary != null
-            ) {
-                // Exact-timing duplicate embedded tracks produce the same V2 result. Run the
-                // expensive direct retimer once per timing family and prefer a non-SDH
-                // representative when two tracks have identical timestamps.
-                selectedSummary.attempts
-                    .groupBy { (track, _) -> referenceTimingFingerprint(track.cues) }
-                    .values
-                    .mapNotNull { equivalentAttempts ->
-                        val (track, storedAttempt) = equivalentAttempts.minWithOrNull(
-                            compareBy<Pair<ReferenceTrack, AlignmentAttempt>> {
-                                isSdhReferenceTrack(it.first)
-                            }.thenBy { it.first.key },
-                        ) ?: return@mapNotNull null
 
-                        val attempt = selectedSummary.winningAttempt
-                            ?.takeIf { winning -> winning.result?.trackKey == track.key }
-                            ?: storedAttempt
-
-                        buildTimelineRetimeResult(
-                            track = track,
-                            target = selectedParsed.cues,
-                            attempt = attempt,
-                        )?.let { timeline ->
-                            TimelineRetimeMatch(track = track, timeline = timeline)
-                        }
+            val selectedTimelineAttempts = selectedParsed?.let { parsed ->
+                referenceTimingGroups.mapNotNull { timingGroup ->
+                    val track = timingGroup.members.minWithOrNull(
+                        compareBy<ReferenceTrack> { isSdhReferenceTrack(it) }.thenBy { it.key },
+                    ) ?: return@mapNotNull null
+                    buildTimelineRetimeResult(track, parsed.cues)?.let { timeline ->
+                        TimelineRetimeMatch(track = track, timeline = timeline)
                     }
-            } else {
-                emptyList()
-            }
+                }
+            }.orEmpty()
 
             if (AutoSyncDebugLog.ENABLED && selectedTimelineAttempts.isNotEmpty()) {
                 AutoSyncDebugLog.section { "V2 REFERENCE ATTEMPTS" }
@@ -777,130 +739,91 @@ internal object AutomaticSubtitleSync {
                     val timeline = match.timeline
                     AutoSyncDebugLog.info {
                         "reference=${match.track.key} label=${match.track.label ?: "<none>"} " +
-                            "sdh=${isSdhReferenceTrack(match.track)} " +
-                            "quality=${fmt(directTimelineQualityScore(match))} " +
+                            "sdh=${isSdhReferenceTrack(match.track)} quality=${fmt(directTimelineQualityScore(match))} " +
                             "decision=${if (timeline.confident) "ACCEPT" else "REJECT"} " +
-                            "seed=${timeline.seedSource} " +
-                            "seedIntercept=${"%.1f".format(timeline.seedInterceptMs)}ms " +
-                            "seedAnchors=${timeline.seedAnchorCount} " +
-                            "seedAnchorSegments=${timeline.seedAnchorSegments}/3 " +
-                            "seedSpan=${fmt(timeline.seedAnchorSpanRatio)} " +
-                            "seedCandidates=${timeline.seedCandidatesEvaluated} " +
-                            "targetCoverage=${fmt(timeline.targetCoverage)} " +
-                            "referenceCoverage=${fmt(timeline.referenceCoverage)} " +
-                            "longestTargetSkip=${timeline.longestTargetSkipRun} " +
-                            "avgGroupCost=${fmt(timeline.averageGroupCost)} " +
-                            "simpleRatio=${fmt(timeline.simpleGroupRatio)}"
+                            "alignment=${timeline.alignmentSource} scale=${"%.6f".format(timeline.alignmentScale)} " +
+                            "intercept=${"%.1f".format(timeline.alignmentInterceptMs)}ms " +
+                            "activityScore=${fmt(timeline.activityScore)} activityMargin=${fmt(timeline.activityMargin)} " +
+                            "targetCoverage=${fmt(timeline.targetCoverage)} referenceCoverage=${fmt(timeline.referenceCoverage)} " +
+                            "longestTargetSkip=${timeline.longestTargetSkipRun} avgGroupCost=${fmt(timeline.averageGroupCost)} " +
+                            "coverageSegments=${timeline.coverageSegmentsPassed}/3 simpleRatio=${fmt(timeline.simpleGroupRatio)}"
                     }
                 }
             }
 
             val selectedTimelineChoice = selectedTimelineAttempts.maxWithOrNull(
-                compareBy<TimelineRetimeMatch> {
-                    if (it.timeline.confident) 1 else 0
-                }.thenBy(::directTimelineQualityScore),
+                compareBy<TimelineRetimeMatch> { if (it.timeline.confident) 1 else 0 }
+                    .thenBy(::directTimelineQualityScore),
             )
             val selectedTimelineRetime = selectedTimelineChoice?.timeline
 
             AutoSyncDebugLog.section { "TIMELINE RETIME V2" }
             if (selectedTimelineRetime == null) {
                 AutoSyncDebugLog.info {
-                    "selected subtitle has no usable direct-timeline alignment; " +
-                        "referencesTried=${selectedSummary?.attempts?.size ?: 0}"
+                    "selected subtitle has no usable whole-timeline activity alignment; referencesTried=${referenceTimingGroups.size}"
                 }
             } else {
                 AutoSyncDebugLog.info {
-                    "selected=$selectedSubtitleUrl " +
-                        "reference=${selectedTimelineChoice?.track?.key ?: "<none>"} " +
-                        "referenceLabel=${selectedTimelineChoice?.track?.label ?: "<none>"} " +
-                        "referencesTried=${selectedSummary?.attempts?.size ?: 0} " +
-                        "groups=${selectedTimelineRetime.groups.size} " +
-                        "targetCoverage=${fmt(selectedTimelineRetime.targetCoverage)} " +
-                        "referenceCoverage=${fmt(selectedTimelineRetime.referenceCoverage)} " +
-                        "skipTarget=${selectedTimelineRetime.skippedTargetCues} " +
-                        "skipReference=${selectedTimelineRetime.skippedReferenceCues} " +
-                        "longestTargetSkip=${selectedTimelineRetime.longestTargetSkipRun} " +
-                        "avgGroupCost=${fmt(selectedTimelineRetime.averageGroupCost)} " +
-                        "groups11=${selectedTimelineRetime.oneToOneGroups} " +
-                        "groups12=${selectedTimelineRetime.oneToTwoGroups} " +
-                        "groups21=${selectedTimelineRetime.twoToOneGroups} " +
-                        "groups13=${selectedTimelineRetime.oneToThreeGroups} " +
-                        "groups31=${selectedTimelineRetime.threeToOneGroups} " +
-                        "groups22=${selectedTimelineRetime.twoToTwoGroups} " +
-                        "seed=${selectedTimelineRetime.seedSource} " +
-                        "seedIntercept=${"%.1f".format(selectedTimelineRetime.seedInterceptMs)}ms " +
-                        "seedAnchors=${selectedTimelineRetime.seedAnchorCount} " +
-                        "seedAnchorSegments=${selectedTimelineRetime.seedAnchorSegments}/3 " +
-                        "seedSpan=${fmt(selectedTimelineRetime.seedAnchorSpanRatio)} " +
-                        "seedCandidates=${selectedTimelineRetime.seedCandidatesEvaluated} " +
-                        "coverageSegments=${selectedTimelineRetime.anchorSegmentsPassed}/3 " +
-                        "simpleRatio=${fmt(selectedTimelineRetime.simpleGroupRatio)} " +
+                    "selected=$selectedSubtitleUrl reference=${selectedTimelineChoice?.track?.key ?: "<none>"} " +
+                        "referenceLabel=${selectedTimelineChoice?.track?.label ?: "<none>"} referencesTried=${referenceTimingGroups.size} " +
+                        "groups=${selectedTimelineRetime.groups.size} targetCoverage=${fmt(selectedTimelineRetime.targetCoverage)} " +
+                        "referenceCoverage=${fmt(selectedTimelineRetime.referenceCoverage)} skipTarget=${selectedTimelineRetime.skippedTargetCues} " +
+                        "skipReference=${selectedTimelineRetime.skippedReferenceCues} longestTargetSkip=${selectedTimelineRetime.longestTargetSkipRun} " +
+                        "avgGroupCost=${fmt(selectedTimelineRetime.averageGroupCost)} groups11=${selectedTimelineRetime.oneToOneGroups} " +
+                        "groups12=${selectedTimelineRetime.oneToTwoGroups} groups21=${selectedTimelineRetime.twoToOneGroups} " +
+                        "groups13=${selectedTimelineRetime.oneToThreeGroups} groups31=${selectedTimelineRetime.threeToOneGroups} " +
+                        "groups22=${selectedTimelineRetime.twoToTwoGroups} alignment=${selectedTimelineRetime.alignmentSource} " +
+                        "scale=${"%.6f".format(selectedTimelineRetime.alignmentScale)} intercept=${"%.1f".format(selectedTimelineRetime.alignmentInterceptMs)}ms " +
+                        "activityScore=${fmt(selectedTimelineRetime.activityScore)} activityMargin=${fmt(selectedTimelineRetime.activityMargin)} " +
+                        "coverageSegments=${selectedTimelineRetime.coverageSegmentsPassed}/3 simpleRatio=${fmt(selectedTimelineRetime.simpleGroupRatio)} " +
                         "decision=${if (selectedTimelineRetime.confident) "ACCEPT" else "REJECT"}"
                 }
             }
 
-            if (selectedTimelineRetime?.confident != true && !earlyStopped) {
-                val fallbackLoads = sameLanguageCandidates.mapIndexedNotNull { index, candidate ->
-                    if (candidate.url == selectedSubtitleUrl) {
-                        null
-                    } else {
-                        PendingCandidateLoad(
-                            index = index,
-                            deferred = async {
-                                loadSubtitleCandidate(
-                                    candidate = candidate,
-                                    downloadSemaphore = downloadSemaphore,
-                                )
-                            },
-                        )
-                    }
+            if (selectedTimelineRetime?.confident == true && selectedParsed != null) {
+                val v2Only = CachedRecommendation(
+                    url = selectedParsed.candidate.url,
+                    language = selectedParsed.candidate.language,
+                    displayName = selectedParsed.candidate.displayName,
+                    correctionMs = 0,
+                    score = (1.0 / (1.0 + selectedTimelineRetime.averageGroupCost)).coerceIn(0.0, 1.0),
+                    timelineRetimeUrl = selectedParsed.candidate.url,
+                    timelineRetime = selectedTimelineRetime,
+                    delayFallbackAvailable = false,
+                )
+                synchronized(recommendationCacheLock) {
+                    if (recommendationCache.size >= MAX_RECOMMENDATION_CACHE_ENTRIES) recommendationCache.clear()
+                    recommendationCache[cacheKey] = v2Only
                 }
-
-                if (fallbackLoads.isNotEmpty()) {
-                    AutoSyncDebugLog.section { "V1 FALLBACK" }
-                    AutoSyncDebugLog.info {
-                        "V2 primary did not pass; starting existing same-language search " +
-                            "additionalCandidates=${fallbackLoads.size}"
-                    }
-                    pendingLoads += fallbackLoads
-                    drainCandidatePipeline()
-
-                    val fallbackTimingGroupCount = timingBuckets.values.sumOf { it.size }
-                    AutoSyncDebugLog.info {
-                        "fallback timing timelines=$fallbackTimingGroupCount/${parsedCandidates.size} " +
-                            "duplicatesSaved=${parsedCandidates.size - fallbackTimingGroupCount} " +
-                            "earlyStop=$earlyStopped"
-                    }
-                }
+                AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
+                AutoSyncDebugLog.info { "V2 direct timeline accepted selected subtitle; V1 was not started" }
+                return@supervisorScope v2Only.toRecommendation(selectedSubtitleUrl)
             }
 
+            AutoSyncDebugLog.section { "V1 FALLBACK" }
+            AutoSyncDebugLog.info { "V2 primary did not pass; starting existing same-language search" }
+            if (selectedParsed != null) queueParsedCandidateForMatch(selectedCandidateIndex, selectedParsed)
+            sameLanguageCandidates.forEachIndexed { index, candidate ->
+                if (candidate.url != selectedSubtitleUrl) {
+                    pendingLoads += PendingCandidateLoad(
+                        index = index,
+                        deferred = async { loadSubtitleCandidate(candidate, downloadSemaphore) },
+                    )
+                }
+            }
+            drainCandidatePipeline()
+
+            val timingGroupCount = timingBuckets.values.sumOf { it.size }
+            AutoSyncDebugLog.info {
+                "fallback timing timelines=$timingGroupCount/${parsedCandidates.size} " +
+                    "duplicatesSaved=${parsedCandidates.size - timingGroupCount} earlyStop=$earlyStopped"
+            }
             if (parsedCandidates.isEmpty()) {
                 AutoSyncDebugLog.warn { "REJECT no same-language subtitle candidate could be parsed" }
                 return@supervisorScope null
             }
 
             if (candidateMatches.isEmpty()) {
-                if (selectedTimelineRetime?.confident == true && selectedParsed != null) {
-                    val v2Only = CachedRecommendation(
-                        url = selectedParsed.candidate.url,
-                        language = selectedParsed.candidate.language,
-                        displayName = selectedParsed.candidate.displayName,
-                        correctionMs = 0,
-                        score = (1.0 / (1.0 + selectedTimelineRetime.averageGroupCost)).coerceIn(0.0, 1.0),
-                        timelineRetimeUrl = selectedParsed.candidate.url,
-                        timelineRetime = selectedTimelineRetime,
-                        delayFallbackAvailable = false,
-                    )
-                    synchronized(recommendationCacheLock) {
-                        if (recommendationCache.size >= MAX_RECOMMENDATION_CACHE_ENTRIES) {
-                            recommendationCache.clear()
-                        }
-                        recommendationCache[cacheKey] = v2Only
-                    }
-                    AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
-                    AutoSyncDebugLog.info { "V2 direct timeline accepted selected subtitle; V1 delay fallback unavailable" }
-                    return@supervisorScope v2Only.toRecommendation(selectedSubtitleUrl)
-                }
                 AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
                 AutoSyncDebugLog.warn { "REJECT no same-language subtitle passed any eligible full-dialogue reference track" }
                 return@supervisorScope null
@@ -1049,9 +972,10 @@ internal object AutomaticSubtitleSync {
     ): ReferenceTimingFingerprint {
         var timingHash = 1_125_899_906_842_597L
         for (cue in cues) {
-            // AutoSync's alignment model is based on cue start times; cue end times do not
-            // participate in offset, spacing, scale, or consecutive-pattern matching.
+            // V2 activity correlation depends on both cue starts and ends, so two reference
+            // tracks are timing-equivalent only when both boundaries match.
             timingHash = timingHash * 31L + cue.startTimeMs
+            timingHash = timingHash * 31L + cue.endTimeMs
         }
         return ReferenceTimingFingerprint(
             cueCount = cues.size,
@@ -1067,7 +991,8 @@ internal object AutomaticSubtitleSync {
     ): Boolean {
         if (left.size != right.size) return false
         return left.indices.all { index ->
-            left[index].startTimeMs == right[index].startTimeMs
+            left[index].startTimeMs == right[index].startTimeMs &&
+                left[index].endTimeMs == right[index].endTimeMs
         }
     }
 
@@ -1205,7 +1130,6 @@ internal object AutomaticSubtitleSync {
     private suspend fun matchCandidateAgainstReferences(
         parsed: ParsedSubtitleCandidate,
         rankedReferenceTimingGroups: List<RankedReferenceTimingGroup>,
-        allowEarlyStop: Boolean = true,
     ): CandidateReferenceSummary {
         val attempts = mutableListOf<Pair<ReferenceTrack, AlignmentAttempt>>()
         var bestAccepted: CandidateMatch? = null
@@ -1259,7 +1183,6 @@ internal object AutomaticSubtitleSync {
             val currentBest = bestAccepted
             val currentAttempt = winningAttempt
             if (
-                allowEarlyStop &&
                 currentBest != null &&
                 currentAttempt != null &&
                 canStopReferenceSearch(currentBest, currentAttempt)
@@ -2558,45 +2481,14 @@ internal object AutomaticSubtitleSync {
     private fun buildTimelineRetimeResult(
         track: ReferenceTrack,
         target: List<SubtitleSyncCue>,
-        attempt: AlignmentAttempt,
-    ): AutoSyncTimelineRetimeResult? {
-        val rejectedCoarseAlignment = attempt.result == null
-        val scale = if (rejectedCoarseAlignment) {
-            // V1 rejected this alignment, so do not reuse the independent timeline/FPS scale
-            // that may itself be one of the failed confidence signals. Matched-pair scale is
-            // local to the actual cue correspondences and is the safer V2 seed; unit scale is
-            // the conservative fallback when even that estimate is unavailable.
-            attempt.matchedPairScale ?: 1.0
-        } else {
-            attempt.timelineScale
-                ?: attempt.matchedPairScale
-                ?: 1.0
-        }
-        if (!scale.isFinite() || scale !in 0.85..1.15) return null
-
-        val pairs = attempt.debugDetails?.best?.pairs.orEmpty()
-        val interceptMs = if (pairs.isNotEmpty()) {
-            median(
-                pairs.map { pair ->
-                    track.cues[pair.referenceIndex].startTimeMs.toDouble() -
-                        target[pair.targetIndex].startTimeMs.toDouble() * scale
-                },
-            )
-        } else {
-            val offsetMs = attempt.offsetMs ?: return null
-            val anchor = target.getOrNull(target.lastIndex / 2) ?: return null
-            (anchor.startTimeMs + offsetMs).toDouble() - anchor.startTimeMs.toDouble() * scale
-        }
-        if (!interceptMs.isFinite()) return null
-
-        return AutoSyncTimelineRetimer.retime(
+    ): AutoSyncTimelineRetimeResult? =
+        AutoSyncTimelineRetimer.retime(
             reference = track.cues,
             target = target,
-            coarseScale = scale,
-            coarseInterceptMs = interceptMs,
-            requireIndependentAnchors = rejectedCoarseAlignment,
+            coarseScale = 1.0,
+            coarseInterceptMs = 0.0,
+            discoverAlignment = true,
         )
-    }
 
     private fun fmt(value: Double): String =
         "%.4f".format(value)
@@ -2751,7 +2643,6 @@ internal object AutomaticSubtitleSync {
         val rankedReferences: List<RankedReferenceTimingGroup>,
         val priorityScore: Double,
         val candidateOrder: Int,
-        val allowReferenceEarlyStop: Boolean,
         var summary: CandidateReferenceSummary? = null,
     )
 

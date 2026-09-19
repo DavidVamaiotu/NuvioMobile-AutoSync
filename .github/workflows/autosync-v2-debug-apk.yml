@@ -43,6 +43,9 @@ jobs:
           IMDB_TAPFRAME_API_BASE_URL=https://imdb.tapframe.space/
           PROPS
 
+      - name: Run AutoSync V2 host tests
+        run: ./gradlew :composeApp:testAndroidHostTest -Pnuvio.android.distribution=full --stacktrace
+
       - name: Build full debug APK
         run: ./gradlew :androidApp:assembleFullDebug --stacktrace
 

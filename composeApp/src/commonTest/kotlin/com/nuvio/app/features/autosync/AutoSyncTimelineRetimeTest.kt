@@ -9,206 +9,129 @@ import kotlin.test.assertTrue
 
 class AutoSyncTimelineRetimeTest {
     @Test
-    fun constantOffsetBecomesEmbeddedTimeline() {
-        val reference = regularTimeline(120)
-        val target = reference.map { cue ->
-            cue.copy(
-                startTimeMs = cue.startTimeMs - 2_500L,
-                endTimeMs = cue.endTimeMs - 2_500L,
-            )
-        }
-
-        val result = assertNotNull(
-            AutoSyncTimelineRetimer.retime(
-                reference = reference,
-                target = target,
-                coarseScale = 1.0,
-                coarseInterceptMs = 2_500.0,
-            ),
-        )
-
+    fun providedConstantOffsetBecomesEmbeddedTimeline() {
+        val reference = irregularTimeline(120)
+        val target = shift(reference, -2_500L)
+        val result = assertNotNull(AutoSyncTimelineRetimer.retime(reference, target, 1.0, 2_500.0))
         assertTrue(result.confident)
+        assertEquals("provided", result.alignmentSource)
         assertEquals(1.0, result.targetCoverage)
-        result.cues.forEachIndexed { index, cue ->
-            assertEquals(reference[index].startTimeMs, cue.startTimeMs)
-            assertEquals(reference[index].endTimeMs, cue.endTimeMs)
-        }
     }
 
     @Test
-    fun fpsDriftIsRemovedByRetiming() {
-        val reference = regularTimeline(160)
-        val scale = 25.0 / 23.976
-        val target = reference.map { cue ->
-            SubtitleSyncCue(
-                startTimeMs = (cue.startTimeMs / scale).toLong(),
-                endTimeMs = (cue.endTimeMs / scale).toLong(),
-                text = cue.text,
-            )
-        }
-
-        val result = assertNotNull(
-            AutoSyncTimelineRetimer.retime(
-                reference = reference,
-                target = target,
-                coarseScale = scale,
-                coarseInterceptMs = 0.0,
-            ),
-        )
-
+    fun activityAlignmentFindsConstantOffsetWithoutV1Seed() {
+        val reference = irregularTimeline(220)
+        val target = shift(reference, -12_750L)
+        val result = assertNotNull(AutoSyncTimelineRetimer.retime(reference, target, 1.0, -52_500.0, true))
         assertTrue(result.confident)
-        assertTrue(result.targetCoverage > 0.98)
-        assertTrue(
-            result.cues.zip(reference).all { (retimed, embedded) ->
-                abs(retimed.startTimeMs - embedded.startTimeMs) <= 2L
-            },
-        )
+        assertEquals("activity-correlation", result.alignmentSource)
+        assertTrue(abs(result.alignmentInterceptMs - 12_750.0) <= 500.0)
+        assertTrue(abs(result.alignmentScale - 1.0) <= 0.0015)
+        assertTrue(result.activityScore >= 0.55)
+        assertTrue(result.activityMargin >= 0.02)
+        assertEquals(3, result.coverageSegmentsPassed)
     }
 
     @Test
-    fun splitCuesAreGroupedWithoutTextMatching() {
-        val reference = regularTimeline(100)
+    fun activityAlignmentFindsCommonFpsDrift() {
+        val reference = irregularTimeline(260)
+        val scale = 25.0 / 23.976
+        val target = reference.map { cue -> SubtitleSyncCue((cue.startTimeMs / scale).toLong(), (cue.endTimeMs / scale).toLong(), cue.text) }
+        val result = assertNotNull(AutoSyncTimelineRetimer.retime(reference, target, 1.0, 0.0, true))
+        assertTrue(result.confident)
+        assertTrue(abs(result.alignmentScale - scale) <= 0.0015)
+        assertTrue(abs(result.alignmentInterceptMs) <= 500.0)
+    }
+
+    @Test
+    fun splitCuesAreStillHandledByExistingDp() {
+        val reference = irregularTimeline(100)
         val target = buildList {
             reference.forEachIndexed { index, cue ->
                 if (index % 10 == 0) {
                     val middle = (cue.startTimeMs + cue.endTimeMs) / 2L
                     add(SubtitleSyncCue(cue.startTimeMs, middle, "part a"))
                     add(SubtitleSyncCue(middle + 1L, cue.endTimeMs, "part b"))
-                } else {
-                    add(cue.copy(text = "translated $index"))
-                }
+                } else add(cue.copy(text = "translated $index"))
             }
         }
-
-        val result = assertNotNull(
-            AutoSyncTimelineRetimer.retime(reference, target, 1.0, 0.0),
-        )
-
+        val result = assertNotNull(AutoSyncTimelineRetimer.retime(reference, target, 1.0, 0.0))
         assertTrue(result.confident)
         assertEquals(10, result.oneToTwoGroups)
-        assertEquals(1.0, result.targetCoverage)
     }
 
     @Test
-    fun localTimelineJumpCanRecover() {
-        val reference = regularTimeline(140)
-        val target = reference.mapIndexed { index, cue ->
-            if (index < 70) {
-                cue
-            } else {
-                cue.copy(
-                    startTimeMs = cue.startTimeMs - 5_000L,
-                    endTimeMs = cue.endTimeMs - 5_000L,
-                )
+    fun activityAlignmentToleratesMissingIntroAndOutro() {
+        val reference = irregularTimeline(260)
+        val target = shift(reference.subList(25, 235), -8_000L)
+        val result = assertNotNull(AutoSyncTimelineRetimer.retime(reference, target, 1.0, 0.0, true))
+        assertTrue(result.confident)
+        assertTrue(abs(result.alignmentInterceptMs - 8_000.0) <= 500.0)
+    }
+
+    @Test
+    fun activityAlignmentToleratesExtraReferenceSdhActivity() {
+        val base = irregularTimeline(260)
+        val reference = buildList {
+            addAll(base)
+            for (index in 8 until base.lastIndex step 13) {
+                val start = base[index].endTimeMs + 250L
+                add(SubtitleSyncCue(start, start + 900L, "sound effect $index"))
             }
-        }
-
-        val result = assertNotNull(
-            AutoSyncTimelineRetimer.retime(reference, target, 1.0, 0.0),
-        )
-
+        }.sortedBy { it.startTimeMs }
+        val target = shift(base, -6_400L)
+        val result = assertNotNull(AutoSyncTimelineRetimer.retime(reference, target, 1.0, 0.0, true))
         assertTrue(result.confident)
-        assertTrue(result.targetCoverage >= 0.95)
-        assertTrue(result.longestTargetSkipRun <= 12)
+        assertTrue(abs(result.alignmentInterceptMs - 6_400.0) <= 600.0)
     }
 
     @Test
-    fun ambiguousCoarseSeedUsesIndependentFullFilmAnchors() {
-        val reference = irregularTimeline(180)
-        val target = reference.map { cue ->
-            cue.copy(
-                startTimeMs = cue.startTimeMs - 2_500L,
-                endTimeMs = cue.endTimeMs - 2_500L,
-            )
-        }
-
-        val result = assertNotNull(
-            AutoSyncTimelineRetimer.retime(
-                reference = reference,
-                target = target,
-                coarseScale = 1.0,
-                coarseInterceptMs = 52_500.0,
-                requireIndependentAnchors = true,
-            ),
-        )
-
-        assertTrue(result.confident)
-        assertEquals("independent-chain", result.seedSource)
-        assertEquals(3, result.anchorSegmentsPassed)
-        assertEquals(3, result.seedAnchorSegments)
-        assertTrue(result.seedAnchorCount >= 10)
-        assertTrue(result.seedAnchorSpanRatio >= 0.76)
-        assertTrue(result.seedCandidatesEvaluated in 1..3)
-        assertTrue(abs(result.seedInterceptMs - 2_500.0) <= 750.0)
-        assertTrue(result.targetCoverage > 0.95)
-    }
-
-    @Test
-    fun independentChainRejectsTwoSegmentCoincidence() {
-        val reference = irregularTimeline(180)
-        val target = reference.mapIndexed { index, cue ->
-            val shiftMs = if (index < 120) -2_500L else 57_500L
-            cue.copy(
-                startTimeMs = cue.startTimeMs + shiftMs,
-                endTimeMs = cue.endTimeMs + shiftMs,
-            )
-        }
-
-        val result = AutoSyncTimelineRetimer.retime(
-            reference = reference,
-            target = target,
-            coarseScale = 1.0,
-            coarseInterceptMs = 52_500.0,
-            requireIndependentAnchors = true,
-        )
-
-        assertTrue(result == null || !result.confident)
-    }
-
-    @Test
-    fun ambiguousUnrelatedTimelineIsNotAccepted() {
-        val reference = regularTimeline(180)
-        val target = (0 until 170).map { index ->
+    fun activityAlignmentRejectsUnrelatedTimeline() {
+        val reference = irregularTimeline(220)
+        val target = (0 until 205).map { index ->
             val start = index * 4_100L + (index % 7) * 430L
-            SubtitleSyncCue(
-                startTimeMs = start,
-                endTimeMs = start + 700L + (index % 5) * 310L,
-                text = "unrelated $index",
-            )
+            SubtitleSyncCue(start, start + 700L + (index % 5) * 310L, "unrelated $index")
         }
-
-        val result = AutoSyncTimelineRetimer.retime(
-            reference = reference,
-            target = target,
-            coarseScale = 1.0,
-            coarseInterceptMs = 52_500.0,
-            requireIndependentAnchors = true,
-        )
-
+        val result = AutoSyncTimelineRetimer.retime(reference, target, 1.0, 52_500.0, true)
         assertTrue(result == null || !result.confident)
+    }
+
+    @Test
+    fun activityAlignmentRejectsAmbiguousRepeatedCadence() {
+        val reference = repeatedCadenceTimeline(260)
+        val target = shift(reference, -12_750L)
+        val result = AutoSyncTimelineRetimer.retime(reference, target, 1.0, 0.0, true)
+        assertTrue(result == null || !result.confident)
+    }
+
+    @Test
+    fun activityAlignmentRejectsMidFilmDiscontinuity() {
+        val reference = irregularTimeline(240)
+        val target = reference.mapIndexed { index, cue ->
+            if (index < reference.size / 2) cue else cue.copy(startTimeMs = cue.startTimeMs - 5_000L, endTimeMs = cue.endTimeMs - 5_000L)
+        }
+        val result = AutoSyncTimelineRetimer.retime(reference, target, 1.0, 0.0, true)
+        assertTrue(result == null || !result.confident)
+    }
+
+    private fun shift(cues: List<SubtitleSyncCue>, deltaMs: Long) = cues.map { cue ->
+        cue.copy(startTimeMs = cue.startTimeMs + deltaMs, endTimeMs = cue.endTimeMs + deltaMs)
     }
 
     private fun irregularTimeline(count: Int): List<SubtitleSyncCue> {
         var start = 30_000L
         return (0 until count).map { index ->
-            if (index > 0) {
-                start += 1_400L + ((index * 977L) % 4_300L)
-            }
-            SubtitleSyncCue(
-                startTimeMs = start,
-                endTimeMs = start + 900L + ((index * 313L) % 1_700L),
-                text = "irregular $index",
-            )
+            if (index > 0) start += 1_400L + ((index * 977L) % 4_300L)
+            SubtitleSyncCue(start, start + 900L + ((index * 313L) % 1_700L), "irregular $index")
         }
     }
 
-    private fun regularTimeline(count: Int): List<SubtitleSyncCue> =
-        (0 until count).map { index ->
-            val start = index * 3_000L
-            SubtitleSyncCue(
-                startTimeMs = start,
-                endTimeMs = start + 1_500L,
-                text = "cue $index",
-            )
+    private fun repeatedCadenceTimeline(count: Int): List<SubtitleSyncCue> {
+        val cadence = longArrayOf(1_900L, 3_100L, 2_400L, 4_200L, 2_100L, 3_700L, 2_800L)
+        var start = 30_000L
+        return (0 until count).map { index ->
+            if (index > 0) start += cadence[(index - 1) % cadence.size] + (index % 5) * 73L
+            SubtitleSyncCue(start, start + 1_000L + (index % 4) * 190L, "cadence $index")
         }
+    }
 }
