@@ -374,11 +374,38 @@ internal object EmbeddedSubtitleTimelineLoader {
             sourceHeaders = sourceHeaders,
             initial = initial,
             stats = stats,
-        ) ?: return null
+        ) ?: run {
+            AutoSyncDebugLog.warn {
+                "MP4 index reject reason=moov-not-found requests=${stats.requests} " +
+                    "bytes=${stats.bytesDownloaded}"
+            }
+            return null
+        }
 
-        if (moovLocation.size <= 0L || moovLocation.size > MAX_MP4_MOOV_BYTES.toLong()) return null
-        if (moovLocation.size > Int.MAX_VALUE.toLong()) return null
-        if (moovLocation.position > Long.MAX_VALUE - moovLocation.size) return null
+        if (moovLocation.size <= 0L || moovLocation.size > MAX_MP4_MOOV_BYTES.toLong()) {
+            AutoSyncDebugLog.warn {
+                "MP4 index reject reason=moov-size size=${moovLocation.size} " +
+                    "limit=$MAX_MP4_MOOV_BYTES position=${moovLocation.position}"
+            }
+            return null
+        }
+        if (moovLocation.size > Int.MAX_VALUE.toLong()) {
+            AutoSyncDebugLog.warn {
+                "MP4 index reject reason=moov-size-int-overflow size=${moovLocation.size}"
+            }
+            return null
+        }
+        if (moovLocation.position > Long.MAX_VALUE - moovLocation.size) {
+            AutoSyncDebugLog.warn {
+                "MP4 index reject reason=moov-position-overflow " +
+                    "position=${moovLocation.position} size=${moovLocation.size}"
+            }
+            return null
+        }
+
+        AutoSyncDebugLog.info {
+            "MP4 index moov position=${moovLocation.position} size=${moovLocation.size}"
+        }
 
         val moovEnd = moovLocation.position + moovLocation.size
         val moovBytes =
@@ -393,28 +420,62 @@ internal object EmbeddedSubtitleTimelineLoader {
                     requirePartialContent = moovLocation.position > 0L,
                     stats = stats,
                     requireExactLength = true,
-                )?.bytes ?: return null
+                )?.bytes ?: run {
+                    AutoSyncDebugLog.warn {
+                        "MP4 index reject reason=moov-fetch-failed " +
+                            "position=${moovLocation.position} size=${moovLocation.size} " +
+                            "requests=${stats.requests} bytes=${stats.bytesDownloaded}"
+                    }
+                    return null
+                }
             }
 
-        val moov = parseMp4MoovTextTracks(moovBytes) ?: return null
-        if (moov.containerChildren.isEmpty()) return null
-
-        val sampleTables = BoxParser.parseTraks(
-            moov,
-            GaplessInfoHolder(),
-            C.TIME_UNSET,
-            null,
-            false,
-            isQuickTimeContainer(initial.bytes, sourceUrl),
-        ) { track ->
-            track?.takeIf {
-                it.type == C.TRACK_TYPE_TEXT &&
-                    isSupportedIndexedMp4SubtitleMime(it.format.sampleMimeType)
+        val moov = parseMp4MoovTextTracks(moovBytes) ?: run {
+            AutoSyncDebugLog.warn {
+                "MP4 index reject reason=moov-parse-failed size=${moovBytes.size}"
             }
+            return null
+        }
+        if (moov.containerChildren.isEmpty()) {
+            AutoSyncDebugLog.warn {
+                "MP4 index reject reason=no-text-tracks-in-moov"
+            }
+            return null
+        }
+
+        val sampleTables = try {
+            BoxParser.parseTraks(
+                moov,
+                GaplessInfoHolder(),
+                C.TIME_UNSET,
+                null,
+                false,
+                isQuickTimeContainer(initial.bytes, sourceUrl),
+            ) { track ->
+                track?.takeIf {
+                    it.type == C.TRACK_TYPE_TEXT &&
+                        isSupportedIndexedMp4SubtitleMime(it.format.sampleMimeType)
+                }
+            }
+        } catch (error: Exception) {
+            AutoSyncDebugLog.error(error) {
+                "MP4 index reject reason=boxparser-failed"
+            }
+            return null
+        }
+
+        AutoSyncDebugLog.info {
+            "MP4 index sampleTables=${sampleTables.size}"
         }
 
         val referenceTracks = sampleTables.mapNotNull(::buildMp4ReferenceTrack)
-        if (referenceTracks.isEmpty()) return null
+        if (referenceTracks.isEmpty()) {
+            AutoSyncDebugLog.warn {
+                "MP4 index reject reason=no-supported-reference-tracks " +
+                    "sampleTables=${sampleTables.size}"
+            }
+            return null
+        }
 
         return IndexedEmbeddedTimeline(
             tracks = referenceTracks,
@@ -494,11 +555,23 @@ internal object EmbeddedSubtitleTimelineLoader {
             offset = 0,
             limit = bytes.size,
             extendsToEndSize = bytes.size.toLong(),
-        ) ?: return null
-        if (root.type != Mp4Box.TYPE_moov || root.size != bytes.size.toLong()) return null
+        ) ?: run {
+            AutoSyncDebugLog.warn { "MP4 moov parse reason=invalid-root-header" }
+            return null
+        }
+        if (root.type != Mp4Box.TYPE_moov || root.size != bytes.size.toLong()) {
+            AutoSyncDebugLog.warn {
+                "MP4 moov parse reason=root-mismatch type=${root.type} " +
+                    "declared=${root.size} actual=${bytes.size}"
+            }
+            return null
+        }
 
         val rootEnd = root.size.toInt()
         if (hasDirectMp4Child(bytes, root.headerSize, rootEnd, Mp4Box.TYPE_mvex)) {
+            AutoSyncDebugLog.warn {
+                "MP4 moov parse reason=fragmented-mp4-mvex"
+            }
             // Fragmented MP4 needs moof/trun parsing; leave it to the existing live fallback.
             return null
         }
@@ -511,15 +584,32 @@ internal object EmbeddedSubtitleTimelineLoader {
                 offset = position,
                 limit = rootEnd,
                 extendsToEndSize = (rootEnd - position).toLong(),
-            ) ?: return null
-            val childEnd = mp4BoxEnd(position, child, rootEnd) ?: return null
+            ) ?: run {
+                AutoSyncDebugLog.warn {
+                    "MP4 moov parse reason=invalid-child-header position=$position"
+                }
+                return null
+            }
+            val childEnd = mp4BoxEnd(position, child, rootEnd) ?: run {
+                AutoSyncDebugLog.warn {
+                    "MP4 moov parse reason=invalid-child-size position=$position " +
+                        "type=${child.type} size=${child.size}"
+                }
+                return null
+            }
 
             when (child.type) {
                 Mp4Box.TYPE_mvhd -> addMp4Leaf(moov, bytes, position, childEnd, child.type)
                 Mp4Box.TYPE_trak -> {
                     if (isMp4TextTrack(bytes, child.dataStart(position), childEnd)) {
                         val parsed = parseMp4Container(bytes, position, childEnd, child)
-                            ?: return null
+                            ?: run {
+                                AutoSyncDebugLog.warn {
+                                    "MP4 moov parse reason=text-trak-parse-failed " +
+                                        "position=$position size=${child.size}"
+                                }
+                                return null
+                            }
                         moov.add(parsed)
                     }
                 }
