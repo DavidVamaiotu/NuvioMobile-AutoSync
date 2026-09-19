@@ -114,7 +114,7 @@ class AutoSyncTimelineRetimeTest {
 
     @Test
     fun ambiguousCoarseSeedUsesIndependentFullFilmAnchors() {
-        val reference = regularTimeline(180)
+        val reference = irregularTimeline(180)
         val target = reference.map { cue ->
             cue.copy(
                 startTimeMs = cue.startTimeMs - 2_500L,
@@ -160,6 +160,20 @@ class AutoSyncTimelineRetimeTest {
         )
 
         assertTrue(result == null || !result.confident)
+    }
+
+    private fun irregularTimeline(count: Int): List<SubtitleSyncCue> {
+        var start = 30_000L
+        return (0 until count).map { index ->
+            if (index > 0) {
+                start += 1_400L + ((index * 977L) % 4_300L)
+            }
+            SubtitleSyncCue(
+                startTimeMs = start,
+                endTimeMs = start + 900L + ((index * 313L) % 1_700L),
+                text = "irregular $index",
+            )
+        }
     }
 
     private fun regularTimeline(count: Int): List<SubtitleSyncCue> =

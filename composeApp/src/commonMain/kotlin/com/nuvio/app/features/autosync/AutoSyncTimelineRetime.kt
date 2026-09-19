@@ -36,10 +36,14 @@ internal object AutoSyncTimelineRetimer {
     private const val MAX_LONGEST_TARGET_SKIP_RUN = 12
 
     // Rejected/ambiguous V1 seeds must earn independent full-film evidence before V2 can apply.
-    private const val INDEPENDENT_SEED_SAMPLES = 36
-    private const val INDEPENDENT_SEED_SEARCH_WINDOW_MS = 120_000L
-    private const val INDEPENDENT_SEED_BUCKET_MS = 500L
-    private const val INDEPENDENT_SEED_REFINE_TOLERANCE_MS = 1_250L
+    private const val INDEPENDENT_SEED_SAMPLES = 42
+    private const val INDEPENDENT_SEED_SEARCH_WINDOW_MS = 180_000L
+    private const val INDEPENDENT_SEED_BUCKET_MS = 2_000L
+    private const val INDEPENDENT_PATTERN_RADIUS_CUES = 5
+    private const val INDEPENDENT_PATTERN_DISTANCE_TOLERANCE_MS = 900.0
+    private const val INDEPENDENT_PATTERN_MAX_COST = 1.20
+    private const val INDEPENDENT_PATTERN_MIN_MATCHES = 3
+    private const val INDEPENDENT_PATTERN_MIN_SEGMENTS = 2
     private const val MAX_INDEPENDENT_SEEDS = 5
     private const val SEED_DEDUP_BUCKET_MS = 250.0
     private const val AMBIGUOUS_MIN_TARGET_COVERAGE = 0.90
@@ -345,11 +349,11 @@ internal object AutoSyncTimelineRetimer {
         val referenceSpan = reference.last().startTimeMs - reference.first().startTimeMs
         if (targetSpan <= 0L || referenceSpan <= 0L) return emptyList()
 
-        val samples = evenlySampleTargetCues(target, INDEPENDENT_SEED_SAMPLES)
-        val votes = HashMap<Long, Int>()
-        for (cue in samples) {
+        val votes = HashMap<Long, SpacingSeedVotes>()
+        for (targetIndex in evenlySampleTargetIndexes(target.size, INDEPENDENT_SEED_SAMPLES)) {
+            val targetCue = target[targetIndex]
             val progress =
-                (cue.startTimeMs - target.first().startTimeMs).toDouble() / targetSpan.toDouble()
+                (targetCue.startTimeMs - target.first().startTimeMs).toDouble() / targetSpan.toDouble()
             val expectedReferenceTime =
                 (reference.first().startTimeMs + progress * referenceSpan).roundToLong()
             val from = lowerBoundReference(
@@ -360,78 +364,124 @@ internal object AutoSyncTimelineRetimer {
                 reference,
                 expectedReferenceTime + INDEPENDENT_SEED_SEARCH_WINDOW_MS,
             )
+            val segment = ((targetIndex.toLong() * 3L) / target.size)
+                .toInt()
+                .coerceIn(0, 2)
+
             for (referenceIndex in from until to) {
+                val patternCost = spacingPatternCost(
+                    reference = reference,
+                    referenceIndex = referenceIndex,
+                    target = target,
+                    targetIndex = targetIndex,
+                    scale = scale,
+                )
+                if (!patternCost.isFinite() || patternCost > INDEPENDENT_PATTERN_MAX_COST) continue
+
                 val intercept =
-                    reference[referenceIndex].startTimeMs.toDouble() - cue.startTimeMs.toDouble() * scale
+                    reference[referenceIndex].startTimeMs.toDouble() -
+                        targetCue.startTimeMs.toDouble() * scale
                 val bucket =
                     (intercept / INDEPENDENT_SEED_BUCKET_MS.toDouble()).roundToLong() *
                         INDEPENDENT_SEED_BUCKET_MS
-                votes[bucket] = (votes[bucket] ?: 0) + 1
+                val vote = votes.getOrPut(bucket) { SpacingSeedVotes() }
+                vote.matches++
+                vote.segmentMask = vote.segmentMask or (1 shl segment)
+                vote.weight += 1.0 / (0.20 + patternCost)
+                vote.costTotal += patternCost
+                vote.intercepts += intercept
             }
         }
 
-        return votes.entries
+        return votes.values
+            .filter { vote ->
+                vote.matches >= INDEPENDENT_PATTERN_MIN_MATCHES &&
+                    spacingSegmentCount(vote.segmentMask) >= INDEPENDENT_PATTERN_MIN_SEGMENTS
+            }
             .sortedWith(
-                compareByDescending<Map.Entry<Long, Int>> { it.value }
-                    .thenBy { abs(it.key.toDouble() - coarseInterceptMs) },
+                compareByDescending<SpacingSeedVotes> { spacingSegmentCount(it.segmentMask) }
+                    .thenByDescending { it.weight }
+                    .thenByDescending { it.matches }
+                    .thenBy { it.costTotal / it.matches.coerceAtLeast(1) }
+                    .thenBy { abs(medianDouble(it.intercepts) - coarseInterceptMs) },
             )
             .take(MAX_INDEPENDENT_SEEDS)
-            .map { entry ->
-                refineIndependentSeed(
-                    reference = reference,
-                    samples = samples,
-                    scale = scale,
-                    interceptMs = entry.key.toDouble(),
-                )
-            }
+            .map { vote -> medianDouble(vote.intercepts) }
             .distinctBy { intercept ->
                 (intercept / SEED_DEDUP_BUCKET_MS).roundToLong()
             }
     }
 
-    private fun refineIndependentSeed(
+    private fun spacingPatternCost(
         reference: List<SubtitleSyncCue>,
-        samples: List<SubtitleSyncCue>,
+        referenceIndex: Int,
+        target: List<SubtitleSyncCue>,
+        targetIndex: Int,
         scale: Double,
-        interceptMs: Double,
     ): Double {
-        val refined = ArrayList<Double>(samples.size)
-        for (cue in samples) {
-            val transformed = transformTimeDouble(cue.startTimeMs, scale, interceptMs).roundToLong()
-            val insertion = lowerBoundReference(reference, transformed)
-            var bestIndex = -1
-            var bestResidual = Long.MAX_VALUE
-            if (insertion < reference.size) {
-                bestIndex = insertion
-                bestResidual = abs(reference[insertion].startTimeMs - transformed)
-            }
-            if (insertion > 0) {
-                val previousResidual = abs(reference[insertion - 1].startTimeMs - transformed)
-                if (previousResidual < bestResidual) {
-                    bestIndex = insertion - 1
-                    bestResidual = previousResidual
-                }
-            }
-            if (bestIndex >= 0 && bestResidual <= INDEPENDENT_SEED_REFINE_TOLERANCE_MS) {
-                refined += reference[bestIndex].startTimeMs.toDouble() - cue.startTimeMs.toDouble() * scale
-            }
+        val referencePattern = localSpacingPattern(reference, referenceIndex, 1.0)
+        val targetPattern = localSpacingPattern(target, targetIndex, scale)
+        if (referencePattern.size < 4 || targetPattern.size < 4) {
+            return Double.POSITIVE_INFINITY
         }
-        return if (refined.size >= 6) medianDouble(refined) else interceptMs
+
+        val targetToReference = directedSpacingPatternCost(targetPattern, referencePattern)
+        val referenceToTarget = directedSpacingPatternCost(referencePattern, targetPattern)
+        return (targetToReference + referenceToTarget) * 0.5
     }
 
-    private fun evenlySampleTargetCues(
+    private fun localSpacingPattern(
         cues: List<SubtitleSyncCue>,
+        index: Int,
+        scale: Double,
+    ): List<Double> {
+        val anchor = cues[index].startTimeMs
+        return buildList {
+            for (distance in 1..INDEPENDENT_PATTERN_RADIUS_CUES) {
+                val previous = index - distance
+                if (previous >= 0) {
+                    add(-(anchor - cues[previous].startTimeMs).toDouble() * scale)
+                }
+                val next = index + distance
+                if (next < cues.size) {
+                    add((cues[next].startTimeMs - anchor).toDouble() * scale)
+                }
+            }
+        }
+    }
+
+    private fun directedSpacingPatternCost(
+        source: List<Double>,
+        target: List<Double>,
+    ): Double {
+        val residuals = source.map { sourceDistance ->
+            target.minOf { targetDistance -> abs(targetDistance - sourceDistance) }
+        }.sorted()
+        if (residuals.isEmpty()) return Double.POSITIVE_INFINITY
+
+        // Keep the best 70% so a split/merged cue does not destroy an otherwise distinctive
+        // local timing shape. The opposite direction still penalizes excessive extra cues.
+        val keep = max(4, (residuals.size * 7 + 9) / 10).coerceAtMost(residuals.size)
+        return residuals.take(keep).average() / INDEPENDENT_PATTERN_DISTANCE_TOLERANCE_MS
+    }
+
+    private fun evenlySampleTargetIndexes(
+        cueCount: Int,
         maxSamples: Int,
-    ): List<SubtitleSyncCue> {
-        if (cues.size <= maxSamples) return cues
-        if (maxSamples <= 1) return listOf(cues.first())
-        val lastIndex = cues.lastIndex
+    ): List<Int> {
+        if (cueCount <= 0) return emptyList()
+        if (cueCount <= maxSamples) return (0 until cueCount).toList()
+        if (maxSamples <= 1) return listOf(cueCount / 2)
+        val lastIndex = cueCount - 1
         return (0 until maxSamples)
             .map { sampleIndex ->
-                cues[(sampleIndex.toLong() * lastIndex / (maxSamples - 1)).toInt()]
+                (sampleIndex.toLong() * lastIndex / (maxSamples - 1)).toInt()
             }
-            .distinctBy { it.startTimeMs }
+            .distinct()
     }
+
+    private fun spacingSegmentCount(mask: Int): Int =
+        (0..2).count { segment -> (mask and (1 shl segment)) != 0 }
 
     private fun anchorSegmentsPassed(
         result: AutoSyncTimelineRetimeResult,
@@ -498,6 +548,14 @@ internal object AutoSyncTimelineRetimer {
             sorted[middle]
         }
     }
+
+    private data class SpacingSeedVotes(
+        var matches: Int = 0,
+        var segmentMask: Int = 0,
+        var weight: Double = 0.0,
+        var costTotal: Double = 0.0,
+        val intercepts: MutableList<Double> = mutableListOf(),
+    )
 
     private data class SeedCandidate(
         val interceptMs: Double,
