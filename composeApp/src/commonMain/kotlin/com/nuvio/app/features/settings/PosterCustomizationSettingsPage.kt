@@ -27,6 +27,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -55,7 +57,6 @@ import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 import com.nuvio.app.core.ui.CardDepthStyleRepository
 import com.nuvio.app.core.ui.CardDepthStyleUiState
-import com.nuvio.app.core.ui.Chip
 import com.nuvio.app.core.ui.DefaultCardDepthEdgeCoverage
 import com.nuvio.app.core.ui.DefaultCardDepthEdgeStrength
 import com.nuvio.app.core.ui.DefaultCardDepthSheenStrength
@@ -492,7 +493,7 @@ private fun CardDepthTuningPad(
             .fillMaxWidth()
             .height(200.dp)
             .clip(shape)
-            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
             .border(
                 width = 1.dp,
                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
@@ -761,7 +762,7 @@ private fun PosterCardLivePreview(
                         .width(animatedWidth.value)
                         .height(animatedHeight.value)
                         .clip(RoundedCornerShape(animatedCornerRadius.value))
-                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
                         .border(
                             width = 1.dp,
                             color = MaterialTheme.colorScheme.outlineVariant,
@@ -826,10 +827,14 @@ private fun PosterStyleOptionRow(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             options.forEach { option ->
-                Chip(
+                FilterChip(
                     selected = option.value == selectedValue,
                     onClick = { onSelected(option.value) },
                     label = { Text(option.label) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    ),
                 )
             }
         }

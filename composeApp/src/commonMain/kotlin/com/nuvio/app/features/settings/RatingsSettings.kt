@@ -6,12 +6,12 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.nuvio.app.core.ui.Chip
 import com.nuvio.app.features.details.EpisodeRatingsVisibility
 import com.nuvio.app.features.details.MetaScreenSettingsRepository
 import com.nuvio.app.features.details.MetaScreenSettingsUiState
@@ -67,7 +67,7 @@ internal fun RatingsSettings(
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             EpisodeRatingsVisibility.entries.forEach { visibility ->
-                Chip(
+                FilterChip(
                     selected = uiState.episodeRatingsVisibility == visibility,
                     onClick = { MetaScreenSettingsRepository.setEpisodeRatingsVisibility(visibility) },
                     label = {

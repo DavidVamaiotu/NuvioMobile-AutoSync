@@ -265,7 +265,7 @@
     <string name="collections_editor_tmdb_genre_animation">Hoạt hình</string>
     <string name="collections_editor_tmdb_genre_comedy">Hài</string>
     <string name="collections_editor_tmdb_genre_horror">Kinh dị</string>
-    <string name="collections_editor_tmdb_genre_scifi">Khoa học viễn tưởng</string>
+    <string name="collections_editor_tmdb_genre_scifi">Viễn tưởng</string>
     <string name="collections_editor_tmdb_genre_drama">Chính kịch</string>
     <string name="collections_editor_tmdb_genre_crime">Tội phạm</string>
     <string name="collections_editor_tmdb_genre_reality">Thực tế</string>
@@ -1502,8 +1502,8 @@
     <string name="discover_select_genre">Chọn thể loại</string>
     <string name="discover_select_type">Chọn loại</string>
     <string name="discover_type">Loại</string>
-    <string name="episode_mark_previous_unwatched">Đánh dấu chưa xem các tập trước</string>
-    <string name="episode_mark_previous_watched">Đánh dấu đã xem các tập trước</string>
+    <string name="episode_mark_previous_unwatched">Đánh dấu chưa xem tập trước</string>
+    <string name="episode_mark_previous_watched">Đánh dấu đã xem tập trước</string>
     <string name="episode_mark_season_unwatched">Đánh dấu chưa xem %1$s</string>
     <string name="episode_mark_season_watched">Đánh dấu đã xem %1$s</string>
     <string name="episode_mark_previous_seasons_watched">Đánh dấu đã xem các mùa trước</string>
@@ -1630,8 +1630,8 @@
     <string name="streams_no_direct_link">Không có sẵn liên kết phát trực tiếp nào</string>
     <string name="streams_no_metadata">Không có thông tin</string>
     <string name="streams_refresh">Làm mới luồng</string>
-    <string name="streams_resume_from_percent">Tiếp tục từ %1$d%</string>
-    <string name="streams_resume_from_time">Tiếp tục từ %1$s</string>
+    <string name="streams_resume_from_percent">Xem tiếp từ %1$d%</string>
+    <string name="streams_resume_from_time">Xem tiếp từ %1$s</string>
     <string name="streams_size">DUNG LƯỢNG %1$s</string>
     <string name="streams_torrent_not_supported">Loại luồng này không được hỗ trợ</string>
     <string name="debrid_missing_api_key">Vui lòng kết nối tài khoản trong Cài đặt</string>
@@ -1779,7 +1779,7 @@
     <string name="generic_addon">Tiện ích</string>
     <string name="action_saved">Đã lưu</string>
     <string name="action_play_episode">Phát %1$s</string>
-    <string name="action_resume_episode">Tiếp tục %1$s</string>
+    <string name="action_resume_episode">Xem tiếp %1$s</string>
     <string name="collections_import_error_empty_json">JSON trống</string>
     <string name="collections_import_error_collection_blank_id">Bộ sưu tập %1$d không có ID</string>
     <string name="collections_import_error_collection_duplicate_id">ID bộ sưu tập "%1$s" được sử dụng nhiều hơn một lần</string>
@@ -2302,6 +2302,18 @@
         <item quantity="one">%d tiêu đề</item>
         <item quantity="other">%d tiêu đề</item>
     </plurals>
+    <string name="settings_playback_auto_skip_segments">Tự động bỏ qua</string>
+    <string name="settings_playback_auto_skip_none">Không có</string>
+    <string name="settings_playback_auto_skip_intro">Giới thiệu / Mở đầu</string>
+    <string name="settings_playback_auto_skip_intro_description">Tự động bỏ qua phần giới thiệu và mở đầu anime.</string>
+    <string name="settings_playback_auto_skip_recap">Tóm tắt</string>
+    <string name="settings_playback_auto_skip_recap_description">Tự động bỏ qua các phân đoạn tóm tắt.</string>
+    <string name="settings_playback_auto_skip_outro">Đoạn kết / Kết thúc</string>
+    <string name="settings_playback_auto_skip_outro_description">Tự động bỏ qua đoạn kết và kết thúc anime.</string>
+    <string name="settings_playback_auto_skip_movie_credits">Danh đề kết thúc</string>
+    <string name="settings_playback_auto_skip_movie_credits_description">Bỏ qua danh đề phim, giữ lại các cảnh hậu danh đề.</string>
+    <string name="player_skip_movie_credits">Bỏ qua Danh đề</string>
+    <string name="player_skip_to_post_credits">Đến cảnh hậu danh đề</string>
     <string name="layout_overall_ratings">Điểm đánh giá tổng thể</string>
     <string name="layout_overall_ratings_sub_on">Điểm đánh giá Tiêu chuẩn và TMDB đang được hiển thị.</string>
     <string name="layout_overall_ratings_sub_off">Ẩn điểm đánh giá Tiêu chuẩn và TMDB. Các cài đặt của nhà cung cấp MDBList sẽ được ưu tiên áp dụng trên các trang chi tiết phim.</string>
@@ -2310,4 +2322,15 @@
     <string name="layout_ratings_show">Hiển thị</string>
     <string name="layout_ratings_hide">Ẩn</string>
     <string name="layout_ratings_hide_unwatched">Ẩn mục Chưa xem</string>
+     <string name="settings_playback_legacy_layout">Bố cục kiểu cũ</string>
+    <string name="settings_playback_legacy_layout_description">Sử dụng các nút điều khiển gốc của trình phát.</string>
+    <string name="compose_player_via">Qua %1$s</string>
+    <string name="compose_player_episode_code">M%1$d T%2$d</string>
+    <string name="compose_player_more_actions">Thêm nút điều khiển</string>
+    <string name="compose_player_fewer_actions">Ẩn nút điều khiển</string>
+    <string name="compose_player_speed">Tốc độ phát lại</string>
+    <string name="compose_player_show_elapsed_time">Hiển thị thời gian đã phát</string>
+    <string name="compose_player_show_remaining_time">Hiển thị thời gian còn lại</string>
+    <string name="compose_player_brightness">Độ sáng</string>
+    <string name="compose_player_volume">Âm lượng</string>
 </resources>

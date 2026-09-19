@@ -461,7 +461,7 @@ private fun WideCardPreview() {
             .width(100.dp)
             .height(60.dp)
             .clip(RoundedCornerShape(6.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant),
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f)),
     ) {
         Box(
             modifier = Modifier

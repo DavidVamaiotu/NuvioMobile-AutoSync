@@ -19,6 +19,7 @@ import kotlinx.serialization.json.put
 
 actual object PlayerSettingsStorage {
     private const val preferencesName = "nuvio_player_settings"
+    private const val pendingExternalPlaybackKey = "pending_external_playback"
     private const val playbackBrightnessKey = "playback_brightness"
     private const val useLegacyPlayerLayoutKey = "use_legacy_player_layout"
     private const val showLoadingOverlayKey = "show_loading_overlay"
@@ -174,6 +175,12 @@ actual object PlayerSettingsStorage {
 
     fun initialize(context: Context) {
         preferences = context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
+    }
+
+    actual fun loadPendingExternalPlayback(): String? = preferences?.getString(pendingExternalPlaybackKey, null)
+
+    actual fun savePendingExternalPlayback(value: String?) {
+        preferences?.edit()?.putString(pendingExternalPlaybackKey, value)?.apply()
     }
 
     actual fun loadPlaybackBrightness(): Float? =

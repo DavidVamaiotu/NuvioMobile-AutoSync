@@ -26,6 +26,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -171,6 +172,7 @@ private fun CommentCard(
     modifier: Modifier = Modifier,
 ) {
     val colorScheme = MaterialTheme.colorScheme
+    val isAmoled = colorScheme.background == Color.Black && colorScheme.surface == Color(0xFF050505)
     val bodyText = if (review.hasSpoilerContent) {
         stringResource(Res.string.detail_comments_spoiler_card)
     } else {
@@ -188,7 +190,7 @@ private fun CommentCard(
                 .height(cardHeight)
                 .clickable(onClick = onClick),
             shape = RoundedCornerShape(16.dp),
-            color = colorScheme.surfaceVariant,
+            color = if (isAmoled) Color(0xFF121212) else colorScheme.surfaceVariant.copy(alpha = 0.5f),
             tonalElevation = 1.dp,
         ) {
             Column(

@@ -17,6 +17,7 @@ import kotlinx.serialization.json.put
 import platform.Foundation.NSUserDefaults
 
 actual object PlayerSettingsStorage {
+    private const val pendingExternalPlaybackKey = "pending_external_playback"
     private const val playbackBrightnessKey = "playback_brightness"
     private const val useLegacyPlayerLayoutKey = "use_legacy_player_layout"
     private const val showLoadingOverlayKey = "show_loading_overlay"
@@ -167,6 +168,16 @@ actual object PlayerSettingsStorage {
         iosSaturationKey,
         iosGammaKey,
     )
+
+    actual fun loadPendingExternalPlayback(): String? = NSUserDefaults.standardUserDefaults.stringForKey(pendingExternalPlaybackKey)
+
+    actual fun savePendingExternalPlayback(value: String?) {
+        if (value == null) {
+            NSUserDefaults.standardUserDefaults.removeObjectForKey(pendingExternalPlaybackKey)
+        } else {
+            NSUserDefaults.standardUserDefaults.setObject(value, forKey = pendingExternalPlaybackKey)
+        }
+    }
 
     actual fun loadPlaybackBrightness(): Float? {
         val defaults = NSUserDefaults.standardUserDefaults
