@@ -141,6 +141,22 @@ internal class AutoSyncPlayerCoordinator(
                     url = url,
                     timeline = timeline,
                 )
+            } else if (
+                sidecar.activeSidecarSubtitleKey == null &&
+                sidecar.startSidecarAddonSubtitle(
+                    chosenUrl,
+                    resolved.subtitleHeaders,
+                    useLibass,
+                )
+            ) {
+                AutoSyncDebugLog.info {
+                    "replacement sidecar attached after selected subtitle load failure"
+                }
+                applyAutoSyncSidecarTimeline(
+                    sidecar = sidecar,
+                    url = chosenUrl,
+                    timeline = timeline,
+                )
             } else {
                 replaceAutoSyncSidecarSubtitle(
                     sidecar = sidecar,
