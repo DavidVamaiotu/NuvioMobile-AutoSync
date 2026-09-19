@@ -357,12 +357,30 @@ internal object AutomaticSubtitleSync {
             }
 
             if (timeline.confident && timeline.alignmentSource == "delay-only-validated") {
-                AutoSyncDebugLog.section { "$label RESULT" }
-                AutoSyncDebugLog.info {
-                    "delay-only accepted url=$url reference=${track.key} " +
-                        "scale=1.000000 offset=${"%.1f".format(timeline.alignmentInterceptMs)}ms"
+                val currentQuality = directTimelineQualityScore(match)
+                val betterPrior = attempts
+                    .dropLast(1)
+                    .asSequence()
+                    .filter { it.timeline.confident }
+                    .maxByOrNull(::directTimelineQualityScore)
+
+                if (
+                    betterPrior == null ||
+                    currentQuality >= directTimelineQualityScore(betterPrior)
+                ) {
+                    AutoSyncDebugLog.section { "$label RESULT" }
+                    AutoSyncDebugLog.info {
+                        "delay-only accepted url=$url reference=${track.key} " +
+                            "scale=1.000000 offset=${"%.1f".format(timeline.alignmentInterceptMs)}ms"
+                    }
+                    return@withContext CandidateEvaluation(best = match, attempts = attempts)
                 }
-                return@withContext CandidateEvaluation(best = match, attempts = attempts)
+
+                AutoSyncDebugLog.info {
+                    "delay-only not preferred reference=${track.key} " +
+                        "quality=${fmt(currentQuality)} betterPrior=${betterPrior.track.key} " +
+                        "betterQuality=${fmt(directTimelineQualityScore(betterPrior))}"
+                }
             }
         }
 
