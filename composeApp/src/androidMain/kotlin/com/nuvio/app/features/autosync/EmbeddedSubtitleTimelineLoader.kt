@@ -40,7 +40,7 @@ internal object EmbeddedSubtitleTimelineLoader {
     private const val MAX_INFO_BYTES = 512 * 1024
     private const val MAX_TRACKS_BYTES = 4 * 1024 * 1024
     private const val MAX_CUES_BYTES = 8 * 1024 * 1024
-    private const val MAX_TOTAL_DOWNLOAD_BYTES = 16L * 1024L * 1024L
+    private const val MAX_TOTAL_DOWNLOAD_BYTES = 24L * 1024L * 1024L
     private const val MAX_RANGE_REQUESTS = 16
     private const val MAX_SEEK_HEAD_HOPS = 4
     private const val DEFAULT_TIMESTAMP_SCALE_NS = 1_000_000L
@@ -49,7 +49,7 @@ internal object EmbeddedSubtitleTimelineLoader {
     private const val MIN_INDEXED_SPAN_MS = 30_000L
     private const val MAX_CACHE_ENTRIES = 2
     private const val NEGATIVE_CACHE_TTL_MS = 120_000L
-    private const val MAX_MP4_MOOV_BYTES = 15 * 1024 * 1024
+    private const val MAX_MP4_MOOV_BYTES = 24 * 1024 * 1024
     private const val MAX_MP4_TOP_LEVEL_BOXES = 64
     private const val MP4_BOX_HEADER_BYTES = 16
 
