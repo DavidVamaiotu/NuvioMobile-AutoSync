@@ -349,7 +349,7 @@ internal object AutomaticSubtitleSync {
                     "avgGroupCost=${fmt(timeline.averageGroupCost)} simpleRatio=${fmt(timeline.simpleGroupRatio)}"
             }
 
-            if (timeline.confident && timeline.alignmentSource == "delay-only") {
+            if (timeline.confident && timeline.alignmentSource == "delay-only-validated") {
                 AutoSyncDebugLog.section { "$label RESULT" }
                 AutoSyncDebugLog.info {
                     "delay-only accepted url=$url reference=${track.key} " +
