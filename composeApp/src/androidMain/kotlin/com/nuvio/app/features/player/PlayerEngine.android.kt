@@ -916,6 +916,68 @@ private fun ExoPlayerSurface(
                             return@launch
                         }
 
+                        val timelineRetime = recommendation.timelineRetime
+                        if (
+                            timelineRetime != null &&
+                            recommendation.timelineRetimeUrl == url
+                        ) {
+                            val applied = sidecarController.applyAutoSyncTimeline(
+                                url = url,
+                                timeline = timelineRetime,
+                            )
+                            if (applied) {
+                                // The add-on now follows the embedded timeline directly. AutoSync's
+                                // own correction is therefore zero; ordinary manual delay still works.
+                                subtitleDelayMs = 0
+                                autoSyncAppliedListener?.invoke(url, 0)
+                                AutoSyncDebugLog.info {
+                                    "AUTO APPLY V2 directTimeline=true groups=${timelineRetime.groups.size} " +
+                                        "targetCoverage=${"%.4f".format(timelineRetime.targetCoverage)} " +
+                                        "referenceCoverage=${"%.4f".format(timelineRetime.referenceCoverage)} " +
+                                        "finalDelay=0ms"
+                                }
+                                if (AutoSyncDebugLog.ENABLED) {
+                                    AutoSyncDebugLog.finishAndCopy(
+                                        context = context,
+                                        decision =
+                                            "APPLIED V2 direct timeline url=$url groups=${timelineRetime.groups.size} " +
+                                                "targetCoverage=${"%.4f".format(timelineRetime.targetCoverage)} " +
+                                                "referenceCoverage=${"%.4f".format(timelineRetime.referenceCoverage)}",
+                                    )
+                                }
+                                Toast.makeText(
+                                    context,
+                                    "Auto Sync: timeline matched • ${"%.0f".format(timelineRetime.targetCoverage * 100.0)}%",
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                                Log.i(
+                                    TAG,
+                                    "Automatic subtitle V2 timeline applied url=$url " +
+                                        "groups=${timelineRetime.groups.size} finalDelay=0ms",
+                                )
+                                return@launch
+                            }
+
+                            AutoSyncDebugLog.info {
+                                "AUTO APPLY V2 unavailable on active sidecar; " +
+                                    "delayFallback=${recommendation.delayFallbackAvailable}"
+                            }
+                            if (!recommendation.delayFallbackAvailable) {
+                                if (AutoSyncDebugLog.ENABLED) {
+                                    AutoSyncDebugLog.finishAndCopy(
+                                        context = context,
+                                        decision = "REJECT V2 timeline could not be applied to active sidecar and no V1 fallback exists",
+                                    )
+                                }
+                                Toast.makeText(
+                                    context,
+                                    "Auto Sync: timeline match found, but this subtitle path is not ready for direct retiming",
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                                return@launch
+                            }
+                        }
+
                         val rawCorrectionMs = recommendation.correctionMs
                             .coerceIn(SUBTITLE_DELAY_MIN_MS, SUBTITLE_DELAY_MAX_MS)
                         val correctionMs = (

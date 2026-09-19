@@ -479,6 +479,7 @@ internal object AutomaticSubtitleSync {
             val cacheKey = RecommendationCacheKey(
                 sourceKey = sourceKey,
                 languageKey = selectedLanguageKey.orEmpty(),
+                selectedSubtitleUrl = selectedSubtitleUrl,
                 candidateFingerprint = candidateFingerprint,
                 referenceFingerprint = referenceFingerprint,
             )
@@ -613,7 +614,11 @@ internal object AutomaticSubtitleSync {
                 val state = PipelineTimingGroupState(
                     group = group,
                     rankedReferences = rankedReferences,
-                    priorityScore = rankedReferences.firstOrNull()?.affinity ?: 0.0,
+                    // V2 direct-timeline retiming operates on the subtitle the user actually chose.
+                    // Give that timing family first crack at a matcher slot without changing any
+                    // authoritative acceptance/ranking rules.
+                    priorityScore = (rankedReferences.firstOrNull()?.affinity ?: 0.0) +
+                        if (parsed.candidate.url == selectedSubtitleUrl) 2.0 else 0.0,
                     candidateOrder = candidateIndex,
                 )
                 bucket += state
@@ -687,7 +692,12 @@ internal object AutomaticSubtitleSync {
                             addMemberResult(parsed, event.summary, reusedTiming = memberIndex > 0)
                         }
 
-                        if (canStopCandidateSearch(event.summary)) {
+                        val selectedCandidateEvaluated = groupResults.any { result ->
+                            result.group.members.any { member ->
+                                member.candidate.url == selectedSubtitleUrl
+                            }
+                        }
+                        if (canStopCandidateSearch(event.summary) && selectedCandidateEvaluated) {
                             earlyStopped = true
                             val best = event.summary.bestAccepted
                             AutoSyncDebugLog.info { "EARLY STOP candidate search score=${best?.let { fmt(adjustedAlignmentScore(it)) } ?: "<none>"} " +
@@ -712,7 +722,89 @@ internal object AutomaticSubtitleSync {
                 AutoSyncDebugLog.warn { "REJECT no same-language subtitle candidate could be parsed" }
                 return@supervisorScope null
             }
+
+            // V2: use the existing matcher only as a coarse/reference-selection stage, then align
+            // the selected add-on's complete cue sequence directly to that embedded timeline.
+            // This also gets a chance when the V1 confidence gate rejects the selected candidate;
+            // the new aligner has its own conservative confidence checks and V1 remains fallback.
+            val selectedParsed = parsedCandidates.firstOrNull { parsed ->
+                parsed.candidate.url == selectedSubtitleUrl
+            }
+            val selectedGroupResult = groupResults.firstOrNull { result ->
+                result.group.members.any { member ->
+                    member.candidate.url == selectedSubtitleUrl
+                }
+            }
+            val selectedSummary = selectedGroupResult?.summary
+            val selectedAccepted = selectedSummary?.bestAccepted
+            val selectedRejected = selectedSummary?.bestRejectedAttempt
+            val selectedReference = selectedAccepted?.track ?: selectedRejected?.first
+            val selectedAttempt = when {
+                selectedAccepted != null -> selectedSummary.winningAttempt
+                    ?.takeIf { it.result?.trackKey == selectedAccepted.track.key }
+                    ?: selectedSummary.attempts
+                        .firstOrNull { it.first.key == selectedAccepted.track.key }
+                        ?.second
+                else -> selectedRejected?.second
+            }
+            val selectedTimelineRetime = if (
+                selectedParsed != null &&
+                selectedReference != null &&
+                selectedAttempt != null
+            ) {
+                buildTimelineRetimeResult(
+                    track = selectedReference,
+                    target = selectedParsed.cues,
+                    attempt = selectedAttempt,
+                )
+            } else {
+                null
+            }
+
+            AutoSyncDebugLog.section { "TIMELINE RETIME V2" }
+            if (selectedTimelineRetime == null) {
+                AutoSyncDebugLog.info { "selected subtitle has no usable coarse alignment for direct retiming" }
+            } else {
+                AutoSyncDebugLog.info {
+                    "selected=$selectedSubtitleUrl groups=${selectedTimelineRetime.groups.size} " +
+                        "targetCoverage=${fmt(selectedTimelineRetime.targetCoverage)} " +
+                        "referenceCoverage=${fmt(selectedTimelineRetime.referenceCoverage)} " +
+                        "skipTarget=${selectedTimelineRetime.skippedTargetCues} " +
+                        "skipReference=${selectedTimelineRetime.skippedReferenceCues} " +
+                        "longestTargetSkip=${selectedTimelineRetime.longestTargetSkipRun} " +
+                        "avgGroupCost=${fmt(selectedTimelineRetime.averageGroupCost)} " +
+                        "groups11=${selectedTimelineRetime.oneToOneGroups} " +
+                        "groups12=${selectedTimelineRetime.oneToTwoGroups} " +
+                        "groups21=${selectedTimelineRetime.twoToOneGroups} " +
+                        "groups13=${selectedTimelineRetime.oneToThreeGroups} " +
+                        "groups31=${selectedTimelineRetime.threeToOneGroups} " +
+                        "groups22=${selectedTimelineRetime.twoToTwoGroups} " +
+                        "decision=${if (selectedTimelineRetime.confident) "ACCEPT" else "REJECT"}"
+                }
+            }
+
             if (candidateMatches.isEmpty()) {
+                if (selectedTimelineRetime?.confident == true && selectedParsed != null) {
+                    val v2Only = CachedRecommendation(
+                        url = selectedParsed.candidate.url,
+                        language = selectedParsed.candidate.language,
+                        displayName = selectedParsed.candidate.displayName,
+                        correctionMs = 0,
+                        score = (1.0 / (1.0 + selectedTimelineRetime.averageGroupCost)).coerceIn(0.0, 1.0),
+                        timelineRetimeUrl = selectedParsed.candidate.url,
+                        timelineRetime = selectedTimelineRetime,
+                        delayFallbackAvailable = false,
+                    )
+                    synchronized(recommendationCacheLock) {
+                        if (recommendationCache.size >= MAX_RECOMMENDATION_CACHE_ENTRIES) {
+                            recommendationCache.clear()
+                        }
+                        recommendationCache[cacheKey] = v2Only
+                    }
+                    AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
+                    AutoSyncDebugLog.info { "V2 direct timeline accepted selected subtitle; V1 delay fallback unavailable" }
+                    return@supervisorScope v2Only.toRecommendation(selectedSubtitleUrl)
+                }
                 AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
                 AutoSyncDebugLog.warn { "REJECT no same-language subtitle passed any eligible full-dialogue reference track" }
                 return@supervisorScope null
@@ -784,6 +876,11 @@ internal object AutomaticSubtitleSync {
                 displayName = bestMatch.parsed.candidate.displayName,
                 correctionMs = correctionMs,
                 score = bestMatch.alignment.score,
+                timelineRetimeUrl = selectedParsed
+                    ?.candidate
+                    ?.url
+                    ?.takeIf { selectedTimelineRetime?.confident == true },
+                timelineRetime = selectedTimelineRetime?.takeIf { it.confident },
             )
             synchronized(recommendationCacheLock) {
                 if (recommendationCache.size >= MAX_RECOMMENDATION_CACHE_ENTRIES) {
@@ -2344,6 +2441,39 @@ internal object AutomaticSubtitleSync {
         }
     }
 
+    private fun buildTimelineRetimeResult(
+        track: ReferenceTrack,
+        target: List<SubtitleSyncCue>,
+        attempt: AlignmentAttempt,
+    ): AutoSyncTimelineRetimeResult? {
+        val scale = attempt.timelineScale
+            ?: attempt.matchedPairScale
+            ?: 1.0
+        if (!scale.isFinite() || scale !in 0.85..1.15) return null
+
+        val pairs = attempt.debugDetails?.best?.pairs.orEmpty()
+        val interceptMs = if (pairs.isNotEmpty()) {
+            median(
+                pairs.map { pair ->
+                    track.cues[pair.referenceIndex].startTimeMs.toDouble() -
+                        target[pair.targetIndex].startTimeMs.toDouble() * scale
+                },
+            )
+        } else {
+            val offsetMs = attempt.offsetMs ?: return null
+            val anchor = target.getOrNull(target.lastIndex / 2) ?: return null
+            (anchor.startTimeMs + offsetMs).toDouble() - anchor.startTimeMs.toDouble() * scale
+        }
+        if (!interceptMs.isFinite()) return null
+
+        return AutoSyncTimelineRetimer.retime(
+            reference = track.cues,
+            target = target,
+            coarseScale = scale,
+            coarseInterceptMs = interceptMs,
+        )
+    }
+
     private fun fmt(value: Double): String =
         "%.4f".format(value)
 
@@ -2366,6 +2496,7 @@ internal object AutomaticSubtitleSync {
     private data class RecommendationCacheKey(
         val sourceKey: String,
         val languageKey: String,
+        val selectedSubtitleUrl: String,
         val candidateFingerprint: String,
         val referenceFingerprint: String,
     )
@@ -2376,6 +2507,9 @@ internal object AutomaticSubtitleSync {
         val displayName: String,
         val correctionMs: Int,
         val score: Double,
+        val timelineRetimeUrl: String? = null,
+        val timelineRetime: AutoSyncTimelineRetimeResult? = null,
+        val delayFallbackAvailable: Boolean = true,
     ) {
         fun toRecommendation(selectedSubtitleUrl: String): AutoSyncSubtitleRecommendation =
             AutoSyncSubtitleRecommendation(
@@ -2385,6 +2519,9 @@ internal object AutomaticSubtitleSync {
                 correctionMs = correctionMs,
                 score = score,
                 isCurrentSubtitle = url == selectedSubtitleUrl,
+                timelineRetimeUrl = timelineRetimeUrl,
+                timelineRetime = timelineRetime,
+                delayFallbackAvailable = delayFallbackAvailable,
             )
     }
 
@@ -2599,6 +2736,9 @@ internal data class AutoSyncSubtitleRecommendation(
     val correctionMs: Int,
     val score: Double,
     val isCurrentSubtitle: Boolean,
+    val timelineRetimeUrl: String? = null,
+    val timelineRetime: AutoSyncTimelineRetimeResult? = null,
+    val delayFallbackAvailable: Boolean = true,
 )
 
 internal data class ReferenceTrack(

@@ -17,6 +17,7 @@ import androidx.media3.extractor.text.SubtitleParser
 import androidx.media3.ui.SubtitleView
 import com.nuvio.app.R
 import com.nuvio.app.features.addons.httpGetTextWithHeaders
+import com.nuvio.app.features.autosync.AutoSyncTimelineRetimeResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -25,6 +26,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.lang.ref.WeakReference
+import kotlin.math.abs
 
 private const val SIDECAR_TAG = "NuvioSidecar"
 private val sidecarParserFactory = DefaultSubtitleParserFactory()
@@ -46,6 +48,31 @@ internal class SidecarSubtitleController(
     private var exoSubtitleViewRef: WeakReference<SubtitleView>? = null
 
     fun isSidecarActive(): Boolean = activeSidecarSubtitleKey != null
+
+    /**
+     * Atomically replaces only the timing of the currently parsed sidecar cues.
+     * Cue text/spans/positioning remain the Media3-parsed originals. A parser-sequence mismatch
+     * refuses V2 so the caller can use the existing delay-based AutoSync unchanged.
+     */
+    fun applyAutoSyncTimeline(
+        url: String,
+        timeline: AutoSyncTimelineRetimeResult,
+    ): Boolean {
+        if (!timeline.confident) return false
+        if (activeSidecarSubtitleKey != url) return false
+        val current = sidecarTimedCues
+        if (current.isEmpty()) return false
+
+        val retimed = retimeSidecarTimedCues(current, timeline) ?: return false
+        sidecarTimedCues = retimed
+        lastSidecarCueSignature = null
+        Log.i(
+            SIDECAR_TAG,
+            "Applied AutoSync V2 timeline url=$url cues=${retimed.size} " +
+                "coverage=${"%.3f".format(timeline.targetCoverage)}",
+        )
+        return true
+    }
 
     fun canAttachAddonSubtitleViaSidecar(url: String, useLibass: Boolean): Boolean {
         val mime = PlayerSubtitleUtils.mimeTypeFromUrl(url)
@@ -328,4 +355,42 @@ private fun normalizeSidecarCuePosition(cue: Cue): Cue {
         .setLine(Cue.DIMEN_UNSET, Cue.TYPE_UNSET)
         .setLineAnchor(Cue.TYPE_UNSET)
         .build()
+}
+
+private fun retimeSidecarTimedCues(
+    source: List<CuesWithTiming>,
+    timeline: AutoSyncTimelineRetimeResult,
+): List<CuesWithTiming>? {
+    val replacement = timeline.cues
+    if (source.size != replacement.size) {
+        Log.w(
+            SIDECAR_TAG,
+            "AutoSync V2 cue-count mismatch sidecar=${source.size} timeline=${replacement.size}; using V1 fallback",
+        )
+        return null
+    }
+
+    val out = ArrayList<CuesWithTiming>(source.size)
+    for (index in source.indices) {
+        val entry = source[index]
+        val timing = replacement[index]
+        val originalStartMs = entry.startTimeUs / 1_000L
+        if (abs(originalStartMs - timing.originalStartTimeMs) > 750L) {
+            Log.w(
+                SIDECAR_TAG,
+                "AutoSync V2 cue-order mismatch index=$index sidecarStart=$originalStartMs " +
+                    "parsedStart=${timing.originalStartTimeMs}; using V1 fallback",
+            )
+            return null
+        }
+
+        val startUs = timing.startTimeMs.coerceAtLeast(0L) * 1_000L
+        val endUs = timing.endTimeMs.coerceAtLeast(timing.startTimeMs + 1L) * 1_000L
+        out += CuesWithTiming(
+            entry.cues,
+            startUs,
+            (endUs - startUs).coerceAtLeast(1L),
+        )
+    }
+    return out
 }
