@@ -17,6 +17,10 @@ interface PlayerEngineController {
     fun selectAudioTrack(index: Int)
     fun selectSubtitleTrack(index: Int)
     fun setSubtitleUri(url: String)
+    fun setSubtitleUriWithAutoSync(url: String) {
+        setSubtitleUri(url)
+        runSubtitleAutoSync(url)
+    }
     fun runSubtitleAutoSync(url: String) {}
     fun clearExternalSubtitle()
     fun clearExternalSubtitleAndSelect(trackIndex: Int)

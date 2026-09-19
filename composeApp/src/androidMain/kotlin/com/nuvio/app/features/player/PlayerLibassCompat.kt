@@ -15,6 +15,7 @@ import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.ExtractorsFactory
 import androidx.media3.extractor.mkv.MatroskaExtractor
 import androidx.media3.extractor.text.SubtitleParser
+import com.nuvio.app.features.autosync.AutoSyncSubtitleParserFactory
 import io.github.peerless2012.ass.media.AssHandler
 import io.github.peerless2012.ass.media.extractor.AssMatroskaExtractor
 import io.github.peerless2012.ass.media.kt.withAssSupport
@@ -34,7 +35,8 @@ internal fun ExoPlayer.Builder.buildWithAssSupportCompat(
     renderersFactory: RenderersFactory = DefaultRenderersFactory(context)
 ): ExoPlayer {
     val assHandler = AssHandler(renderType)
-    val assSubtitleParserFactory = CompatAssSubtitleParserFactory(assHandler)
+    val assSubtitleParserFactory =
+        AutoSyncSubtitleParserFactory(CompatAssSubtitleParserFactory(assHandler))
     val assExtractorsFactory = extractorsFactory.withAssMkvSupportCompat(
         subtitleParserFactory = assSubtitleParserFactory,
         assHandler = assHandler

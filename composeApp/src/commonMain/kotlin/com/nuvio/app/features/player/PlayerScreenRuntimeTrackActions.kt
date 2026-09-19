@@ -130,10 +130,11 @@ internal fun PlayerScreenRuntime.restorePersistedTrackPreferenceIfNeeded() {
                 selectedAddonSubtitleId = url ?: preference.addonSubtitleId
                 selectedSubtitleIndex = -1
                 useCustomSubtitles = true
-                playerController?.setSubtitleUri(url)
+                if (!maybeAutoSyncRestoredSubtitleAtStart(url)) {
+                    playerController?.setSubtitleUri(url)
+                }
                 preferredSubtitleSelectionApplied = true
                 isUserExplicitSubtitleSelection = true
-                maybeAutoSyncRestoredSubtitleAtStart(url)
             }
         }
     }
@@ -254,8 +255,9 @@ private fun PlayerScreenRuntime.tryAutoSelectPreferredSubtitleFromAvailableTrack
                 selectedAddonSubtitleId = primaryAddonMatch.selectionKey
                 selectedSubtitleIndex = -1
                 useCustomSubtitles = true
-                playerController?.setSubtitleUri(primaryAddonMatch.url)
-                maybeAutoSyncPreferredSubtitleAtStart(primaryAddonMatch)
+                if (!maybeAutoSyncPreferredSubtitleAtStart(primaryAddonMatch)) {
+                    playerController?.setSubtitleUri(primaryAddonMatch.url)
+                }
                 return
             }
         }
@@ -336,8 +338,9 @@ private fun PlayerScreenRuntime.tryAutoSelectPreferredSubtitleFromAvailableTrack
         selectedAddonSubtitleId = addonMatch.selectionKey
         selectedSubtitleIndex = -1
         useCustomSubtitles = true
-        playerController?.setSubtitleUri(addonMatch.url)
-        maybeAutoSyncPreferredSubtitleAtStart(addonMatch)
+        if (!maybeAutoSyncPreferredSubtitleAtStart(addonMatch)) {
+            playerController?.setSubtitleUri(addonMatch.url)
+        }
     } else if (!preferredSubtitleSelectionApplied) {
         disableAutomaticSubtitleSelection()
         preferredSubtitleSelectionApplied = true
@@ -345,26 +348,31 @@ private fun PlayerScreenRuntime.tryAutoSelectPreferredSubtitleFromAvailableTrack
 }
 
 
-private fun PlayerScreenRuntime.maybeAutoSyncRestoredSubtitleAtStart(url: String) {
-    val controller = playerController ?: return
+private fun PlayerScreenRuntime.maybeAutoSyncRestoredSubtitleAtStart(url: String): Boolean {
+    val controller = playerController ?: return false
     val videoKey = activeVideoId?.takeIf { it.isNotBlank() } ?: activeSourceUrl
-    if (!AutoSyncPreferencesRepository.claimStartupRun(hashCode(), videoKey)) return
-    controller.runSubtitleAutoSync(url)
+    if (!AutoSyncPreferencesRepository.claimStartupRun(hashCode(), videoKey)) return false
+    controller.setSubtitleUriWithAutoSync(url)
+    return true
 }
 
-private fun PlayerScreenRuntime.maybeAutoSyncPreferredSubtitleAtStart(subtitle: AddonSubtitle) {
-    if (isUserExplicitSubtitleSelection) return
-    val preferredLanguage = normalizeLanguageCode(playerSettingsUiState.preferredSubtitleLanguage) ?: return
+private fun PlayerScreenRuntime.maybeAutoSyncPreferredSubtitleAtStart(
+    subtitle: AddonSubtitle,
+): Boolean {
+    if (isUserExplicitSubtitleSelection) return false
+    val preferredLanguage =
+        normalizeLanguageCode(playerSettingsUiState.preferredSubtitleLanguage) ?: return false
     if (
         preferredLanguage.isBlank() ||
         preferredLanguage == SubtitleLanguageOption.NONE ||
         preferredLanguage == SubtitleLanguageOption.FORCED
-    ) return
-    val controller = playerController ?: return
+    ) return false
+    val controller = playerController ?: return false
     val videoKey = activeVideoId?.takeIf { it.isNotBlank() } ?: activeSourceUrl
 
-    if (!AutoSyncPreferencesRepository.claimStartupRun(hashCode(), videoKey)) return
-    controller.runSubtitleAutoSync(subtitle.url)
+    if (!AutoSyncPreferencesRepository.claimStartupRun(hashCode(), videoKey)) return false
+    controller.setSubtitleUriWithAutoSync(subtitle.url)
+    return true
 }
 
 private fun PlayerScreenRuntime.disableAutomaticSubtitleSelection() {
