@@ -102,6 +102,7 @@ internal class AutoSyncPlayerCoordinator(
                 selectedSubtitleHeaders = subtitleHeaders,
                 preferredLanguage = getPreferredLanguage(),
                 alternativeSubtitles = candidates,
+                alternativeSubtitlesProvider = { candidates },
                 onReferenceReady = {
                     Toast.makeText(
                         context,

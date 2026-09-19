@@ -91,6 +91,7 @@ internal object AutoSyncTimelineRetimer {
         coarseScale: Double,
         coarseInterceptMs: Double,
         discoverAlignment: Boolean = false,
+        allowAmbiguousDelayOnlyMargin: Boolean = false,
     ): AutoSyncTimelineRetimeResult? {
         if (!discoverAlignment) {
             val result = retimeWithSeed(reference, target, coarseScale, coarseInterceptMs)
@@ -107,7 +108,11 @@ internal object AutoSyncTimelineRetimer {
         val alignment = discoverActivityAlignment(reference, target) ?: return null
 
         if (abs(alignment.scale - 1.0) <= DELAY_ONLY_SCALE_TOLERANCE) {
-            findDelayOnlyAlignment(reference, target)?.let { delayOnly ->
+            findDelayOnlyAlignment(
+                reference = reference,
+                target = target,
+                allowAmbiguousMargin = allowAmbiguousDelayOnlyMargin,
+            )?.let { delayOnly ->
                 return buildDelayOnlyTimeline(target, delayOnly)
             }
         }
@@ -366,6 +371,7 @@ internal object AutoSyncTimelineRetimer {
     internal fun findDelayOnlyAlignment(
         reference: List<SubtitleSyncCue>,
         target: List<SubtitleSyncCue>,
+        allowAmbiguousMargin: Boolean = false,
     ): AutoSyncDelayOnlyAlignment? {
         if (reference.size < DELAY_ONLY_MIN_CUES || target.size < DELAY_ONLY_MIN_CUES) return null
 
@@ -396,7 +402,7 @@ internal object AutoSyncTimelineRetimer {
             }
             .maxByOrNull { it.score }
         val margin = coarse.score - (secondDistinct?.score ?: 0.0)
-        if (margin < DELAY_ONLY_MIN_MARGIN) return null
+        if (!allowAmbiguousMargin && margin < DELAY_ONLY_MIN_MARGIN) return null
 
         val referenceFine = buildActivityTimeline(reference, 1.0, ACTIVITY_FINE_BIN_MS)
             ?: return null

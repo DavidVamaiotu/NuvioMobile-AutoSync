@@ -60,6 +60,13 @@ class AutoSyncTimelineRetimeTest {
         val delayOnly = AutoSyncTimelineRetimer.findDelayOnlyAlignment(reference, target)
         assertTrue(delayOnly == null)
 
+        val relaxedDelayOnly = AutoSyncTimelineRetimer.findDelayOnlyAlignment(
+            reference = reference,
+            target = target,
+            allowAmbiguousMargin = true,
+        )
+        assertTrue(relaxedDelayOnly == null)
+
         val result = assertNotNull(
             AutoSyncTimelineRetimer.retime(reference, target, 1.0, 0.0, true),
         )

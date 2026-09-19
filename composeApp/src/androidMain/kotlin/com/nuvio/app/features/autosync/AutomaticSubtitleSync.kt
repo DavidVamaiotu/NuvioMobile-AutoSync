@@ -30,6 +30,7 @@ internal object AutomaticSubtitleSync {
     private const val MIN_SELECTED_CUES = 1
     private const val MAX_LOGGED_CUE_SAMPLES = 20
     private const val MAX_ALTERNATIVE_EXTERNAL_SUBTITLES = 4
+    private const val FALLBACK_CANDIDATE_REFRESH_DELAY_MS = 500L
 
     private const val MIN_FULL_DIALOGUE_CUES = 8
     private const val MIN_FULL_DIALOGUE_CLASSIFICATION_SPAN_MS = 30_000L
@@ -65,6 +66,7 @@ internal object AutomaticSubtitleSync {
         selectedSubtitleHeaders: Map<String, String>,
         preferredLanguage: String?,
         alternativeSubtitles: List<AutoSyncSubtitleCandidate> = emptyList(),
+        alternativeSubtitlesProvider: (() -> List<AutoSyncSubtitleCandidate>)? = null,
         onReferenceReady: () -> Unit = {},
         sourceHeaders: Map<String, String> = emptyMap(),
     ): AutoSyncResolvedTimeline? {
@@ -104,25 +106,50 @@ internal object AutomaticSubtitleSync {
                 )
             }
 
-            val selectedMetadata =
-                alternativeSubtitles.firstOrNull { it.url == selectedSubtitleUrl }
-            val selectedLanguage =
-                selectedMetadata?.language?.takeIf { it.isNotBlank() }
+            fun currentExternalCandidates(): List<AutoSyncSubtitleCandidate> =
+                (alternativeSubtitlesProvider?.invoke() ?: alternativeSubtitles)
+                    .distinctBy { it.url }
+
+            fun selectedLanguage(
+                candidates: List<AutoSyncSubtitleCandidate>,
+            ): String? =
+                candidates.firstOrNull { it.url == selectedSubtitleUrl }
+                    ?.language
+                    ?.takeIf { it.isNotBlank() }
                     ?: preferredLanguage?.takeIf { it.isNotBlank() }
 
-            val alternatives = alternativeSubtitles
-                .asSequence()
-                .filter { it.url.isNotBlank() && it.url != selectedSubtitleUrl }
-                .filter { candidate ->
-                    selectedLanguage.isNullOrBlank() ||
-                        SubtitleLanguageMatching.matchesLanguageCode(
-                            candidate.language,
-                            selectedLanguage,
-                        )
-                }
-                .distinctBy { it.url }
-                .take(MAX_ALTERNATIVE_EXTERNAL_SUBTITLES)
-                .toList()
+            fun sameLanguageAlternatives(
+                candidates: List<AutoSyncSubtitleCandidate>,
+                language: String?,
+            ): List<AutoSyncSubtitleCandidate> =
+                candidates
+                    .asSequence()
+                    .filter { it.url.isNotBlank() && it.url != selectedSubtitleUrl }
+                    .filter { candidate ->
+                        language.isNullOrBlank() ||
+                            SubtitleLanguageMatching.matchesLanguageCode(
+                                candidate.language,
+                                language,
+                            )
+                    }
+                    .distinctBy { it.url }
+                    .take(MAX_ALTERNATIVE_EXTERNAL_SUBTITLES)
+                    .toList()
+
+            var availableCandidates = currentExternalCandidates()
+            var language = selectedLanguage(availableCandidates)
+            var alternatives = sameLanguageAlternatives(availableCandidates, language)
+
+            if (
+                selected == null &&
+                alternatives.isEmpty() &&
+                alternativeSubtitlesProvider != null
+            ) {
+                delay(FALLBACK_CANDIDATE_REFRESH_DELAY_MS)
+                availableCandidates = currentExternalCandidates()
+                language = selectedLanguage(availableCandidates)
+                alternatives = sameLanguageAlternatives(availableCandidates, language)
+            }
 
             var seedTarget = selected?.cues
             if (seedTarget.isNullOrEmpty() && alternatives.isNotEmpty()) {
@@ -207,10 +234,26 @@ internal object AutomaticSubtitleSync {
                     )
                 }
 
+                // Add-on results arrive progressively. Re-read the coordinator's current
+                // candidate list only when fallback is actually needed, so the fast selected
+                // subtitle path is never delayed.
+                if (alternativeSubtitlesProvider != null) {
+                    availableCandidates = currentExternalCandidates()
+                    language = selectedLanguage(availableCandidates)
+                    alternatives = sameLanguageAlternatives(availableCandidates, language)
+
+                    if (alternatives.isEmpty()) {
+                        delay(FALLBACK_CANDIDATE_REFRESH_DELAY_MS)
+                        availableCandidates = currentExternalCandidates()
+                        language = selectedLanguage(availableCandidates)
+                        alternatives = sameLanguageAlternatives(availableCandidates, language)
+                    }
+                }
+
                 AutoSyncDebugLog.section { "EXTERNAL SUBTITLE FALLBACK" }
                 AutoSyncDebugLog.info {
                     "selected subtitle did not produce a confident result; " +
-                        "trying up to ${alternatives.size} same-language alternatives"
+                        "trying up to ${alternatives.size} latest same-language alternatives"
                 }
             }
 
@@ -711,14 +754,29 @@ internal object AutomaticSubtitleSync {
     private fun buildTimelineRetimeResult(
         track: ReferenceTrack,
         target: List<SubtitleSyncCue>,
-    ): AutoSyncTimelineRetimeResult? =
-        AutoSyncTimelineRetimer.retime(
+    ): AutoSyncTimelineRetimeResult? {
+        val overSegmentedReference =
+            track.cues.size.toLong() * 2L >= target.size.toLong() * 3L
+        val relaxDelayMargin =
+            isSdhReferenceTrack(track) || overSegmentedReference
+
+        if (relaxDelayMargin) {
+            AutoSyncDebugLog.info {
+                "delay-only margin relaxation reference=${track.key} " +
+                    "sdh=${isSdhReferenceTrack(track)} " +
+                    "referenceCues=${track.cues.size} targetCues=${target.size}"
+            }
+        }
+
+        return AutoSyncTimelineRetimer.retime(
             reference = track.cues,
             target = target,
             coarseScale = 1.0,
             coarseInterceptMs = 0.0,
             discoverAlignment = true,
+            allowAmbiguousDelayOnlyMargin = relaxDelayMargin,
         )
+    }
 
     private fun stableHeaderHash(headers: Map<String, String>): Int {
         var hash = 1
