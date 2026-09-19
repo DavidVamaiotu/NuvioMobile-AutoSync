@@ -921,17 +921,17 @@ private fun ExoPlayerSurface(
                             timelineRetime != null &&
                             recommendation.timelineRetimeUrl == url
                         ) {
-                            val applied = sidecarController.applyAutoSyncTimeline(
+                            val applyStatus = sidecarController.applyAutoSyncTimeline(
                                 url = url,
                                 timeline = timelineRetime,
                             )
-                            if (applied) {
-                                // The add-on now follows the embedded timeline directly. AutoSync's
-                                // own correction is therefore zero; ordinary manual delay still works.
+                            if (applyStatus != AutoSyncTimelineApplyStatus.REJECTED) {
+                                // A queued result is safe to treat as V2-owned: no sidecar cues are
+                                // visible yet, and the controller applies the timeline immediately after parsing.
                                 subtitleDelayMs = 0
                                 autoSyncAppliedListener?.invoke(url, 0)
                                 AutoSyncDebugLog.info {
-                                    "AUTO APPLY V2 directTimeline=true groups=${timelineRetime.groups.size} " +
+                                    "AUTO APPLY V2 directTimeline=true status=$applyStatus groups=${timelineRetime.groups.size} " +
                                         "targetCoverage=${"%.4f".format(timelineRetime.targetCoverage)} " +
                                         "referenceCoverage=${"%.4f".format(timelineRetime.referenceCoverage)} " +
                                         "finalDelay=0ms"
@@ -940,19 +940,24 @@ private fun ExoPlayerSurface(
                                     AutoSyncDebugLog.finishAndCopy(
                                         context = context,
                                         decision =
-                                            "APPLIED V2 direct timeline url=$url groups=${timelineRetime.groups.size} " +
+                                            "${if (applyStatus == AutoSyncTimelineApplyStatus.APPLIED) "APPLIED" else "QUEUED"} V2 direct timeline " +
+                                                "url=$url groups=${timelineRetime.groups.size} " +
                                                 "targetCoverage=${"%.4f".format(timelineRetime.targetCoverage)} " +
                                                 "referenceCoverage=${"%.4f".format(timelineRetime.referenceCoverage)}",
                                     )
                                 }
                                 Toast.makeText(
                                     context,
-                                    "Auto Sync: timeline matched • ${"%.0f".format(timelineRetime.targetCoverage * 100.0)}%",
+                                    if (applyStatus == AutoSyncTimelineApplyStatus.APPLIED) {
+                                        "Auto Sync V2: timeline matched • ${"%.0f".format(timelineRetime.targetCoverage * 100.0)}%"
+                                    } else {
+                                        "Auto Sync V2: timeline ready • applying when subtitle loads"
+                                    },
                                     Toast.LENGTH_LONG,
                                 ).show()
                                 Log.i(
                                     TAG,
-                                    "Automatic subtitle V2 timeline applied url=$url " +
+                                    "Automatic subtitle V2 timeline status=$applyStatus url=$url " +
                                         "groups=${timelineRetime.groups.size} finalDelay=0ms",
                                 )
                                 return@launch
@@ -1032,7 +1037,7 @@ private fun ExoPlayerSurface(
                         }
                         Toast.makeText(
                             context,
-                            "Auto Sync: $toastSubtitleLabel selected • $delayLabel",
+                            "Auto Sync V1: $toastSubtitleLabel selected • $delayLabel",
                             Toast.LENGTH_LONG,
                         ).show()
                         Log.i(

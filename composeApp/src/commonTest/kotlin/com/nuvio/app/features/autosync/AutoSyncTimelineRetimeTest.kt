@@ -112,6 +112,56 @@ class AutoSyncTimelineRetimeTest {
         assertTrue(result.longestTargetSkipRun <= 12)
     }
 
+    @Test
+    fun ambiguousCoarseSeedUsesIndependentFullFilmAnchors() {
+        val reference = regularTimeline(180)
+        val target = reference.map { cue ->
+            cue.copy(
+                startTimeMs = cue.startTimeMs - 2_500L,
+                endTimeMs = cue.endTimeMs - 2_500L,
+            )
+        }
+
+        val result = assertNotNull(
+            AutoSyncTimelineRetimer.retime(
+                reference = reference,
+                target = target,
+                coarseScale = 1.0,
+                coarseInterceptMs = 52_500.0,
+                requireIndependentAnchors = true,
+            ),
+        )
+
+        assertTrue(result.confident)
+        assertEquals("independent", result.seedSource)
+        assertEquals(3, result.anchorSegmentsPassed)
+        assertTrue(abs(result.seedInterceptMs - 2_500.0) <= 750.0)
+        assertTrue(result.targetCoverage > 0.95)
+    }
+
+    @Test
+    fun ambiguousUnrelatedTimelineIsNotAccepted() {
+        val reference = regularTimeline(180)
+        val target = (0 until 170).map { index ->
+            val start = index * 4_100L + (index % 7) * 430L
+            SubtitleSyncCue(
+                startTimeMs = start,
+                endTimeMs = start + 700L + (index % 5) * 310L,
+                text = "unrelated $index",
+            )
+        }
+
+        val result = AutoSyncTimelineRetimer.retime(
+            reference = reference,
+            target = target,
+            coarseScale = 1.0,
+            coarseInterceptMs = 52_500.0,
+            requireIndependentAnchors = true,
+        )
+
+        assertTrue(result == null || !result.confident)
+    }
+
     private fun regularTimeline(count: Int): List<SubtitleSyncCue> =
         (0 until count).map { index ->
             val start = index * 3_000L

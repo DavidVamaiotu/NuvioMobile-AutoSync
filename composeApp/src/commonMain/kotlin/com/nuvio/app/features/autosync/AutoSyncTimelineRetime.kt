@@ -35,6 +35,21 @@ internal object AutoSyncTimelineRetimer {
     private const val MAX_AVERAGE_GROUP_COST = 2.35
     private const val MAX_LONGEST_TARGET_SKIP_RUN = 12
 
+    // Rejected/ambiguous V1 seeds must earn independent full-film evidence before V2 can apply.
+    private const val INDEPENDENT_SEED_SAMPLES = 36
+    private const val INDEPENDENT_SEED_SEARCH_WINDOW_MS = 120_000L
+    private const val INDEPENDENT_SEED_BUCKET_MS = 500L
+    private const val INDEPENDENT_SEED_REFINE_TOLERANCE_MS = 1_250L
+    private const val MAX_INDEPENDENT_SEEDS = 5
+    private const val SEED_DEDUP_BUCKET_MS = 250.0
+    private const val AMBIGUOUS_MIN_TARGET_COVERAGE = 0.90
+    private const val AMBIGUOUS_MAX_AVERAGE_GROUP_COST = 1.10
+    private const val AMBIGUOUS_MAX_TARGET_SKIP_RUN = 8
+    private const val AMBIGUOUS_MIN_SIMPLE_GROUP_RATIO = 0.55
+    private const val ANCHOR_SEGMENT_MIN_COVERAGE = 0.72
+    private const val ANCHOR_SEGMENT_MAX_AVERAGE_COST = 1.35
+    private const val ANCHOR_SEGMENT_MIN_GROUPS = 4
+
     private val groupShapes = arrayOf(
         GroupShape(referenceCount = 1, targetCount = 1),
         GroupShape(referenceCount = 1, targetCount = 2),
@@ -45,6 +60,69 @@ internal object AutoSyncTimelineRetimer {
     )
 
     fun retime(
+        reference: List<SubtitleSyncCue>,
+        target: List<SubtitleSyncCue>,
+        coarseScale: Double,
+        coarseInterceptMs: Double,
+        requireIndependentAnchors: Boolean = false,
+    ): AutoSyncTimelineRetimeResult? {
+        if (!requireIndependentAnchors) {
+            val result = retimeWithSeed(reference, target, coarseScale, coarseInterceptMs)
+                ?: return null
+            return result.copy(
+                seedSource = "coarse",
+                seedInterceptMs = coarseInterceptMs,
+                anchorSegmentsPassed = anchorSegmentsPassed(result, target.size),
+                simpleGroupRatio = simpleGroupRatio(result),
+            )
+        }
+
+        val independentSeeds = independentSeedIntercepts(
+            reference = reference,
+            target = target,
+            scale = coarseScale,
+            coarseInterceptMs = coarseInterceptMs,
+        )
+        val seeds = buildList {
+            independentSeeds.forEach { intercept ->
+                add(SeedCandidate(interceptMs = intercept, independent = true))
+            }
+            add(SeedCandidate(interceptMs = coarseInterceptMs, independent = false))
+        }.distinctBy { seed ->
+            (seed.interceptMs / SEED_DEDUP_BUCKET_MS).roundToLong()
+        }
+
+        val evaluated = seeds.mapNotNull { seed ->
+            retimeWithSeed(reference, target, coarseScale, seed.interceptMs)?.let { result ->
+                SeedEvaluation(seed = seed, result = result)
+            }
+        }
+        val best = evaluated.maxWithOrNull(
+            compareBy<SeedEvaluation> { timelineQualityScore(it.result) }
+                .thenBy { if (it.seed.independent) 1 else 0 },
+        ) ?: return null
+
+        val anchorSegments = anchorSegmentsPassed(best.result, target.size)
+        val simpleRatio = simpleGroupRatio(best.result)
+        val independentlyConfirmed =
+            best.result.confident &&
+                best.seed.independent &&
+                anchorSegments == 3 &&
+                best.result.targetCoverage >= AMBIGUOUS_MIN_TARGET_COVERAGE &&
+                best.result.averageGroupCost <= AMBIGUOUS_MAX_AVERAGE_GROUP_COST &&
+                best.result.longestTargetSkipRun <= AMBIGUOUS_MAX_TARGET_SKIP_RUN &&
+                simpleRatio >= AMBIGUOUS_MIN_SIMPLE_GROUP_RATIO
+
+        return best.result.copy(
+            confident = independentlyConfirmed,
+            seedSource = if (best.seed.independent) "independent" else "coarse",
+            seedInterceptMs = best.seed.interceptMs,
+            anchorSegmentsPassed = anchorSegments,
+            simpleGroupRatio = simpleRatio,
+        )
+    }
+
+    private fun retimeWithSeed(
         reference: List<SubtitleSyncCue>,
         target: List<SubtitleSyncCue>,
         coarseScale: Double,
@@ -255,6 +333,181 @@ internal object AutoSyncTimelineRetimer {
             confident = confident,
         )
     }
+
+    private fun independentSeedIntercepts(
+        reference: List<SubtitleSyncCue>,
+        target: List<SubtitleSyncCue>,
+        scale: Double,
+        coarseInterceptMs: Double,
+    ): List<Double> {
+        if (reference.size < MIN_CUES || target.size < MIN_CUES) return emptyList()
+        val targetSpan = target.last().startTimeMs - target.first().startTimeMs
+        val referenceSpan = reference.last().startTimeMs - reference.first().startTimeMs
+        if (targetSpan <= 0L || referenceSpan <= 0L) return emptyList()
+
+        val samples = evenlySampleTargetCues(target, INDEPENDENT_SEED_SAMPLES)
+        val votes = HashMap<Long, Int>()
+        for (cue in samples) {
+            val progress =
+                (cue.startTimeMs - target.first().startTimeMs).toDouble() / targetSpan.toDouble()
+            val expectedReferenceTime =
+                (reference.first().startTimeMs + progress * referenceSpan).roundToLong()
+            val from = lowerBoundReference(
+                reference,
+                expectedReferenceTime - INDEPENDENT_SEED_SEARCH_WINDOW_MS,
+            )
+            val to = lowerBoundReference(
+                reference,
+                expectedReferenceTime + INDEPENDENT_SEED_SEARCH_WINDOW_MS,
+            )
+            for (referenceIndex in from until to) {
+                val intercept =
+                    reference[referenceIndex].startTimeMs.toDouble() - cue.startTimeMs.toDouble() * scale
+                val bucket =
+                    (intercept / INDEPENDENT_SEED_BUCKET_MS.toDouble()).roundToLong() *
+                        INDEPENDENT_SEED_BUCKET_MS
+                votes[bucket] = (votes[bucket] ?: 0) + 1
+            }
+        }
+
+        return votes.entries
+            .sortedWith(
+                compareByDescending<Map.Entry<Long, Int>> { it.value }
+                    .thenBy { abs(it.key.toDouble() - coarseInterceptMs) },
+            )
+            .take(MAX_INDEPENDENT_SEEDS)
+            .map { entry ->
+                refineIndependentSeed(
+                    reference = reference,
+                    samples = samples,
+                    scale = scale,
+                    interceptMs = entry.key.toDouble(),
+                )
+            }
+            .distinctBy { intercept ->
+                (intercept / SEED_DEDUP_BUCKET_MS).roundToLong()
+            }
+    }
+
+    private fun refineIndependentSeed(
+        reference: List<SubtitleSyncCue>,
+        samples: List<SubtitleSyncCue>,
+        scale: Double,
+        interceptMs: Double,
+    ): Double {
+        val refined = ArrayList<Double>(samples.size)
+        for (cue in samples) {
+            val transformed = transformTimeDouble(cue.startTimeMs, scale, interceptMs).roundToLong()
+            val insertion = lowerBoundReference(reference, transformed)
+            var bestIndex = -1
+            var bestResidual = Long.MAX_VALUE
+            if (insertion < reference.size) {
+                bestIndex = insertion
+                bestResidual = abs(reference[insertion].startTimeMs - transformed)
+            }
+            if (insertion > 0) {
+                val previousResidual = abs(reference[insertion - 1].startTimeMs - transformed)
+                if (previousResidual < bestResidual) {
+                    bestIndex = insertion - 1
+                    bestResidual = previousResidual
+                }
+            }
+            if (bestIndex >= 0 && bestResidual <= INDEPENDENT_SEED_REFINE_TOLERANCE_MS) {
+                refined += reference[bestIndex].startTimeMs.toDouble() - cue.startTimeMs.toDouble() * scale
+            }
+        }
+        return if (refined.size >= 6) medianDouble(refined) else interceptMs
+    }
+
+    private fun evenlySampleTargetCues(
+        cues: List<SubtitleSyncCue>,
+        maxSamples: Int,
+    ): List<SubtitleSyncCue> {
+        if (cues.size <= maxSamples) return cues
+        if (maxSamples <= 1) return listOf(cues.first())
+        val lastIndex = cues.lastIndex
+        return (0 until maxSamples)
+            .map { sampleIndex ->
+                cues[(sampleIndex.toLong() * lastIndex / (maxSamples - 1)).toInt()]
+            }
+            .distinctBy { it.startTimeMs }
+    }
+
+    private fun anchorSegmentsPassed(
+        result: AutoSyncTimelineRetimeResult,
+        targetSize: Int,
+    ): Int {
+        if (targetSize < 3 || result.groups.isEmpty()) return 0
+        val matched = BooleanArray(targetSize)
+        val costs = Array(3) { mutableListOf<Double>() }
+        result.groups.forEach { group ->
+            val groupEnd = (group.targetStartIndex + group.targetCount).coerceAtMost(targetSize)
+            for (index in group.targetStartIndex until groupEnd) matched[index] = true
+            val midpoint = group.targetStartIndex + (group.targetCount - 1) / 2
+            val segment =
+                ((midpoint.toLong() * 3L) / targetSize.coerceAtLeast(1)).toInt().coerceIn(0, 2)
+            costs[segment] += group.cost
+        }
+
+        var passed = 0
+        for (segment in 0..2) {
+            val start = segment * targetSize / 3
+            val end = if (segment == 2) targetSize else (segment + 1) * targetSize / 3
+            val length = (end - start).coerceAtLeast(1)
+            var matchedCount = 0
+            for (index in start until end) if (matched[index]) matchedCount++
+            val coverage = matchedCount.toDouble() / length
+            val segmentCosts = costs[segment]
+            val averageCost =
+                if (segmentCosts.isEmpty()) Double.POSITIVE_INFINITY else segmentCosts.average()
+            if (
+                coverage >= ANCHOR_SEGMENT_MIN_COVERAGE &&
+                averageCost <= ANCHOR_SEGMENT_MAX_AVERAGE_COST &&
+                segmentCosts.size >= ANCHOR_SEGMENT_MIN_GROUPS
+            ) {
+                passed++
+            }
+        }
+        return passed
+    }
+
+    private fun simpleGroupRatio(result: AutoSyncTimelineRetimeResult): Double {
+        if (result.groups.isEmpty()) return 0.0
+        val simple = result.oneToOneGroups + result.oneToTwoGroups + result.twoToOneGroups
+        return simple.toDouble() / result.groups.size
+    }
+
+    private fun timelineQualityScore(result: AutoSyncTimelineRetimeResult): Double {
+        val simple = simpleGroupRatio(result)
+        val costScore = 1.0 / (1.0 + result.averageGroupCost.coerceAtLeast(0.0))
+        val skipPenalty = min(result.longestTargetSkipRun, 20) * 0.004
+        return result.targetCoverage * 0.42 +
+            result.referenceCoverage * 0.15 +
+            costScore * 0.23 +
+            simple * 0.20 -
+            skipPenalty
+    }
+
+    private fun medianDouble(values: List<Double>): Double {
+        if (values.isEmpty()) return Double.NaN
+        val sorted = values.sorted()
+        val middle = sorted.size / 2
+        return if (sorted.size % 2 == 0) {
+            (sorted[middle - 1] + sorted[middle]) / 2.0
+        } else {
+            sorted[middle]
+        }
+    }
+
+    private data class SeedCandidate(
+        val interceptMs: Double,
+        val independent: Boolean,
+    )
+
+    private data class SeedEvaluation(
+        val seed: SeedCandidate,
+        val result: AutoSyncTimelineRetimeResult,
+    )
 
     private fun transplantGroupTiming(
         reference: List<SubtitleSyncCue>,
@@ -497,4 +750,8 @@ internal data class AutoSyncTimelineRetimeResult(
     val threeToOneGroups: Int,
     val twoToTwoGroups: Int,
     val confident: Boolean,
+    val seedSource: String = "coarse",
+    val seedInterceptMs: Double = 0.0,
+    val anchorSegmentsPassed: Int = 0,
+    val simpleGroupRatio: Double = 0.0,
 )

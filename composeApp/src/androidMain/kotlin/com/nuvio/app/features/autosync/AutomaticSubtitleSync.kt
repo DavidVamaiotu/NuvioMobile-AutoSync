@@ -779,6 +779,10 @@ internal object AutomaticSubtitleSync {
                         "groups13=${selectedTimelineRetime.oneToThreeGroups} " +
                         "groups31=${selectedTimelineRetime.threeToOneGroups} " +
                         "groups22=${selectedTimelineRetime.twoToTwoGroups} " +
+                        "seed=${selectedTimelineRetime.seedSource} " +
+                        "seedIntercept=${"%.1f".format(selectedTimelineRetime.seedInterceptMs)}ms " +
+                        "anchors=${selectedTimelineRetime.anchorSegmentsPassed}/3 " +
+                        "simpleRatio=${fmt(selectedTimelineRetime.simpleGroupRatio)} " +
                         "decision=${if (selectedTimelineRetime.confident) "ACCEPT" else "REJECT"}"
                 }
             }
@@ -2471,6 +2475,7 @@ internal object AutomaticSubtitleSync {
             target = target,
             coarseScale = scale,
             coarseInterceptMs = interceptMs,
+            requireIndependentAnchors = attempt.result == null,
         )
     }
 
