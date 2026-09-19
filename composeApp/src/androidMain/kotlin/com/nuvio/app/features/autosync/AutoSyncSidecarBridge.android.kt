@@ -103,17 +103,19 @@ private fun retimeSidecarTimedCues(
     source: List<CuesWithTiming>,
     timeline: AutoSyncTimelineRetimeResult,
 ): List<CuesWithTiming> {
-    val boundaries = ArrayList<TimingBoundary>(timeline.cues.size * 2)
+    val startBoundaries = ArrayList<TimingBoundary>(timeline.cues.size)
+    val endBoundaries = ArrayList<TimingBoundary>(timeline.cues.size)
     timeline.cues.forEach { cue ->
-        boundaries += TimingBoundary(cue.originalStartTimeMs, cue.startTimeMs)
-        boundaries += TimingBoundary(cue.originalEndTimeMs, cue.endTimeMs)
+        startBoundaries += TimingBoundary(cue.originalStartTimeMs, cue.startTimeMs)
+        endBoundaries += TimingBoundary(cue.originalEndTimeMs, cue.endTimeMs)
     }
-    boundaries.sortBy { it.originalMs }
+    startBoundaries.sortBy { it.originalMs }
+    endBoundaries.sortBy { it.originalMs }
 
     var boundaryMapped = 0
     var affineFallback = 0
 
-    fun mapTime(originalMs: Long): Long {
+    fun mapTime(originalMs: Long, boundaries: List<TimingBoundary>): Long {
         if (boundaries.isNotEmpty()) {
             var low = 0
             var high = boundaries.size
@@ -164,13 +166,56 @@ private fun retimeSidecarTimedCues(
             else -> originalStartMs + 1L
         }.coerceAtLeast(originalStartMs + 1L)
 
-        val startMs = mapTime(originalStartMs)
-        val endMs = mapTime(originalEndMs).coerceAtLeast(startMs + 1L)
+        val startMs = mapTime(originalStartMs, startBoundaries)
+        val endMs = mapTime(originalEndMs, endBoundaries).coerceAtLeast(startMs + 1L)
         out += CuesWithTiming(
             entry.cues,
             startMs * 1_000L,
             (endMs - startMs) * 1_000L,
         )
+    }
+
+    for (index in 0 until out.lastIndex) {
+        val sourceCurrent = source[index]
+        val sourceNext = source[index + 1]
+        if (
+            sourceCurrent.startTimeUs == C.TIME_UNSET ||
+            sourceNext.startTimeUs == C.TIME_UNSET
+        ) {
+            continue
+        }
+
+        val sourceCurrentEndUs = when {
+            sourceCurrent.endTimeUs != C.TIME_UNSET -> sourceCurrent.endTimeUs
+            sourceCurrent.durationUs != C.TIME_UNSET ->
+                sourceCurrent.startTimeUs + sourceCurrent.durationUs
+            else -> continue
+        }
+        if (sourceCurrentEndUs > sourceNext.startTimeUs) continue
+
+        val current = out[index]
+        val next = out[index + 1]
+        if (
+            current.startTimeUs != C.TIME_UNSET &&
+            next.startTimeUs != C.TIME_UNSET
+        ) {
+            val currentEndUs = when {
+                current.endTimeUs != C.TIME_UNSET -> current.endTimeUs
+                current.durationUs != C.TIME_UNSET ->
+                    current.startTimeUs + current.durationUs
+                else -> continue
+            }
+            if (
+                currentEndUs > next.startTimeUs &&
+                next.startTimeUs > current.startTimeUs
+            ) {
+                out[index] = CuesWithTiming(
+                    current.cues,
+                    current.startTimeUs,
+                    (next.startTimeUs - current.startTimeUs).coerceAtLeast(1L),
+                )
+            }
+        }
     }
 
     Log.d(

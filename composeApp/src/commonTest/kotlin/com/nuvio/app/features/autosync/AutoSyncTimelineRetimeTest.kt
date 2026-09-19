@@ -164,6 +164,44 @@ class AutoSyncTimelineRetimeTest {
     }
 
     @Test
+    fun retimingDoesNotCreateNewSequentialCueOverlaps() {
+        val target = listOf(
+            SubtitleSyncCue(10_000L, 13_000L, "a"),
+            SubtitleSyncCue(13_100L, 15_500L, "b"),
+            SubtitleSyncCue(16_000L, 18_500L, "c"),
+            SubtitleSyncCue(19_000L, 21_500L, "d"),
+            SubtitleSyncCue(22_000L, 24_500L, "e"),
+            SubtitleSyncCue(25_000L, 27_500L, "f"),
+        )
+        val reference = listOf(
+            SubtitleSyncCue(11_000L, 12_900L, "r0"),
+            SubtitleSyncCue(13_500L, 14_900L, "r1"),
+            SubtitleSyncCue(16_800L, 18_000L, "r2"),
+            SubtitleSyncCue(19_800L, 21_000L, "r3"),
+            SubtitleSyncCue(22_800L, 24_000L, "r4"),
+            SubtitleSyncCue(25_800L, 27_000L, "r5"),
+        )
+
+        val result = assertNotNull(
+            AutoSyncTimelineRetimer.retime(
+                reference = reference,
+                target = target,
+                coarseScale = 1.0,
+                coarseInterceptMs = 800.0,
+            ),
+        )
+
+        for (index in 0 until result.cues.lastIndex) {
+            if (target[index].endTimeMs <= target[index + 1].startTimeMs) {
+                assertTrue(
+                    result.cues[index].endTimeMs <= result.cues[index + 1].startTimeMs,
+                    "AutoSync introduced overlap at cue $index",
+                )
+            }
+        }
+    }
+
+    @Test
     fun splitCuesAreStillHandledByExistingDp() {
         val reference = irregularTimeline(100)
         val target = buildList {

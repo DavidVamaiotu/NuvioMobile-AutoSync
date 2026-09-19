@@ -343,6 +343,21 @@ internal object AutoSyncTimelineRetimer {
             }
         }
 
+        // Local group anchoring can move neighbouring groups by slightly different amounts.
+        // Preserve overlaps that already existed in the external subtitle, but never create a
+        // new overlap between two cues that were sequential before AutoSync.
+        for (index in 0 until retimed.lastIndex) {
+            val original = target[index]
+            val originalNext = target[index + 1]
+            if (original.endTimeMs > originalNext.startTimeMs) continue
+
+            val current = retimed[index]
+            val next = retimed[index + 1]
+            if (current.endTimeMs > next.startTimeMs && next.startTimeMs > current.startTimeMs) {
+                retimed[index] = current.copy(endTimeMs = next.startTimeMs)
+            }
+        }
+
         val matchedTargetCount = matchedTarget.count { it }
         val matchedReferenceCount = matchedReference.count { it }
         val targetCoverage = matchedTargetCount.toDouble() / target.size
