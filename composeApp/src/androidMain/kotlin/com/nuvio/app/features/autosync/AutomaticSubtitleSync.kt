@@ -30,7 +30,8 @@ internal object AutomaticSubtitleSync {
     private const val MIN_SELECTED_CUES = 1
     private const val MAX_LOGGED_CUE_SAMPLES = 20
     private const val MAX_ALTERNATIVE_EXTERNAL_SUBTITLES = 4
-    private const val FALLBACK_CANDIDATE_REFRESH_DELAY_MS = 500L
+    private const val FALLBACK_CANDIDATE_POLL_MS = 250L
+    private const val FALLBACK_CANDIDATE_WAIT_MS = 10_000L
 
     private const val MIN_FULL_DIALOGUE_CUES = 8
     private const val MIN_FULL_DIALOGUE_CLASSIFICATION_SPAN_MS = 30_000L
@@ -140,15 +141,31 @@ internal object AutomaticSubtitleSync {
             var language = selectedLanguage(availableCandidates)
             var alternatives = sameLanguageAlternatives(availableCandidates, language)
 
-            if (
-                selected == null &&
-                alternatives.isEmpty() &&
-                alternativeSubtitlesProvider != null
-            ) {
-                delay(FALLBACK_CANDIDATE_REFRESH_DELAY_MS)
-                availableCandidates = currentExternalCandidates()
-                language = selectedLanguage(availableCandidates)
-                alternatives = sameLanguageAlternatives(availableCandidates, language)
+            suspend fun awaitSameLanguageAlternatives() {
+                if (alternativeSubtitlesProvider == null || alternatives.isNotEmpty()) return
+
+                val waitStartedMs = SystemClock.elapsedRealtime()
+                while (alternatives.isEmpty()) {
+                    availableCandidates = currentExternalCandidates()
+                    language = selectedLanguage(availableCandidates)
+                    alternatives = sameLanguageAlternatives(availableCandidates, language)
+                    if (alternatives.isNotEmpty()) break
+
+                    val elapsedMs = SystemClock.elapsedRealtime() - waitStartedMs
+                    val remainingMs = FALLBACK_CANDIDATE_WAIT_MS - elapsedMs
+                    if (remainingMs <= 0L) break
+                    delay(minOf(FALLBACK_CANDIDATE_POLL_MS, remainingMs))
+                }
+
+                AutoSyncDebugLog.info {
+                    "fallback candidate refresh total=${availableCandidates.size} " +
+                        "sameLanguage=${alternatives.size} " +
+                        "waited=${SystemClock.elapsedRealtime() - waitStartedMs}ms"
+                }
+            }
+
+            if (selected == null) {
+                awaitSameLanguageAlternatives()
             }
 
             var seedTarget = selected?.cues
@@ -237,18 +254,7 @@ internal object AutomaticSubtitleSync {
                 // Add-on results arrive progressively. Re-read the coordinator's current
                 // candidate list only when fallback is actually needed, so the fast selected
                 // subtitle path is never delayed.
-                if (alternativeSubtitlesProvider != null) {
-                    availableCandidates = currentExternalCandidates()
-                    language = selectedLanguage(availableCandidates)
-                    alternatives = sameLanguageAlternatives(availableCandidates, language)
-
-                    if (alternatives.isEmpty()) {
-                        delay(FALLBACK_CANDIDATE_REFRESH_DELAY_MS)
-                        availableCandidates = currentExternalCandidates()
-                        language = selectedLanguage(availableCandidates)
-                        alternatives = sameLanguageAlternatives(availableCandidates, language)
-                    }
-                }
+                awaitSameLanguageAlternatives()
 
                 AutoSyncDebugLog.section { "EXTERNAL SUBTITLE FALLBACK" }
                 AutoSyncDebugLog.info {
