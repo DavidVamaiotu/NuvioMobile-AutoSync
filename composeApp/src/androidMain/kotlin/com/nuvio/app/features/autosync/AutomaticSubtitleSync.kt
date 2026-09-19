@@ -2450,9 +2450,18 @@ internal object AutomaticSubtitleSync {
         target: List<SubtitleSyncCue>,
         attempt: AlignmentAttempt,
     ): AutoSyncTimelineRetimeResult? {
-        val scale = attempt.timelineScale
-            ?: attempt.matchedPairScale
-            ?: 1.0
+        val rejectedCoarseAlignment = attempt.result == null
+        val scale = if (rejectedCoarseAlignment) {
+            // V1 rejected this alignment, so do not reuse the independent timeline/FPS scale
+            // that may itself be one of the failed confidence signals. Matched-pair scale is
+            // local to the actual cue correspondences and is the safer V2 seed; unit scale is
+            // the conservative fallback when even that estimate is unavailable.
+            attempt.matchedPairScale ?: 1.0
+        } else {
+            attempt.timelineScale
+                ?: attempt.matchedPairScale
+                ?: 1.0
+        }
         if (!scale.isFinite() || scale !in 0.85..1.15) return null
 
         val pairs = attempt.debugDetails?.best?.pairs.orEmpty()
@@ -2475,7 +2484,7 @@ internal object AutomaticSubtitleSync {
             target = target,
             coarseScale = scale,
             coarseInterceptMs = interceptMs,
-            requireIndependentAnchors = attempt.result == null,
+            requireIndependentAnchors = rejectedCoarseAlignment,
         )
     }
 
