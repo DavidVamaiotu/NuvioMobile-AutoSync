@@ -133,6 +133,7 @@ internal fun PlayerScreenRuntime.restorePersistedTrackPreferenceIfNeeded() {
                 playerController?.setSubtitleUri(url)
                 preferredSubtitleSelectionApplied = true
                 isUserExplicitSubtitleSelection = true
+                maybeAutoSyncRestoredSubtitleAtStart(url)
             }
         }
     }
@@ -343,6 +344,13 @@ private fun PlayerScreenRuntime.tryAutoSelectPreferredSubtitleFromAvailableTrack
     }
 }
 
+
+private fun PlayerScreenRuntime.maybeAutoSyncRestoredSubtitleAtStart(url: String) {
+    val controller = playerController ?: return
+    val videoKey = activeVideoId?.takeIf { it.isNotBlank() } ?: activeSourceUrl
+    if (!AutoSyncPreferencesRepository.claimStartupRun(hashCode(), videoKey)) return
+    controller.runSubtitleAutoSync(url)
+}
 
 private fun PlayerScreenRuntime.maybeAutoSyncPreferredSubtitleAtStart(subtitle: AddonSubtitle) {
     if (isUserExplicitSubtitleSelection) return

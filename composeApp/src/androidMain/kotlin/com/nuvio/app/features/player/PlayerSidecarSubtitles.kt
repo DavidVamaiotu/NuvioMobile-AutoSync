@@ -25,6 +25,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.lang.ref.WeakReference
 import kotlin.math.abs
 
@@ -32,13 +33,9 @@ private const val SIDECAR_TAG = "NuvioSidecar"
 private val sidecarParserFactory = DefaultSubtitleParserFactory()
 private val mainHandler = Handler(Looper.getMainLooper())
 private const val SIDECAR_RENDER_INTERVAL_MS = 100L
-private const val EMPTY_CUE_SIGNATURE = 0x4E5556494FL // "NUVIO"
-
-internal enum class AutoSyncTimelineApplyStatus {
-    APPLIED,
-    QUEUED,
-    REJECTED,
-}
+private const val AUTO_SYNC_SIDECAR_WAIT_MS = 15_000L
+private const val AUTO_SYNC_SIDECAR_WAIT_POLL_MS = 25L
+private const val EMPTY_CUE_SIGNATURE = 0x4E5556494FL // "NUVIO
 
 internal class SidecarSubtitleController(
     private val scope: CoroutineScope,
@@ -52,7 +49,6 @@ internal class SidecarSubtitleController(
         private set
     private var lastSidecarCueSignature: Long? = null
     private var exoSubtitleViewRef: WeakReference<SubtitleView>? = null
-    private var pendingAutoSyncTimeline: Pair<String, AutoSyncTimelineRetimeResult>? = null
 
     fun isSidecarActive(): Boolean = activeSidecarSubtitleKey != null
 
@@ -61,22 +57,26 @@ internal class SidecarSubtitleController(
      * Cue text/spans/positioning remain the Media3-parsed originals. A parser-sequence mismatch
      * refuses V2 so the caller can use the existing delay-based AutoSync unchanged.
      */
-    fun applyAutoSyncTimeline(
+    suspend fun applyAutoSyncTimeline(
         url: String,
         timeline: AutoSyncTimelineRetimeResult,
-    ): AutoSyncTimelineApplyStatus {
-        if (!timeline.confident) return AutoSyncTimelineApplyStatus.REJECTED
-        if (activeSidecarSubtitleKey != url) return AutoSyncTimelineApplyStatus.REJECTED
-        val current = sidecarTimedCues
-        if (current.isEmpty()) {
-            pendingAutoSyncTimeline = url to timeline
-            Log.i(SIDECAR_TAG, "Queued AutoSync V2 timeline until sidecar parsing completes url=$url")
-            return AutoSyncTimelineApplyStatus.QUEUED
-        }
+    ): Boolean {
+        if (!timeline.confident) return false
+        if (activeSidecarSubtitleKey != url) return false
 
-        val retimed = retimeSidecarTimedCues(current, timeline)
-            ?: return AutoSyncTimelineApplyStatus.REJECTED
-        pendingAutoSyncTimeline = null
+        val current = sidecarTimedCues.takeIf { it.isNotEmpty() } ?: withTimeoutOrNull(
+            AUTO_SYNC_SIDECAR_WAIT_MS,
+        ) {
+            while (activeSidecarSubtitleKey == url && sidecarTimedCues.isEmpty()) {
+                delay(AUTO_SYNC_SIDECAR_WAIT_POLL_MS)
+            }
+            sidecarTimedCues.takeIf {
+                activeSidecarSubtitleKey == url && it.isNotEmpty()
+            }
+        } ?: return false
+
+        if (activeSidecarSubtitleKey != url) return false
+        val retimed = retimeSidecarTimedCues(current, timeline) ?: return false
         sidecarTimedCues = retimed
         lastSidecarCueSignature = null
         Log.i(
@@ -84,7 +84,7 @@ internal class SidecarSubtitleController(
             "Applied AutoSync V2 timeline url=$url cues=${retimed.size} " +
                 "coverage=${"%.3f".format(timeline.targetCoverage)}",
         )
-        return AutoSyncTimelineApplyStatus.APPLIED
+        return true
     }
 
     fun canAttachAddonSubtitleViaSidecar(url: String, useLibass: Boolean): Boolean {
@@ -111,7 +111,6 @@ internal class SidecarSubtitleController(
         sidecarSubtitleJob = null
         activeSidecarSubtitleKey = null
         sidecarTimedCues = emptyList()
-        pendingAutoSyncTimeline = null
         lastSidecarCueSignature = null
         if (clearView) {
             postToSubtitleView { view ->
@@ -133,7 +132,6 @@ internal class SidecarSubtitleController(
 
         sidecarSubtitleJob?.cancel()
         activeSidecarSubtitleKey = subtitleKey
-        pendingAutoSyncTimeline = null
         lastSidecarCueSignature = null
         sidecarTimedCues = emptyList()
         postToSubtitleView { view ->
@@ -169,7 +167,6 @@ internal class SidecarSubtitleController(
                 }
 
                 sidecarTimedCues = parseResult.cues
-                applyPendingAutoSyncTimelineIfReady(subtitleKey)
                 Log.d(
                     SIDECAR_TAG,
                     "Sidecar subtitle ready url=$url cues=${sidecarTimedCues.size} mime=${parseResult.effectiveMime} source=${parseResult.source} (buffer preserved)"
@@ -196,24 +193,6 @@ internal class SidecarSubtitleController(
             }
         }
         return true
-    }
-
-    private fun applyPendingAutoSyncTimelineIfReady(subtitleKey: String) {
-        val pending = pendingAutoSyncTimeline ?: return
-        if (pending.first != subtitleKey || activeSidecarSubtitleKey != subtitleKey) return
-        pendingAutoSyncTimeline = null
-        val retimed = retimeSidecarTimedCues(sidecarTimedCues, pending.second)
-        if (retimed == null) {
-            Log.w(SIDECAR_TAG, "Queued AutoSync V2 timeline could not be applied after parsing url=$subtitleKey")
-            return
-        }
-        sidecarTimedCues = retimed
-        lastSidecarCueSignature = null
-        Log.i(
-            SIDECAR_TAG,
-            "Applied queued AutoSync V2 timeline url=$subtitleKey cues=${retimed.size} " +
-                "coverage=${"%.3f".format(pending.second.targetCoverage)}",
-        )
     }
 
     fun renderSidecarCuesAtCurrentPosition() {

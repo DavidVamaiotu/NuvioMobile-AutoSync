@@ -523,6 +523,8 @@ private fun PlayerScreenRuntime.RenderPlayerModals(displayedPositionMs: Long) {
             selectedSubtitleIndex = -1
             useCustomSubtitles = true
             preferredSubtitleSelectionApplied = true
+            subtitleAutoSyncState = SubtitleAutoSyncUiState()
+            setSubtitleDelay(0)
             persistAddonSubtitlePreference(addon)
             playerController?.setSubtitleUri(addon.url)
             playerController?.runSubtitleAutoSync(addon.url)

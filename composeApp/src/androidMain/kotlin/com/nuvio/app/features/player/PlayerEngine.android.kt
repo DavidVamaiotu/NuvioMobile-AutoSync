@@ -921,17 +921,15 @@ private fun ExoPlayerSurface(
                             timelineRetime != null &&
                             recommendation.timelineRetimeUrl == url
                         ) {
-                            val applyStatus = sidecarController.applyAutoSyncTimeline(
+                            val applied = sidecarController.applyAutoSyncTimeline(
                                 url = url,
                                 timeline = timelineRetime,
                             )
-                            if (applyStatus != AutoSyncTimelineApplyStatus.REJECTED) {
-                                // A queued result is safe to treat as V2-owned: no sidecar cues are
-                                // visible yet, and the controller applies the timeline immediately after parsing.
+                            if (applied) {
                                 subtitleDelayMs = 0
                                 autoSyncAppliedListener?.invoke(url, 0)
                                 AutoSyncDebugLog.info {
-                                    "AUTO APPLY V2 directTimeline=true status=$applyStatus groups=${timelineRetime.groups.size} " +
+                                    "AUTO APPLY V2 directTimeline=true status=APPLIED groups=${timelineRetime.groups.size} " +
                                         "targetCoverage=${"%.4f".format(timelineRetime.targetCoverage)} " +
                                         "referenceCoverage=${"%.4f".format(timelineRetime.referenceCoverage)} " +
                                         "finalDelay=0ms"
@@ -940,24 +938,19 @@ private fun ExoPlayerSurface(
                                     AutoSyncDebugLog.finishAndCopy(
                                         context = context,
                                         decision =
-                                            "${if (applyStatus == AutoSyncTimelineApplyStatus.APPLIED) "APPLIED" else "QUEUED"} V2 direct timeline " +
-                                                "url=$url groups=${timelineRetime.groups.size} " +
+                                            "APPLIED V2 direct timeline url=$url groups=${timelineRetime.groups.size} " +
                                                 "targetCoverage=${"%.4f".format(timelineRetime.targetCoverage)} " +
                                                 "referenceCoverage=${"%.4f".format(timelineRetime.referenceCoverage)}",
                                     )
                                 }
                                 Toast.makeText(
                                     context,
-                                    if (applyStatus == AutoSyncTimelineApplyStatus.APPLIED) {
-                                        "Auto Sync V2: timeline matched • ${"%.0f".format(timelineRetime.targetCoverage * 100.0)}%"
-                                    } else {
-                                        "Auto Sync V2: timeline ready • applying when subtitle loads"
-                                    },
+                                    "Auto Sync V2: timeline matched • ${"%.0f".format(timelineRetime.targetCoverage * 100.0)}%",
                                     Toast.LENGTH_LONG,
                                 ).show()
                                 Log.i(
                                     TAG,
-                                    "Automatic subtitle V2 timeline status=$applyStatus url=$url " +
+                                    "Automatic subtitle V2 timeline status=APPLIED url=$url " +
                                         "groups=${timelineRetime.groups.size} finalDelay=0ms",
                                 )
                                 return@launch

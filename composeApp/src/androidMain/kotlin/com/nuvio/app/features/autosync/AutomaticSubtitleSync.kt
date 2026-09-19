@@ -256,19 +256,18 @@ internal object AutomaticSubtitleSync {
                 )
             }
             val downloadSemaphore = Semaphore(MAX_PARALLEL_SUBTITLE_DOWNLOADS)
-            val pendingLoads = sameLanguageCandidates
-                .mapIndexed { index, candidate ->
-                    PendingCandidateLoad(
-                        index = index,
-                        deferred = async {
-                            loadSubtitleCandidate(
-                                candidate = candidate,
-                                downloadSemaphore = downloadSemaphore,
-                            )
-                        },
-                    )
-                }
-                .toMutableList()
+            val selectedCandidateIndex = candidateOrder[selectedSubtitleUrl] ?: 0
+            val pendingLoads = mutableListOf(
+                PendingCandidateLoad(
+                    index = selectedCandidateIndex,
+                    deferred = async {
+                        loadSubtitleCandidate(
+                            candidate = selectedCandidate,
+                            downloadSemaphore = downloadSemaphore,
+                        )
+                    },
+                ),
+            )
 
             val indexedTimeline = indexedTimelineDeferred.await()
 
@@ -620,6 +619,7 @@ internal object AutomaticSubtitleSync {
                     priorityScore = (rankedReferences.firstOrNull()?.affinity ?: 0.0) +
                         if (parsed.candidate.url == selectedSubtitleUrl) 2.0 else 0.0,
                     candidateOrder = candidateIndex,
+                    allowReferenceEarlyStop = parsed.candidate.url != selectedSubtitleUrl,
                 )
                 bucket += state
                 queuedMatchStates += state
@@ -643,90 +643,92 @@ internal object AutomaticSubtitleSync {
                         state = state,
                         deferred = async(Dispatchers.Default) {
                             matchSemaphore.withPermit {
-                                matchCandidateAgainstReferences(parsed, state.rankedReferences)
+                                matchCandidateAgainstReferences(
+                                    parsed = parsed,
+                                    rankedReferenceTimingGroups = state.rankedReferences,
+                                    allowEarlyStop = state.allowReferenceEarlyStop,
+                                )
                             }
                         },
                     )
                 }
             }
 
-            // Most subtitle downloads finish while the indexed Matroska timeline is being loaded.
-            // Drain those completed results first so the two CPU matcher slots can start with the
-            // most promising timing families instead of simply the lowest candidate indexes.
-            pendingLoads
-                .filter { it.deferred.isCompleted }
-                .sortedBy { it.index }
-                .toList()
-                .forEach { load ->
-                    pendingLoads.remove(load)
-                    registerParsedCandidate(load.index, load.deferred.await())
-                }
-            startQueuedMatches()
-
-            while ((pendingLoads.isNotEmpty() || pendingMatches.isNotEmpty() || queuedMatchStates.isNotEmpty()) && !earlyStopped) {
-                val event = select<PipelineEvent> {
-                    pendingLoads.forEach { load ->
-                        load.deferred.onAwait { parsed ->
-                            PipelineEvent.CandidateLoaded(load.index, parsed)
-                        }
+            suspend fun drainCandidatePipeline() {
+                // Most subtitle downloads finish while the indexed Matroska timeline is being loaded.
+                // Drain those completed results first so the two CPU matcher slots can start with the
+                // most promising timing families instead of simply the lowest candidate indexes.
+                pendingLoads
+                    .filter { it.deferred.isCompleted }
+                    .sortedBy { it.index }
+                    .toList()
+                    .forEach { load ->
+                        pendingLoads.remove(load)
+                        registerParsedCandidate(load.index, load.deferred.await())
                     }
-                    pendingMatches.forEach { match ->
-                        match.deferred.onAwait { summary ->
-                            PipelineEvent.TimingMatched(match.state, summary)
-                        }
-                    }
-                }
+                startQueuedMatches()
 
-                when (event) {
-                    is PipelineEvent.CandidateLoaded -> {
-                        pendingLoads.removeAll { it.index == event.index }
-                        registerParsedCandidate(event.index, event.parsed)
-                        startQueuedMatches()
-                    }
-
-                    is PipelineEvent.TimingMatched -> {
-                        pendingMatches.removeAll { it.state === event.state }
-                        event.state.summary = event.summary
-                        groupResults += CandidateTimingGroupResult(event.state.group, event.summary)
-                        event.state.group.members.forEachIndexed { memberIndex, parsed ->
-                            addMemberResult(parsed, event.summary, reusedTiming = memberIndex > 0)
-                        }
-
-                        val selectedCandidateEvaluated = groupResults.any { result ->
-                            result.group.members.any { member ->
-                                member.candidate.url == selectedSubtitleUrl
+                while ((pendingLoads.isNotEmpty() || pendingMatches.isNotEmpty() || queuedMatchStates.isNotEmpty()) && !earlyStopped) {
+                    val event = select<PipelineEvent> {
+                        pendingLoads.forEach { load ->
+                            load.deferred.onAwait { parsed ->
+                                PipelineEvent.CandidateLoaded(load.index, parsed)
                             }
                         }
-                        if (canStopCandidateSearch(event.summary) && selectedCandidateEvaluated) {
-                            earlyStopped = true
-                            val best = event.summary.bestAccepted
-                            AutoSyncDebugLog.info { "EARLY STOP candidate search score=${best?.let { fmt(adjustedAlignmentScore(it)) } ?: "<none>"} " +
-                                    "remainingDownloads=${pendingLoads.size} remainingMatches=${pendingMatches.size}" }
-                            pendingLoads.forEach { it.deferred.cancel() }
-                            pendingMatches.forEach { it.deferred.cancel() }
-                            pendingLoads.clear()
-                            pendingMatches.clear()
-                            queuedMatchStates.clear()
-                        } else {
+                        pendingMatches.forEach { match ->
+                            match.deferred.onAwait { summary ->
+                                PipelineEvent.TimingMatched(match.state, summary)
+                            }
+                        }
+                    }
+
+                    when (event) {
+                        is PipelineEvent.CandidateLoaded -> {
+                            pendingLoads.removeAll { it.index == event.index }
+                            registerParsedCandidate(event.index, event.parsed)
                             startQueuedMatches()
+                        }
+
+                        is PipelineEvent.TimingMatched -> {
+                            pendingMatches.removeAll { it.state === event.state }
+                            event.state.summary = event.summary
+                            groupResults += CandidateTimingGroupResult(event.state.group, event.summary)
+                            event.state.group.members.forEachIndexed { memberIndex, parsed ->
+                                addMemberResult(parsed, event.summary, reusedTiming = memberIndex > 0)
+                            }
+
+                            val selectedCandidateEvaluated = groupResults.any { result ->
+                                result.group.members.any { member ->
+                                    member.candidate.url == selectedSubtitleUrl
+                                }
+                            }
+                            if (canStopCandidateSearch(event.summary) && selectedCandidateEvaluated) {
+                                earlyStopped = true
+                                val best = event.summary.bestAccepted
+                                AutoSyncDebugLog.info { "EARLY STOP candidate search score=${best?.let { fmt(adjustedAlignmentScore(it)) } ?: "<none>"} " +
+                                        "remainingDownloads=${pendingLoads.size} remainingMatches=${pendingMatches.size}" }
+                                pendingLoads.forEach { it.deferred.cancel() }
+                                pendingMatches.forEach { it.deferred.cancel() }
+                                pendingLoads.clear()
+                                pendingMatches.clear()
+                                queuedMatchStates.clear()
+                            } else {
+                                startQueuedMatches()
+                            }
                         }
                     }
                 }
             }
+
+            drainCandidatePipeline()
 
             val timingGroupCount = timingBuckets.values.sumOf { it.size }
             AutoSyncDebugLog.info { "timing timelines=$timingGroupCount/${parsedCandidates.size} " +
                     "duplicatesSaved=${parsedCandidates.size - timingGroupCount} earlyStop=$earlyStopped" }
 
-            if (parsedCandidates.isEmpty()) {
-                AutoSyncDebugLog.warn { "REJECT no same-language subtitle candidate could be parsed" }
-                return@supervisorScope null
-            }
-
-            // V2: use the existing matcher only as a coarse/reference-selection stage, then align
-            // the selected add-on's complete cue sequence directly to that embedded timeline.
-            // This also gets a chance when the V1 confidence gate rejects the selected candidate;
-            // the new aligner has its own conservative confidence checks and V1 remains fallback.
+            // V2 primary path: only the subtitle the user selected has been downloaded so far.
+            // Try that timing against every eligible embedded reference. Only if V2 cannot prove a
+            // reliable direct timeline do we start the existing V1 same-language candidate search.
             val selectedParsed = parsedCandidates.firstOrNull { parsed ->
                 parsed.candidate.url == selectedSubtitleUrl
             }
@@ -736,37 +738,43 @@ internal object AutomaticSubtitleSync {
                 }
             }
             val selectedSummary = selectedGroupResult?.summary
-            val selectedAccepted = selectedSummary?.bestAccepted
-            val selectedRejected = selectedSummary?.bestRejectedAttempt
-            val selectedReference = selectedAccepted?.track ?: selectedRejected?.first
-            val selectedAttempt = when {
-                selectedAccepted != null -> selectedSummary.winningAttempt
-                    ?.takeIf { it.result?.trackKey == selectedAccepted.track.key }
-                    ?: selectedSummary.attempts
-                        .firstOrNull { it.first.key == selectedAccepted.track.key }
-                        ?.second
-                else -> selectedRejected?.second
-            }
-            val selectedTimelineRetime = if (
-                selectedParsed != null &&
-                selectedReference != null &&
-                selectedAttempt != null
-            ) {
-                buildTimelineRetimeResult(
-                    track = selectedReference,
-                    target = selectedParsed.cues,
-                    attempt = selectedAttempt,
-                )
+            val selectedTimelineChoice = if (selectedParsed != null && selectedSummary != null) {
+                selectedSummary.attempts
+                    .mapNotNull { (track, storedAttempt) ->
+                        val attempt = selectedSummary.winningAttempt
+                            ?.takeIf { winning -> winning.result?.trackKey == track.key }
+                            ?: storedAttempt
+                        buildTimelineRetimeResult(
+                            track = track,
+                            target = selectedParsed.cues,
+                            attempt = attempt,
+                        )?.let { timeline ->
+                            TimelineRetimeMatch(track = track, timeline = timeline)
+                        }
+                    }
+                    .maxWithOrNull(
+                        compareBy<TimelineRetimeMatch> {
+                            if (it.timeline.confident) 1 else 0
+                        }.thenBy(::directTimelineQualityScore),
+                    )
             } else {
                 null
             }
+            val selectedTimelineRetime = selectedTimelineChoice?.timeline
 
             AutoSyncDebugLog.section { "TIMELINE RETIME V2" }
             if (selectedTimelineRetime == null) {
-                AutoSyncDebugLog.info { "selected subtitle has no usable coarse alignment for direct retiming" }
+                AutoSyncDebugLog.info {
+                    "selected subtitle has no usable direct-timeline alignment; " +
+                        "referencesTried=${selectedSummary?.attempts?.size ?: 0}"
+                }
             } else {
                 AutoSyncDebugLog.info {
-                    "selected=$selectedSubtitleUrl groups=${selectedTimelineRetime.groups.size} " +
+                    "selected=$selectedSubtitleUrl " +
+                        "reference=${selectedTimelineChoice?.track?.key ?: "<none>"} " +
+                        "referenceLabel=${selectedTimelineChoice?.track?.label ?: "<none>"} " +
+                        "referencesTried=${selectedSummary?.attempts?.size ?: 0} " +
+                        "groups=${selectedTimelineRetime.groups.size} " +
                         "targetCoverage=${fmt(selectedTimelineRetime.targetCoverage)} " +
                         "referenceCoverage=${fmt(selectedTimelineRetime.referenceCoverage)} " +
                         "skipTarget=${selectedTimelineRetime.skippedTargetCues} " +
@@ -781,10 +789,50 @@ internal object AutomaticSubtitleSync {
                         "groups22=${selectedTimelineRetime.twoToTwoGroups} " +
                         "seed=${selectedTimelineRetime.seedSource} " +
                         "seedIntercept=${"%.1f".format(selectedTimelineRetime.seedInterceptMs)}ms " +
-                        "anchors=${selectedTimelineRetime.anchorSegmentsPassed}/3 " +
+                        "coverageSegments=${selectedTimelineRetime.anchorSegmentsPassed}/3 " +
                         "simpleRatio=${fmt(selectedTimelineRetime.simpleGroupRatio)} " +
                         "decision=${if (selectedTimelineRetime.confident) "ACCEPT" else "REJECT"}"
                 }
+            }
+
+            if (selectedTimelineRetime?.confident != true && !earlyStopped) {
+                val fallbackLoads = sameLanguageCandidates.mapIndexedNotNull { index, candidate ->
+                    if (candidate.url == selectedSubtitleUrl) {
+                        null
+                    } else {
+                        PendingCandidateLoad(
+                            index = index,
+                            deferred = async {
+                                loadSubtitleCandidate(
+                                    candidate = candidate,
+                                    downloadSemaphore = downloadSemaphore,
+                                )
+                            },
+                        )
+                    }
+                }
+
+                if (fallbackLoads.isNotEmpty()) {
+                    AutoSyncDebugLog.section { "V1 FALLBACK" }
+                    AutoSyncDebugLog.info {
+                        "V2 primary did not pass; starting existing same-language search " +
+                            "additionalCandidates=${fallbackLoads.size}"
+                    }
+                    pendingLoads += fallbackLoads
+                    drainCandidatePipeline()
+
+                    val fallbackTimingGroupCount = timingBuckets.values.sumOf { it.size }
+                    AutoSyncDebugLog.info {
+                        "fallback timing timelines=$fallbackTimingGroupCount/${parsedCandidates.size} " +
+                            "duplicatesSaved=${parsedCandidates.size - fallbackTimingGroupCount} " +
+                            "earlyStop=$earlyStopped"
+                    }
+                }
+            }
+
+            if (parsedCandidates.isEmpty()) {
+                AutoSyncDebugLog.warn { "REJECT no same-language subtitle candidate could be parsed" }
+                return@supervisorScope null
             }
 
             if (candidateMatches.isEmpty()) {
@@ -857,13 +905,15 @@ internal object AutomaticSubtitleSync {
             }
 
             val rawCorrectionMs = bestMatch.alignment.offsetMs
-            if (rawCorrectionMs !in MIN_APPLICABLE_OFFSET_MS..MAX_APPLICABLE_OFFSET_MS) {
+            val v1DelayFallbackAvailable =
+                rawCorrectionMs in MIN_APPLICABLE_OFFSET_MS..MAX_APPLICABLE_OFFSET_MS
+            if (!v1DelayFallbackAvailable && selectedTimelineRetime?.confident != true) {
                 AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
                 AutoSyncDebugLog.warn { "REJECT correction ${rawCorrectionMs}ms is outside Nuvio's applicable range " +
                         "[$MIN_APPLICABLE_OFFSET_MS, $MAX_APPLICABLE_OFFSET_MS]ms" }
                 return@supervisorScope null
             }
-            val correctionMs = rawCorrectionMs.toInt()
+            val correctionMs = if (v1DelayFallbackAvailable) rawCorrectionMs.toInt() else 0
 
             AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
             AutoSyncDebugLog.info { "name=${bestMatch.parsed.candidate.displayName} " +
@@ -885,6 +935,7 @@ internal object AutomaticSubtitleSync {
                     ?.url
                     ?.takeIf { selectedTimelineRetime?.confident == true },
                 timelineRetime = selectedTimelineRetime?.takeIf { it.confident },
+                delayFallbackAvailable = v1DelayFallbackAvailable,
             )
             synchronized(recommendationCacheLock) {
                 if (recommendationCache.size >= MAX_RECOMMENDATION_CACHE_ENTRIES) {
@@ -1110,6 +1161,7 @@ internal object AutomaticSubtitleSync {
     private suspend fun matchCandidateAgainstReferences(
         parsed: ParsedSubtitleCandidate,
         rankedReferenceTimingGroups: List<RankedReferenceTimingGroup>,
+        allowEarlyStop: Boolean = true,
     ): CandidateReferenceSummary {
         val attempts = mutableListOf<Pair<ReferenceTrack, AlignmentAttempt>>()
         var bestAccepted: CandidateMatch? = null
@@ -1163,6 +1215,7 @@ internal object AutomaticSubtitleSync {
             val currentBest = bestAccepted
             val currentAttempt = winningAttempt
             if (
+                allowEarlyStop &&
                 currentBest != null &&
                 currentAttempt != null &&
                 canStopReferenceSearch(currentBest, currentAttempt)
@@ -2445,6 +2498,19 @@ internal object AutomaticSubtitleSync {
         }
     }
 
+    private fun directTimelineQualityScore(match: TimelineRetimeMatch): Double {
+        val result = match.timeline
+        val costScore = 1.0 / (1.0 + result.averageGroupCost.coerceAtLeast(0.0))
+        val skipPenalty = result.longestTargetSkipRun.coerceAtMost(20) * 0.004
+        val sdhPenalty = if (isSdhReferenceTrack(match.track)) 0.010 else 0.0
+        return result.targetCoverage * 0.42 +
+            result.referenceCoverage * 0.15 +
+            costScore * 0.23 +
+            result.simpleGroupRatio * 0.20 -
+            skipPenalty -
+            sdhPenalty
+    }
+
     private fun buildTimelineRetimeResult(
         track: ReferenceTrack,
         target: List<SubtitleSyncCue>,
@@ -2641,6 +2707,7 @@ internal object AutomaticSubtitleSync {
         val rankedReferences: List<RankedReferenceTimingGroup>,
         val priorityScore: Double,
         val candidateOrder: Int,
+        val allowReferenceEarlyStop: Boolean,
         var summary: CandidateReferenceSummary? = null,
     )
 
@@ -2665,6 +2732,11 @@ internal object AutomaticSubtitleSync {
         val parsed: ParsedSubtitleCandidate,
         val track: ReferenceTrack,
         val alignment: AlignmentResult,
+    )
+
+    private data class TimelineRetimeMatch(
+        val track: ReferenceTrack,
+        val timeline: AutoSyncTimelineRetimeResult,
     )
 
     private data class AlignmentAttempt(

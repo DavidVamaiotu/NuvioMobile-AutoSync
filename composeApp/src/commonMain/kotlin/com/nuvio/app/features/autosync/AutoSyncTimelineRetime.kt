@@ -85,16 +85,15 @@ internal object AutoSyncTimelineRetimer {
             reference = reference,
             target = target,
             scale = coarseScale,
-            coarseInterceptMs = coarseInterceptMs,
         )
-        val seeds = buildList {
-            independentSeeds.forEach { intercept ->
-                add(SeedCandidate(interceptMs = intercept, independent = true))
+        if (independentSeeds.isEmpty()) return null
+        val seeds = independentSeeds
+            .map { intercept ->
+                SeedCandidate(interceptMs = intercept, independent = true)
             }
-            add(SeedCandidate(interceptMs = coarseInterceptMs, independent = false))
-        }.distinctBy { seed ->
-            (seed.interceptMs / SEED_DEDUP_BUCKET_MS).roundToLong()
-        }
+            .distinctBy { seed ->
+                (seed.interceptMs / SEED_DEDUP_BUCKET_MS).roundToLong()
+            }
 
         val evaluated = seeds.mapNotNull { seed ->
             retimeWithSeed(reference, target, coarseScale, seed.interceptMs)?.let { result ->
@@ -342,7 +341,6 @@ internal object AutoSyncTimelineRetimer {
         reference: List<SubtitleSyncCue>,
         target: List<SubtitleSyncCue>,
         scale: Double,
-        coarseInterceptMs: Double,
     ): List<Double> {
         if (reference.size < MIN_CUES || target.size < MIN_CUES) return emptyList()
         val targetSpan = target.last().startTimeMs - target.first().startTimeMs
@@ -403,7 +401,7 @@ internal object AutoSyncTimelineRetimer {
                     .thenByDescending { it.weight }
                     .thenByDescending { it.matches }
                     .thenBy { it.costTotal / it.matches.coerceAtLeast(1) }
-                    .thenBy { abs(medianDouble(it.intercepts) - coarseInterceptMs) },
+                    .thenBy { medianDouble(it.intercepts) },
             )
             .take(MAX_INDEPENDENT_SEEDS)
             .map { vote -> medianDouble(vote.intercepts) }
@@ -523,7 +521,11 @@ internal object AutoSyncTimelineRetimer {
 
     private fun simpleGroupRatio(result: AutoSyncTimelineRetimeResult): Double {
         if (result.groups.isEmpty()) return 0.0
-        val simple = result.oneToOneGroups + result.oneToTwoGroups + result.twoToOneGroups
+        val simple =
+            result.oneToOneGroups +
+                result.oneToTwoGroups +
+                result.twoToOneGroups +
+                result.twoToTwoGroups
         return simple.toDouble() / result.groups.size
     }
 
