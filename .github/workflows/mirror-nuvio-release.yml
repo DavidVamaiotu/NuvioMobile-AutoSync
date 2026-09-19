@@ -86,7 +86,17 @@ jobs:
         env:
           UPSTREAM_TAG: ${{ steps.version.outputs.upstream_tag }}
         run: |
-          git merge --no-edit "refs/tags/nuvio-$UPSTREAM_TAG"
+          # Apply the official release as source changes only.
+          git merge --squash "refs/tags/nuvio-$UPSTREAM_TAG"
+
+          # Keep this fork's own GitHub Actions workflows.
+          git restore --source=HEAD --staged --worktree -- .github/workflows
+
+          if git diff --cached --quiet; then
+            echo "No release source changes to commit."
+          else
+            git commit -m "Sync Nuvio $UPSTREAM_TAG"
+          fi
 
       - name: Read exact Nuvio version code
         if: steps.version.outputs.already_exists == 'false'

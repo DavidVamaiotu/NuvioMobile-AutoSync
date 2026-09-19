@@ -35,15 +35,17 @@ jobs:
 
       - name: Merge upstream
         run: |
-          BEFORE_MERGE="$(git rev-parse HEAD)"
-          git merge --no-edit upstream/cmp-rewrite
+          # Apply upstream source changes without importing upstream
+          # workflow-changing commits into this fork's history.
+          git merge --squash upstream/cmp-rewrite
 
-          # Keep this fork's own Actions workflows. Upstream workflow files
-          # cannot be pushed by GITHUB_TOKEN and are unrelated to AutoSync.
-          git restore --source="$BEFORE_MERGE" --staged --worktree -- .github/workflows
+          # Keep this fork's own GitHub Actions workflows.
+          git restore --source=HEAD --staged --worktree -- .github/workflows
 
-          if ! git diff --quiet HEAD -- .github/workflows; then
-            git commit --amend --no-edit
+          if git diff --cached --quiet; then
+            echo "No upstream source changes to commit."
+          else
+            git commit -m "Sync Nuvio upstream"
           fi
 
       - name: Set up Java
