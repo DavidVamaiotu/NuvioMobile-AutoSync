@@ -538,6 +538,40 @@ internal object AutoSyncTimelineRetimer {
         )
     }
 
+    private fun targetActivityCoverageAtOffsetSegment(
+        reference: ActivityTimeline,
+        target: ActivityTimeline,
+        offsetBins: Int,
+        segment: Int,
+    ): Double? {
+        if (segment !in 0..2) return null
+        val activeSpan = target.lastActive - target.firstActive + 1
+        if (activeSpan <= 0) return null
+
+        val segmentStart = target.firstActive + activeSpan * segment / 3
+        val segmentEnd = if (segment == 2) {
+            target.lastActive
+        } else {
+            target.firstActive + activeSpan * (segment + 1) / 3 - 1
+        }
+        if (segmentEnd < segmentStart) return null
+
+        var visibleTarget = 0
+        var intersection = 0
+        for (targetIndex in target.activeIndexes) {
+            if (targetIndex < segmentStart) continue
+            if (targetIndex > segmentEnd) break
+            visibleTarget++
+            val shiftedIndex = targetIndex + offsetBins
+            if (shiftedIndex in reference.bins.indices && reference.bins[shiftedIndex]) {
+                intersection++
+            }
+        }
+
+        if (visibleTarget <= 0) return null
+        return intersection.toDouble() / visibleTarget.toDouble()
+    }
+
     private fun scoreActivityOffsetSegment(
         reference: ActivityTimeline,
         target: ActivityTimeline,
