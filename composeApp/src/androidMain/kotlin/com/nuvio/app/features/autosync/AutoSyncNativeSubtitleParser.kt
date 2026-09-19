@@ -9,7 +9,7 @@ import androidx.media3.extractor.text.DefaultSubtitleParserFactory
 import androidx.media3.extractor.text.SubtitleParser
 import java.util.LinkedHashMap
 import java.util.UUID
-import java.util.function.Consumer
+import androidx.media3.common.util.Consumer
 import kotlin.math.abs
 import kotlin.math.roundToLong
 
