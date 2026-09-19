@@ -52,6 +52,16 @@ internal object AutoSyncTimelineRetimer {
     private const val ACTIVITY_MAX_SCALE = 1.06
     private const val ACTIVITY_SCALE_DEDUP = 0.00035
 
+    // Cheap delay-only fast path. It always APPLIES scale=1.0; the segment drift tolerance
+    // merely allows near-1.0 timelines to qualify when one constant delay remains visually valid.
+    private const val DELAY_ONLY_MIN_CUES = 4
+    private const val DELAY_ONLY_MIN_SCORE = 0.78
+    private const val DELAY_ONLY_MIN_MARGIN = 0.02
+    private const val DELAY_ONLY_MIN_SEGMENT_SCORE = 0.68
+    private const val DELAY_ONLY_SEGMENT_SEARCH_RADIUS_MS = 1_000L
+    private const val DELAY_ONLY_MAX_SEGMENT_OFFSET_DELTA_MS = 500L
+    private const val DELAY_ONLY_DISTINCT_OFFSET_MS = 3_000L
+
     // Activity correlation only finds the global corridor. The existing cue/group DP remains
     // the final authority before embedded timestamps can replace external timing.
     private const val DISCOVERED_MIN_TARGET_COVERAGE = 0.90
@@ -87,6 +97,10 @@ internal object AutoSyncTimelineRetimer {
                 coverageSegmentsPassed = coverageSegmentsPassed(result, target.size),
                 simpleGroupRatio = simpleGroupRatio(result),
             )
+        }
+
+        findDelayOnlyAlignment(reference, target)?.let { delayOnly ->
+            return buildDelayOnlyTimeline(target, delayOnly)
         }
 
         val alignment = discoverActivityAlignment(reference, target) ?: return null
@@ -331,6 +345,201 @@ internal object AutoSyncTimelineRetimer {
             twoToTwoGroups = shapeCounts["2:2"] ?: 0,
             confident = confident,
         )
+    }
+
+    internal fun findDelayOnlyAlignment(
+        reference: List<SubtitleSyncCue>,
+        target: List<SubtitleSyncCue>,
+    ): AutoSyncDelayOnlyAlignment? {
+        if (reference.size < DELAY_ONLY_MIN_CUES || target.size < DELAY_ONLY_MIN_CUES) return null
+
+        val referenceCoarse = buildActivityTimeline(reference, 1.0, ACTIVITY_COARSE_BIN_MS)
+            ?: return null
+        val targetCoarse = buildActivityTimeline(target, 1.0, ACTIVITY_COARSE_BIN_MS)
+            ?: return null
+        val maxOffsetBins = (ACTIVITY_MAX_OFFSET_MS / ACTIVITY_COARSE_BIN_MS).toInt()
+
+        var coarseBest: ActivityCandidate? = null
+        val coarseCandidates = ArrayList<ActivityCandidate>(maxOffsetBins * 2 + 1)
+        for (offsetBins in -maxOffsetBins..maxOffsetBins) {
+            val score = scoreActivityOffset(referenceCoarse, targetCoarse, offsetBins) ?: continue
+            val candidate = ActivityCandidate(
+                scale = 1.0,
+                interceptMs = offsetBins * ACTIVITY_COARSE_BIN_MS,
+                score = score,
+            )
+            coarseCandidates += candidate
+            val current = coarseBest
+            if (current == null || candidate.score > current.score) coarseBest = candidate
+        }
+
+        val coarse = coarseBest ?: return null
+        val secondDistinct = coarseCandidates.asSequence()
+            .filter { candidate ->
+                abs(candidate.interceptMs - coarse.interceptMs) >= DELAY_ONLY_DISTINCT_OFFSET_MS
+            }
+            .maxByOrNull { it.score }
+        val margin = coarse.score - (secondDistinct?.score ?: 0.0)
+        if (margin < DELAY_ONLY_MIN_MARGIN) return null
+
+        val referenceFine = buildActivityTimeline(reference, 1.0, ACTIVITY_FINE_BIN_MS)
+            ?: return null
+        val targetFine = buildActivityTimeline(target, 1.0, ACTIVITY_FINE_BIN_MS)
+            ?: return null
+
+        var fineBest: ActivityCandidate? = null
+        var offsetMs = coarse.interceptMs - ACTIVITY_FINE_RADIUS_MS
+        while (offsetMs <= coarse.interceptMs + ACTIVITY_FINE_RADIUS_MS) {
+            val offsetBins = (offsetMs.toDouble() / ACTIVITY_FINE_BIN_MS.toDouble()).roundToInt()
+            val score = scoreActivityOffset(referenceFine, targetFine, offsetBins)
+            if (score != null) {
+                val candidate = ActivityCandidate(
+                    scale = 1.0,
+                    interceptMs = offsetBins * ACTIVITY_FINE_BIN_MS,
+                    score = score,
+                )
+                val current = fineBest
+                if (current == null || candidate.score > current.score) fineBest = candidate
+            }
+            offsetMs += ACTIVITY_FINE_BIN_MS
+        }
+
+        val best = fineBest ?: coarse
+        if (best.score < DELAY_ONLY_MIN_SCORE) return null
+
+        val globalOffsetBins =
+            (best.interceptMs.toDouble() / ACTIVITY_FINE_BIN_MS.toDouble()).roundToInt()
+        val localRadiusBins =
+            (DELAY_ONLY_SEGMENT_SEARCH_RADIUS_MS / ACTIVITY_FINE_BIN_MS).toInt()
+        val maxDeltaBins =
+            (DELAY_ONLY_MAX_SEGMENT_OFFSET_DELTA_MS / ACTIVITY_FINE_BIN_MS).toInt()
+
+        var availableSegments = 0
+        var passedSegments = 0
+        for (segment in 0..2) {
+            var segmentBestScore = Double.NEGATIVE_INFINITY
+            var segmentBestOffsetBins = globalOffsetBins
+            var hasScore = false
+
+            for (delta in -localRadiusBins..localRadiusBins) {
+                val candidateOffsetBins = globalOffsetBins + delta
+                val score = scoreActivityOffsetSegment(
+                    reference = referenceFine,
+                    target = targetFine,
+                    offsetBins = candidateOffsetBins,
+                    segment = segment,
+                ) ?: continue
+                hasScore = true
+                if (score > segmentBestScore) {
+                    segmentBestScore = score
+                    segmentBestOffsetBins = candidateOffsetBins
+                }
+            }
+
+            if (!hasScore) continue
+            availableSegments++
+            if (
+                segmentBestScore >= DELAY_ONLY_MIN_SEGMENT_SCORE &&
+                abs(segmentBestOffsetBins - globalOffsetBins) <= maxDeltaBins
+            ) {
+                passedSegments++
+            }
+        }
+
+        val requiredSegments = if (target.size < MIN_CUES) 2 else 3
+        if (availableSegments < requiredSegments || passedSegments < requiredSegments) return null
+
+        return AutoSyncDelayOnlyAlignment(
+            offsetMs = best.interceptMs.toDouble(),
+            score = best.score,
+            margin = margin,
+            segmentsPassed = passedSegments,
+        )
+    }
+
+    internal fun buildDelayOnlyTimeline(
+        target: List<SubtitleSyncCue>,
+        alignment: AutoSyncDelayOnlyAlignment,
+    ): AutoSyncTimelineRetimeResult {
+        val offsetMs = alignment.offsetMs.roundToLong()
+        val retimed = target.map { cue ->
+            val start = (cue.startTimeMs + offsetMs).coerceAtLeast(0L)
+            val end = (cue.endTimeMs + offsetMs).coerceAtLeast(start + 1L)
+            AutoSyncRetimedCue(
+                originalStartTimeMs = cue.startTimeMs,
+                originalEndTimeMs = cue.endTimeMs,
+                startTimeMs = start,
+                endTimeMs = end,
+            )
+        }
+
+        return AutoSyncTimelineRetimeResult(
+            cues = retimed,
+            groups = emptyList(),
+            targetCoverage = 1.0,
+            referenceCoverage = 0.0,
+            skippedTargetCues = 0,
+            skippedReferenceCues = 0,
+            longestTargetSkipRun = 0,
+            averageGroupCost = 0.0,
+            oneToOneGroups = 0,
+            oneToTwoGroups = 0,
+            twoToOneGroups = 0,
+            oneToThreeGroups = 0,
+            threeToOneGroups = 0,
+            twoToTwoGroups = 0,
+            confident = true,
+            alignmentSource = "delay-only",
+            alignmentScale = 1.0,
+            alignmentInterceptMs = alignment.offsetMs,
+            activityScore = alignment.score,
+            activityMargin = alignment.margin,
+            coverageSegmentsPassed = alignment.segmentsPassed,
+            simpleGroupRatio = 1.0,
+        )
+    }
+
+    private fun scoreActivityOffsetSegment(
+        reference: ActivityTimeline,
+        target: ActivityTimeline,
+        offsetBins: Int,
+        segment: Int,
+    ): Double? {
+        if (segment !in 0..2) return null
+        val activeSpan = target.lastActive - target.firstActive + 1
+        if (activeSpan <= 0) return null
+
+        val segmentStart = target.firstActive + activeSpan * segment / 3
+        val segmentEnd = if (segment == 2) {
+            target.lastActive
+        } else {
+            target.firstActive + activeSpan * (segment + 1) / 3 - 1
+        }
+        if (segmentEnd < segmentStart) return null
+
+        var visibleTarget = 0
+        var intersection = 0
+        for (targetIndex in target.activeIndexes) {
+            if (targetIndex < segmentStart) continue
+            if (targetIndex > segmentEnd) break
+            visibleTarget++
+            val shiftedIndex = targetIndex + offsetBins
+            if (shiftedIndex in reference.bins.indices && reference.bins[shiftedIndex]) {
+                intersection++
+            }
+        }
+        if (visibleTarget <= 0) return null
+
+        val referenceWindowStart = max(0, segmentStart + offsetBins)
+        val referenceWindowEnd = min(reference.bins.lastIndex, segmentEnd + offsetBins)
+        if (referenceWindowEnd < referenceWindowStart) return null
+        val referenceInWindow =
+            reference.prefix[referenceWindowEnd + 1] - reference.prefix[referenceWindowStart]
+        if (referenceInWindow <= 0) return null
+
+        val precision = intersection.toDouble() / visibleTarget.toDouble()
+        val recall = intersection.toDouble() / referenceInWindow.toDouble()
+        return precision * 0.72 + recall * 0.28
     }
 
     private fun discoverActivityAlignment(
@@ -823,6 +1032,13 @@ internal data class AutoSyncRetimedCue(
     val originalEndTimeMs: Long,
     val startTimeMs: Long,
     val endTimeMs: Long,
+)
+
+internal data class AutoSyncDelayOnlyAlignment(
+    val offsetMs: Double,
+    val score: Double,
+    val margin: Double,
+    val segmentsPassed: Int,
 )
 
 internal data class AutoSyncTimelineRetimeResult(

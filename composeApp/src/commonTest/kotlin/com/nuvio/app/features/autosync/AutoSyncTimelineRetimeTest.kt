@@ -24,12 +24,47 @@ class AutoSyncTimelineRetimeTest {
         val target = shift(reference, -12_750L)
         val result = assertNotNull(AutoSyncTimelineRetimer.retime(reference, target, 1.0, -52_500.0, true))
         assertTrue(result.confident)
-        assertEquals("activity-correlation", result.alignmentSource)
+        assertEquals("delay-only", result.alignmentSource)
         assertTrue(abs(result.alignmentInterceptMs - 12_750.0) <= 500.0)
         assertTrue(abs(result.alignmentScale - 1.0) <= 0.0015)
         assertTrue(result.activityScore >= 0.55)
         assertTrue(result.activityMargin >= 0.02)
         assertEquals(3, result.coverageSegmentsPassed)
+    }
+
+    @Test
+    fun delayOnlyFastPathWorksWithTooFewCuesForDp() {
+        val reference = irregularTimeline(6)
+        val target = shift(reference, -4_200L)
+        val result = assertNotNull(
+            AutoSyncTimelineRetimer.retime(reference, target, 1.0, 0.0, true),
+        )
+        assertTrue(result.confident)
+        assertEquals("delay-only", result.alignmentSource)
+        assertEquals(1.0, result.alignmentScale)
+        assertTrue(abs(result.alignmentInterceptMs - 4_200.0) <= 500.0)
+        assertTrue(result.coverageSegmentsPassed >= 2)
+    }
+
+    @Test
+    fun delayOnlyFastPathRejectsRealProgressiveDrift() {
+        val reference = irregularTimeline(260)
+        val scale = 25.0 / 23.976
+        val target = reference.map { cue ->
+            SubtitleSyncCue(
+                (cue.startTimeMs / scale).toLong(),
+                (cue.endTimeMs / scale).toLong(),
+                cue.text,
+            )
+        }
+        val delayOnly = AutoSyncTimelineRetimer.findDelayOnlyAlignment(reference, target)
+        assertTrue(delayOnly == null)
+
+        val result = assertNotNull(
+            AutoSyncTimelineRetimer.retime(reference, target, 1.0, 0.0, true),
+        )
+        assertTrue(result.confident)
+        assertEquals("activity-correlation", result.alignmentSource)
     }
 
     @Test

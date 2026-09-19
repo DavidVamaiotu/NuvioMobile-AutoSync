@@ -19,13 +19,13 @@ import kotlin.math.abs
 /**
  * Android-only AutoSync V2.
  *
- * The legacy V1 global-delay matcher is intentionally absent.
- * V2 loads the selected external subtitle, obtains complete embedded timing,
- * discovers the whole-film transform, runs cue/group DP and returns a retimed
- * timeline for Media3's native subtitle parser.
+ * The legacy V1 matcher is intentionally absent.
+ * V2 first performs a cheap fixed-scale delay-only check. If one constant offset
+ * is strong and stable across the movie, it returns a uniform shift immediately.
+ * Otherwise it discovers the whole-film affine transform and runs cue/group DP.
  */
 internal object AutomaticSubtitleSync {
-    private const val MIN_SELECTED_CUES = 8
+    private const val MIN_SELECTED_CUES = 4
     private const val MAX_LOGGED_CUE_SAMPLES = 20
 
     private const val MIN_FULL_DIALOGUE_CUES = 8
@@ -231,14 +231,19 @@ internal object AutomaticSubtitleSync {
             if (!timeline.confident) {
                 AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
                 AutoSyncDebugLog.warn {
-                    "REJECT V2 did not reach direct-timeline confidence; no V1 fallback exists"
+                    "REJECT V2 did not reach delay-only or direct-timeline confidence"
                 }
                 return@supervisorScope null
             }
 
             AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
             AutoSyncDebugLog.info {
-                "V2 direct timeline accepted selected subtitle; corrected timeline is ready for sidecar apply"
+                if (timeline.alignmentSource == "delay-only") {
+                    "V2 delay-only fast path accepted selected subtitle; " +
+                        "scale=1.000000 offset=${"%.1f".format(timeline.alignmentInterceptMs)}ms"
+                } else {
+                    "V2 direct timeline accepted selected subtitle; corrected timeline is ready for sidecar apply"
+                }
             }
             timeline
         }
