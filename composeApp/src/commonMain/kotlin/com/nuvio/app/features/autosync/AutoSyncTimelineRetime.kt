@@ -439,6 +439,23 @@ internal object AutoSyncTimelineRetimer {
         var availableSegments = 0
         var passedSegments = 0
         for (segment in 0..2) {
+            if (allowAmbiguousMargin) {
+                // SDH/over-segmented references contain extra activity that can make each
+                // segment prefer a slightly different local offset. For a delay-only result
+                // we only care whether the ONE global delay still covers the target subtitle.
+                val targetCoverage = targetActivityCoverageAtOffsetSegment(
+                    reference = referenceFine,
+                    target = targetFine,
+                    offsetBins = globalOffsetBins,
+                    segment = segment,
+                ) ?: continue
+                availableSegments++
+                if (targetCoverage >= DELAY_ONLY_MIN_SEGMENT_SCORE) {
+                    passedSegments++
+                }
+                continue
+            }
+
             var segmentBestScore = Double.NEGATIVE_INFINITY
             var segmentBestOffsetBins = globalOffsetBins
             var hasScore = false

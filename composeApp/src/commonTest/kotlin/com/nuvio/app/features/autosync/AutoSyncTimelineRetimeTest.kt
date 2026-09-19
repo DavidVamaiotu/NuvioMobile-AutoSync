@@ -75,6 +75,31 @@ class AutoSyncTimelineRetimeTest {
     }
 
     @Test
+    fun relaxedDelayOnlyAcceptsDenseSdhLikeReferenceAtOneGlobalOffset() {
+        val base = irregularTimeline(220)
+        val reference = buildList {
+            addAll(base)
+            base.forEachIndexed { index, cue ->
+                if (index % 2 == 0) {
+                    val start = cue.endTimeMs + 250L
+                    add(SubtitleSyncCue(start, start + 900L, "sdh extra $index"))
+                }
+            }
+        }.sortedBy { it.startTimeMs }
+        val target = shift(base, -900L)
+
+        val result = assertNotNull(
+            AutoSyncTimelineRetimer.findDelayOnlyAlignment(
+                reference = reference,
+                target = target,
+                allowAmbiguousMargin = true,
+            ),
+        )
+        assertTrue(abs(result.offsetMs - 900.0) <= 500.0)
+        assertEquals(3, result.segmentsPassed)
+    }
+
+    @Test
     fun fullV2StillRunsWithSixCues() {
         val reference = irregularTimeline(6)
         val target = shift(reference, -2_200L)
