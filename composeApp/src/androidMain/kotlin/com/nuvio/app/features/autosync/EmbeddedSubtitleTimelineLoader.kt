@@ -261,7 +261,13 @@ internal object EmbeddedSubtitleTimelineLoader {
             ?: DEFAULT_TIMESTAMP_SCALE_NS
 
         val tracksPosition = resolvedPositions[ID_TRACKS] ?: directPositions[ID_TRACKS]
-            ?: return null
+            ?: run {
+                AutoSyncDebugLog.warn {
+                    "MKV index reject reason=tracks-position-not-found " +
+                        "requests=${stats.requests} bytes=${stats.bytesDownloaded}"
+                }
+                return null
+            }
         val subtitleTracks = (
             extractElementFromInitialProbe(
                 initialBytes = initialMetadata.initialBytes,
@@ -277,9 +283,25 @@ internal object EmbeddedSubtitleTimelineLoader {
                 stats = stats,
             )
             )?.let(::parseSubtitleTracks).orEmpty()
-        if (subtitleTracks.isEmpty()) return null
+        if (subtitleTracks.isEmpty()) {
+            AutoSyncDebugLog.warn {
+                "MKV index reject reason=no-subtitle-tracks tracksPosition=$tracksPosition " +
+                    "requests=${stats.requests} bytes=${stats.bytesDownloaded}"
+            }
+            return null
+        }
+
+        AutoSyncDebugLog.info {
+            "MKV index subtitleTracks=${subtitleTracks.size} " +
+                "numbers=${subtitleTracks.joinToString(",") { it.number.toString() }}"
+        }
 
         val cuesPosition = resolvedPositions[ID_CUES] ?: directPositions[ID_CUES]
+        if (cuesPosition == null) {
+            AutoSyncDebugLog.warn {
+                "MKV index cues position unavailable; trying tail fallback"
+            }
+        }
         val parsedCues = if (cuesPosition != null) {
             (
                 extractElementFromInitialProbe(
@@ -311,7 +333,21 @@ internal object EmbeddedSubtitleTimelineLoader {
             subtitleTracks = subtitleTracks,
             timestampScaleNs = timestampScaleNs,
             stats = stats,
-        ) ?: return null
+        ) ?: run {
+            AutoSyncDebugLog.warn {
+                "MKV index reject reason=cues-unavailable " +
+                    "cuesPosition=${cuesPosition ?: -1L} requests=${stats.requests} " +
+                    "bytes=${stats.bytesDownloaded}"
+            }
+            return null
+        }
+
+        val subtitleCueCounts = subtitleTracks.joinToString(",") { track ->
+            "${track.number}:${parsedCues[track.number].orEmpty().size}"
+        }
+        AutoSyncDebugLog.info {
+            "MKV index subtitleCueCounts=$subtitleCueCounts"
+        }
 
         val referenceTracks = subtitleTracks.mapNotNull { track ->
             val cues = parsedCues[track.number]
@@ -347,7 +383,13 @@ internal object EmbeddedSubtitleTimelineLoader {
             )
         }
 
-        if (referenceTracks.isEmpty()) return null
+        if (referenceTracks.isEmpty()) {
+            AutoSyncDebugLog.warn {
+                "MKV index reject reason=no-usable-subtitle-cues counts=$subtitleCueCounts " +
+                    "minCues=$MIN_INDEXED_CUES minSpanMs=$MIN_INDEXED_SPAN_MS"
+            }
+            return null
+        }
 
         return IndexedEmbeddedTimeline(
             tracks = referenceTracks,
@@ -1182,8 +1224,31 @@ internal object EmbeddedSubtitleTimelineLoader {
         val header = readElement(headerProbe.bytes, 0, headerProbe.bytes.size) ?: return null
         if (header.id != expectedId || header.size == null) return null
         val totalSize = header.headerSize.toLong() + header.size
-        if (totalSize <= 0L || totalSize > maxElementBytes.toLong()) return null
-        if (totalSize > stats.remainingByteBudget()) return null
+        if (totalSize <= 0L) return null
+        if (totalSize > maxElementBytes.toLong()) {
+            if (expectedId == ID_CUES) {
+                AutoSyncDebugLog.warn {
+                    "MKV index metadata reject reason=cues-size size=$totalSize " +
+                        "limit=$maxElementBytes position=$absolutePosition"
+                }
+            } else if (expectedId == ID_TRACKS) {
+                AutoSyncDebugLog.warn {
+                    "MKV index metadata reject reason=tracks-size size=$totalSize " +
+                        "limit=$maxElementBytes position=$absolutePosition"
+                }
+            }
+            return null
+        }
+        if (totalSize > stats.remainingByteBudget()) {
+            if (expectedId == ID_CUES || expectedId == ID_TRACKS) {
+                AutoSyncDebugLog.warn {
+                    "MKV index metadata reject reason=byte-budget element=$expectedId " +
+                        "size=$totalSize remaining=${stats.remainingByteBudget()} " +
+                        "position=$absolutePosition"
+                }
+            }
+            return null
+        }
         if (totalSize <= headerProbe.bytes.size) {
             return if (totalSize == headerProbe.bytes.size.toLong()) {
                 headerProbe.bytes
