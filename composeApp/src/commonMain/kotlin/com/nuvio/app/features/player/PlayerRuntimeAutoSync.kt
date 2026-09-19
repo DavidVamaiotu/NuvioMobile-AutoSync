@@ -3,15 +3,19 @@ package com.nuvio.app.features.player
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import com.nuvio.app.features.autosync.AutoSyncPreferencesRepository
+import kotlinx.coroutines.flow.collect
 
-private fun PlayerScreenRuntime.currentAutoSyncCandidates(): List<AutoSyncSubtitleCandidate> =
-    addonSubtitles.map { subtitle ->
+private fun List<AddonSubtitle>.toAutoSyncCandidates(): List<AutoSyncSubtitleCandidate> =
+    map { subtitle ->
         AutoSyncSubtitleCandidate(
             url = subtitle.url,
             language = subtitle.language,
             name = subtitle.display,
         )
     }
+
+private fun PlayerScreenRuntime.currentAutoSyncCandidates(): List<AutoSyncSubtitleCandidate> =
+    addonSubtitles.toAutoSyncCandidates()
 
 internal fun PlayerScreenRuntime.configureAutoSyncController(
     controller: PlayerEngineController,
@@ -41,8 +45,16 @@ internal fun PlayerScreenRuntime.configureAutoSyncController(
 
 @Composable
 internal fun PlayerScreenRuntime.BindAutoSyncRuntimeEffects() {
-    LaunchedEffect(playerController, addonSubtitles) {
-        playerController?.setAutoSyncSubtitleCandidates(currentAutoSyncCandidates())
+    LaunchedEffect(playerController, externalSubtitles) {
+        val controller = playerController ?: return@LaunchedEffect
+        SubtitleRepository.addonSubtitles.collect { repositorySubtitles ->
+            controller.setAutoSyncSubtitleCandidates(
+                mergeStreamAndAddonSubtitles(
+                    repositorySubtitles,
+                    externalSubtitles,
+                ).toAutoSyncCandidates(),
+            )
+        }
     }
 }
 
