@@ -21,6 +21,8 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
+import kotlin.math.exp
+import kotlin.math.roundToLong
 
 /**
  * Android-only AutoSync V2.
@@ -44,6 +46,13 @@ internal object AutomaticSubtitleSync {
     private const val STRONG_CHECKPOINT_QUALITY = 0.92
     private const val STRONG_CHECKPOINT_TARGET_COVERAGE = 0.98
     private const val STRONG_CHECKPOINT_REFERENCE_COVERAGE = 0.90
+
+    // Scheduling-only reference pre-ranker. It never accepts/rejects a match.
+    private const val CHEAP_REFERENCE_SAMPLE_CUES = 24
+    private const val CHEAP_TARGET_SAMPLE_CUES = 32
+    private const val CHEAP_REFERENCE_OFFSET_CANDIDATES = 4
+    private const val CHEAP_REFERENCE_MATCH_TOLERANCE_MS = 1_800L
+
     private const val FALLBACK_CANDIDATE_POLL_MS = 250L
     private const val FALLBACK_CANDIDATE_WAIT_MS = 10_000L
     private const val SELECTED_SUBTITLE_GRACE_MS = 2_500L
@@ -289,6 +298,9 @@ internal object AutomaticSubtitleSync {
 
             onReferenceReady()
 
+            val referenceActivityCache =
+                mutableMapOf<String, AutoSyncTimelineRetimer.PreparedActivity?>()
+
             var selectedEvaluationAttempted = false
 
             suspend fun evaluateSelectedIfConfident(
@@ -300,6 +312,7 @@ internal object AutomaticSubtitleSync {
                     url = selectedSubtitleUrl,
                     target = loaded.cues,
                     referenceTracks = referenceTracks,
+                    referenceActivityCache = referenceActivityCache,
                 )
                 val selectedBest = selectedEvaluation.best
                 return if (selectedBest?.timeline?.confident == true) {
@@ -449,6 +462,7 @@ internal object AutomaticSubtitleSync {
                                     url = representative.candidate.url,
                                     target = representative.loaded.cues,
                                     referenceTracks = referenceTracks,
+                                    referenceActivityCache = referenceActivityCache,
                                 ),
                             )
                         }
@@ -601,38 +615,64 @@ internal object AutomaticSubtitleSync {
         url: String,
         target: List<SubtitleSyncCue>,
         referenceTracks: List<ReferenceTrack>,
+        referenceActivityCache: MutableMap<String, AutoSyncTimelineRetimer.PreparedActivity?>,
     ): CandidateEvaluation = withContext(Dispatchers.Default) {
-        val timingGroups = groupEquivalentReferenceTimelines(referenceTracks)
-        val representatives = timingGroups.mapNotNull { group ->
-            group.members.minWithOrNull(
-                compareBy<ReferenceTrack> { isSdhReferenceTrack(it) }
-                    .thenBy { it.key },
+        val targetActivity = AutoSyncTimelineRetimer.prepareUnitActivity(target)
+
+        val representatives = groupEquivalentReferenceTimelines(referenceTracks)
+            .mapNotNull { group ->
+                group.members.minWithOrNull(
+                    compareBy<ReferenceTrack> { isSdhReferenceTrack(it) }
+                        .thenBy { it.key },
+                )
+            }
+            .map { track ->
+                RankedReferenceCandidate(
+                    track = track,
+                    cheapAffinity = cheapReferenceAffinity(track.cues, target),
+                    suitability = referenceSuitabilityScore(track, target),
+                )
+            }
+            .sortedWith(
+                compareByDescending<RankedReferenceCandidate> { it.cheapAffinity }
+                    .thenByDescending { it.suitability }
+                    .thenBy { isSdhReferenceTrack(it.track) }
+                    .thenBy { it.track.key },
             )
-        }.sortedWith(
-            compareByDescending<ReferenceTrack> {
-                referenceSuitabilityScore(it, target)
-            }.thenBy {
-                isSdhReferenceTrack(it)
-            }.thenBy {
-                it.key
-            },
-        )
 
         AutoSyncDebugLog.section { "$label EMBEDDED REFERENCE ORDER" }
-        representatives.forEachIndexed { index, track ->
+        representatives.forEachIndexed { index, ranked ->
+            val track = ranked.track
             AutoSyncDebugLog.info {
                 "[$index] reference=${track.key} label=${track.label ?: "<none>"} " +
                     "sdh=${isSdhReferenceTrack(track)} cues=${track.cues.size} " +
                     "cueRatio=${fmt(referenceCueRatio(track, target))} " +
-                    "suitability=${fmt(referenceSuitabilityScore(track, target))}"
+                    "suitability=${fmt(ranked.suitability)} " +
+                    "cheapAffinity=${fmt(ranked.cheapAffinity)}"
             }
         }
 
         val attempts = ArrayList<TimelineRetimeMatch>(representatives.size)
         var bestConfident: TimelineRetimeMatch? = null
 
-        for ((index, track) in representatives.withIndex()) {
-            val timeline = buildTimelineRetimeResult(track, target) ?: continue
+        for (ranked in representatives) {
+            val track = ranked.track
+            val preparedReference = synchronized(referenceActivityCache) {
+                if (referenceActivityCache.containsKey(track.key)) {
+                    referenceActivityCache[track.key]
+                } else {
+                    val prepared = AutoSyncTimelineRetimer.prepareUnitActivity(track.cues)
+                    referenceActivityCache[track.key] = prepared
+                    prepared
+                }
+            }
+
+            val timeline = buildTimelineRetimeResult(
+                track = track,
+                target = target,
+                preparedReferenceActivity = preparedReference,
+                preparedTargetActivity = targetActivity,
+            ) ?: continue
             val match = TimelineRetimeMatch(track, timeline)
             attempts += match
 
@@ -744,6 +784,121 @@ internal object AutomaticSubtitleSync {
                 maxOf(referenceSpan, targetSpan).toDouble()
         val nonSdhBonus = if (isSdhReferenceTrack(track)) 0.0 else 0.08
         return cueRatio * 0.60 + spanRatio * 0.32 + nonSdhBonus
+    }
+
+    private fun cheapReferenceAffinity(
+        reference: List<SubtitleSyncCue>,
+        target: List<SubtitleSyncCue>,
+    ): Double {
+        if (reference.size < 4 || target.size < 4) return 0.0
+
+        val referenceSample = evenlySampleCues(reference, CHEAP_REFERENCE_SAMPLE_CUES)
+        val targetSample = evenlySampleCues(target, CHEAP_TARGET_SAMPLE_CUES)
+        if (referenceSample.isEmpty() || targetSample.isEmpty()) return 0.0
+
+        val scales = mutableListOf(
+            1.0,
+            25.0 / 23.976,
+            23.976 / 25.0,
+            25.0 / 24.0,
+            24.0 / 25.0,
+            24.0 / 23.976,
+            23.976 / 24.0,
+        )
+
+        val referenceSpan = reference.last().startTimeMs - reference.first().startTimeMs
+        val targetSpan = target.last().startTimeMs - target.first().startTimeMs
+        if (referenceSpan > 0L && targetSpan > 0L) {
+            val observedScale = referenceSpan.toDouble() / targetSpan.toDouble()
+            if (
+                observedScale.isFinite() &&
+                observedScale in 0.94..1.06 &&
+                scales.none { abs(it - observedScale) < 0.00035 }
+            ) {
+                scales += observedScale
+            }
+        }
+
+        var bestScore = 0.0
+        for (scale in scales) {
+            val offsets = LinkedHashSet<Long>()
+
+            for (anchor in 0 until CHEAP_REFERENCE_OFFSET_CANDIDATES) {
+                val referenceIndex =
+                    (anchor.toLong() * referenceSample.lastIndex /
+                        (CHEAP_REFERENCE_OFFSET_CANDIDATES - 1)).toInt()
+                val targetIndex =
+                    (anchor.toLong() * targetSample.lastIndex /
+                        (CHEAP_REFERENCE_OFFSET_CANDIDATES - 1)).toInt()
+
+                offsets += referenceSample[referenceIndex].startTimeMs -
+                    (targetSample[targetIndex].startTimeMs.toDouble() * scale).roundToLong()
+            }
+
+            for (offsetMs in offsets) {
+                var hits = 0
+                var residualTotal = 0L
+
+                for (cue in targetSample) {
+                    val shiftedStart =
+                        (cue.startTimeMs.toDouble() * scale).roundToLong() + offsetMs
+                    val insertion = lowerBoundCueStart(reference, shiftedStart)
+
+                    var nearest = Long.MAX_VALUE
+                    if (insertion < reference.size) {
+                        nearest = abs(reference[insertion].startTimeMs - shiftedStart)
+                    }
+                    if (insertion > 0) {
+                        nearest = minOf(
+                            nearest,
+                            abs(reference[insertion - 1].startTimeMs - shiftedStart),
+                        )
+                    }
+
+                    if (nearest <= CHEAP_REFERENCE_MATCH_TOLERANCE_MS) {
+                        hits++
+                        residualTotal += nearest
+                    }
+                }
+
+                if (hits == 0) continue
+                val participation = hits.toDouble() / targetSample.size.toDouble()
+                val meanResidual = residualTotal.toDouble() / hits.toDouble()
+                val residualScore = exp(-meanResidual / 900.0)
+                val score = participation * 0.80 + residualScore * 0.20
+                if (score > bestScore) bestScore = score
+            }
+        }
+
+        return bestScore.coerceIn(0.0, 1.0)
+    }
+
+    private fun evenlySampleCues(
+        cues: List<SubtitleSyncCue>,
+        maxSamples: Int,
+    ): List<SubtitleSyncCue> {
+        if (cues.size <= maxSamples) return cues
+        if (maxSamples <= 1) return listOf(cues.first())
+
+        val lastIndex = cues.lastIndex
+        return (0 until maxSamples)
+            .map { sampleIndex ->
+                cues[(sampleIndex.toLong() * lastIndex / (maxSamples - 1)).toInt()]
+            }
+            .distinctBy { it.startTimeMs }
+    }
+
+    private fun lowerBoundCueStart(
+        cues: List<SubtitleSyncCue>,
+        timeMs: Long,
+    ): Int {
+        var low = 0
+        var high = cues.size
+        while (low < high) {
+            val middle = (low + high) ushr 1
+            if (cues[middle].startTimeMs < timeMs) low = middle + 1 else high = middle
+        }
+        return low
     }
 
     private suspend fun loadSelectedSubtitle(
@@ -1101,6 +1256,8 @@ internal object AutomaticSubtitleSync {
     private fun buildTimelineRetimeResult(
         track: ReferenceTrack,
         target: List<SubtitleSyncCue>,
+        preparedReferenceActivity: AutoSyncTimelineRetimer.PreparedActivity?,
+        preparedTargetActivity: AutoSyncTimelineRetimer.PreparedActivity?,
     ): AutoSyncTimelineRetimeResult? {
         val overSegmentedReference =
             track.cues.size.toLong() * 2L >= target.size.toLong() * 3L
@@ -1123,6 +1280,8 @@ internal object AutomaticSubtitleSync {
             discoverAlignment = true,
             allowAmbiguousDelayOnlyMargin = relaxDelayMargin,
             referenceEstimatedEndStartsMs = track.estimatedEndStartsMs,
+            preparedReferenceActivity = preparedReferenceActivity,
+            preparedTargetActivity = preparedTargetActivity,
         )
     }
 
@@ -1160,6 +1319,11 @@ internal object AutomaticSubtitleSync {
         val densityPerMinute: Double,
         val fullDialogue: Boolean,
         val rankingScore: Double,
+    )
+    private data class RankedReferenceCandidate(
+        val track: ReferenceTrack,
+        val cheapAffinity: Double,
+        val suitability: Double,
     )
     private data class CandidateEvaluation(
         val best: TimelineRetimeMatch?,
