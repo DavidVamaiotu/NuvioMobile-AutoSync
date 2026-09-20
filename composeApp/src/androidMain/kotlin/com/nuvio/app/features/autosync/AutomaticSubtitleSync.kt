@@ -561,10 +561,8 @@ internal object AutomaticSubtitleSync {
                         referenceActivityCache = referenceActivityCache,
                         preferredReferenceKey = request.match.referenceKey,
                         preflightHint = request.match,
+                        onlyReferenceKey = request.match.referenceKey,
                     )
-                    if (cachedTiming == null) {
-                        cacheTimingEvaluation(request.loaded.cues, evaluation)
-                    }
 
                     CompletedAuthoritativeValidation(
                         request = request,
@@ -612,9 +610,9 @@ internal object AutomaticSubtitleSync {
                 val request = completed.request
                 val candidate = request.candidate
                 val evaluation = completed.evaluation
-                preflightV2Cache[candidate.url] = evaluation
 
                 if (completed.reusedTiming) {
+                    preflightV2Cache[candidate.url] = evaluation
                     AutoSyncDebugLog.info {
                         "PREFLIGHT reused session timing-family V2 validation url=${candidate.url}"
                     }
@@ -1041,16 +1039,26 @@ internal object AutomaticSubtitleSync {
         referenceActivityCache: MutableMap<String, AutoSyncTimelineRetimer.PreparedActivity?>,
         preferredReferenceKey: String? = null,
         preflightHint: AutoSyncDelayPreflight.Match? = null,
+        onlyReferenceKey: String? = null,
     ): CandidateEvaluation = withContext(Dispatchers.Default) {
         val targetActivity = AutoSyncTimelineRetimer.prepareUnitActivity(target)
 
-        val representatives = groupEquivalentReferenceTimelines(referenceTracks)
-            .mapNotNull { group ->
-                group.members.minWithOrNull(
-                    compareBy<ReferenceTrack> { isSdhReferenceTrack(it) }
-                        .thenBy { it.key },
-                )
+        val representativeTracks =
+            if (onlyReferenceKey != null) {
+                referenceTracks.firstOrNull { it.key == onlyReferenceKey }
+                    ?.let(::listOf)
+                    .orEmpty()
+            } else {
+                groupEquivalentReferenceTimelines(referenceTracks)
+                    .mapNotNull { group ->
+                        group.members.minWithOrNull(
+                            compareBy<ReferenceTrack> { isSdhReferenceTrack(it) }
+                                .thenBy { it.key },
+                        )
+                    }
             }
+
+        val representatives = representativeTracks
             .map { track ->
                 RankedReferenceCandidate(
                     track = track,
