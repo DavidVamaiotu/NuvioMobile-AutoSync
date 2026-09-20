@@ -634,8 +634,8 @@ internal object AutomaticSubtitleSync {
                 )
             }
             .sortedWith(
-                compareByDescending<RankedReferenceCandidate> { it.cheapAffinity }
-                    .thenByDescending { it.suitability }
+                compareByDescending<RankedReferenceCandidate> { it.suitability }
+                    .thenByDescending { it.cheapAffinity }
                     .thenBy { isSdhReferenceTrack(it.track) }
                     .thenBy { it.track.key },
             )
