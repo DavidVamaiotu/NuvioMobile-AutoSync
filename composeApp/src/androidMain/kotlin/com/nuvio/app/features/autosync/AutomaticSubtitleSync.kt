@@ -8,12 +8,16 @@ import com.nuvio.app.features.player.PlayerSubtitleCueParser
 import com.nuvio.app.features.player.SubtitleLanguageMatching
 import com.nuvio.app.features.player.SubtitleSyncCue
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
@@ -30,6 +34,8 @@ internal object AutomaticSubtitleSync {
     private const val MIN_SELECTED_CUES = 1
     private const val MAX_LOGGED_CUE_SAMPLES = 20
     private const val ALTERNATIVE_EXTERNAL_SUBTITLE_BATCH_SIZE = 4
+    private const val MAX_PARALLEL_ALTERNATIVE_DOWNLOADS = 6
+    private const val MAX_PARALLEL_ALTERNATIVE_MATCHES = 2
     private const val EXCEPTIONAL_MATCH_QUALITY = 0.95
     private const val EXCEPTIONAL_MATCH_TARGET_COVERAGE = 0.99
     private const val EXCEPTIONAL_MATCH_REFERENCE_COVERAGE = 0.97
@@ -345,6 +351,28 @@ internal object AutomaticSubtitleSync {
             var bestAlternativeName: String? = null
             var bestAlternativeCueCount = 0
 
+            // V1 efficiency only: once fallback is actually needed, overlap candidate network
+            // work with matching. V2's matcher, confidence gates and batch selection stay intact.
+            val alternativeDownloadSemaphore = Semaphore(MAX_PARALLEL_ALTERNATIVE_DOWNLOADS)
+            val alternativeLoads = linkedMapOf<String, Deferred<LoadedSubtitle?>>()
+
+            fun scheduleAlternativeLoads() {
+                alternatives.forEach { candidate ->
+                    if (candidate.url !in alternativeLoads) {
+                        alternativeLoads[candidate.url] = async {
+                            alternativeDownloadSemaphore.withPermit {
+                                loadSelectedSubtitle(
+                                    url = candidate.url,
+                                    headers = emptyMap(),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            scheduleAlternativeLoads()
+
             var batchStartIndex = 0
             var stopFallbackSearch = false
 
@@ -358,12 +386,14 @@ internal object AutomaticSubtitleSync {
                     "fallback batch candidates=$batchStartIndex..${batchEndExclusive - 1}"
                 }
 
+                // Downloads were already started together (bounded to six, as in V1). Awaiting
+                // them in candidate order does not serialize the network work.
+                val loadedBatch = ArrayList<LoadedAlternative>(
+                    batchEndExclusive - batchStartIndex,
+                )
                 for (index in batchStartIndex until batchEndExclusive) {
                     val candidate = alternatives[index]
-                    val loaded = loadSelectedSubtitle(
-                        url = candidate.url,
-                        headers = emptyMap(),
-                    ) ?: continue
+                    val loaded = alternativeLoads[candidate.url]?.await() ?: continue
 
                     logLoadedExternalSubtitle(
                         label = "ALTERNATIVE[$index]",
@@ -371,50 +401,120 @@ internal object AutomaticSubtitleSync {
                         loaded = loaded,
                         sampleLimit = 3,
                     )
-
-                    val evaluation = evaluateExternalCandidate(
-                        label = "ALTERNATIVE[$index]",
-                        url = candidate.url,
-                        target = loaded.cues,
-                        referenceTracks = referenceTracks,
+                    loadedBatch += LoadedAlternative(
+                        index = index,
+                        candidate = candidate,
+                        loaded = loaded,
                     )
-                    val best = evaluation.best ?: continue
-                    if (!best.timeline.confident) continue
+                }
 
-                    val previous = bestAlternativeMatch
-                    if (
-                        previous == null ||
-                        directTimelineQualityScore(best) > directTimelineQualityScore(previous)
-                    ) {
-                        bestAlternativeMatch = best
-                        bestAlternative = AutoSyncResolvedTimeline(
-                            subtitleUrl = candidate.url,
-                            subtitleHeaders = emptyMap(),
-                            timeline = best.timeline,
+                // V1 timing deduplication: external text never participates in V2 matching, so
+                // exact-equal start/end timelines can safely share one authoritative evaluation.
+                val timingBuckets =
+                    linkedMapOf<ReferenceTimingFingerprint, MutableList<MutableList<LoadedAlternative>>>()
+                for (alternative in loadedBatch) {
+                    val fingerprint = referenceTimingFingerprint(alternative.loaded.cues)
+                    val bucket = timingBuckets.getOrPut(fingerprint) { mutableListOf() }
+                    val existing = bucket.firstOrNull { group ->
+                        sameReferenceTiming(
+                            group.first().loaded.cues,
+                            alternative.loaded.cues,
                         )
-                        bestAlternativeIndex = index
-                        bestAlternativeName = candidate.name
-                        bestAlternativeCueCount = loaded.cues.size
                     }
-
-                    if (isExceptionalMatch(best)) {
-                        stopFallbackSearch = true
-                        break
+                    if (existing != null) {
+                        existing += alternative
+                    } else {
+                        bucket += mutableListOf(alternative)
+                    }
+                }
+                val timingGroups = timingBuckets.values.flatten()
+                val duplicatesSaved = loadedBatch.size - timingGroups.size
+                if (duplicatesSaved > 0) {
+                    AutoSyncDebugLog.info {
+                        "fallback timing dedup timelines=${timingGroups.size}/${loadedBatch.size} " +
+                            "duplicatesSaved=$duplicatesSaved"
                     }
                 }
 
-                // A confident result in this batch is enough. We still compare all candidates
+                // V1 used two matcher workers. Keep the same bound so weak TV boxes don't get
+                // four simultaneous CPU-heavy V2 DP/activity-correlation jobs.
+                for (groupPair in timingGroups.chunked(MAX_PARALLEL_ALTERNATIVE_MATCHES)) {
+                    val evaluatedPair = groupPair.map { group ->
+                        async {
+                            val representative = group.first()
+                            EvaluatedAlternativeTimingGroup(
+                                members = group,
+                                evaluation = evaluateExternalCandidate(
+                                    label = "ALTERNATIVE[${representative.index}]",
+                                    url = representative.candidate.url,
+                                    target = representative.loaded.cues,
+                                    referenceTracks = referenceTracks,
+                                ),
+                            )
+                        }
+                    }.awaitAll()
+
+                    // Process in original candidate order. Parallel execution changes latency,
+                    // never ranking or acceptance semantics.
+                    for (evaluated in evaluatedPair.sortedBy { it.members.first().index }) {
+                        val representative = evaluated.members.first()
+                        val best = evaluated.evaluation.best
+
+                        for (alternative in evaluated.members.sortedBy { it.index }) {
+                            if (alternative.index != representative.index) {
+                                AutoSyncDebugLog.info {
+                                    "ALTERNATIVE[${alternative.index}] reused exact timing result " +
+                                        "from ALTERNATIVE[${representative.index}]"
+                                }
+                            }
+
+                            if (best == null || !best.timeline.confident) continue
+
+                            val previous = bestAlternativeMatch
+                            if (
+                                previous == null ||
+                                directTimelineQualityScore(best) >
+                                    directTimelineQualityScore(previous)
+                            ) {
+                                bestAlternativeMatch = best
+                                bestAlternative = AutoSyncResolvedTimeline(
+                                    subtitleUrl = alternative.candidate.url,
+                                    subtitleHeaders = emptyMap(),
+                                    timeline = best.timeline,
+                                )
+                                bestAlternativeIndex = alternative.index
+                                bestAlternativeName = alternative.candidate.name
+                                bestAlternativeCueCount = alternative.loaded.cues.size
+                            }
+
+                            if (isExceptionalMatch(best)) {
+                                stopFallbackSearch = true
+                                break
+                            }
+                        }
+
+                        if (stopFallbackSearch) break
+                    }
+
+                    // Preserve V2's existing exceptional early exit. At most the other member of
+                    // the current two-worker pair may already have done speculative CPU work.
+                    if (stopFallbackSearch) break
+                }
+
+                // A confident result in this batch is enough. We still compare all timing groups
                 // inside the batch and keep the best one, preserving the existing behavior.
                 if (bestAlternative != null || stopFallbackSearch) break
 
                 batchStartIndex = batchEndExclusive
 
                 // Add-on results are progressive. Re-read the existing provider after every
-                // failed batch so candidates that arrived while matching are included too.
+                // failed batch and immediately add any newly arrived URLs to the same bounded
+                // download pipeline.
                 if (alternativeSubtitlesProvider != null) {
                     availableCandidates = currentExternalCandidates()
                     language = selectedLanguage(availableCandidates)
                     alternatives = sameLanguageAlternatives(availableCandidates, language)
+                    scheduleAlternativeLoads()
                 }
 
                 if (batchStartIndex < alternatives.size) {
@@ -424,6 +524,11 @@ internal object AutomaticSubtitleSync {
                     }
                 }
             }
+
+            // Don't keep speculative fallback downloads alive after the batch decision is made.
+            alternativeLoads.values
+                .filterNot { it.isCompleted }
+                .forEach { it.cancel() }
 
             // Give the user's selected subtitle one final priority check if it completed
             // naturally while alternatives were being evaluated.
@@ -1059,6 +1164,15 @@ internal object AutomaticSubtitleSync {
     private data class CandidateEvaluation(
         val best: TimelineRetimeMatch?,
         val attempts: List<TimelineRetimeMatch>,
+    )
+    private data class LoadedAlternative(
+        val index: Int,
+        val candidate: AutoSyncSubtitleCandidate,
+        val loaded: LoadedSubtitle,
+    )
+    private data class EvaluatedAlternativeTimingGroup(
+        val members: List<LoadedAlternative>,
+        val evaluation: CandidateEvaluation,
     )
 
     private data class TimelineRetimeMatch(
