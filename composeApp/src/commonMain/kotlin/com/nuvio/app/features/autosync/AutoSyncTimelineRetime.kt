@@ -132,6 +132,8 @@ internal object AutoSyncTimelineRetimer {
         preparedReferenceActivity: PreparedActivity? = null,
         preparedTargetActivity: PreparedActivity? = null,
         precomputedDelayOnly: AutoSyncDelayOnlyAlignment? = null,
+        precomputedDelayOnlyEvidence: DelayOnlySearchEvidence? = null,
+        allowPrecomputedDelayFastPath: Boolean = true,
         cancellationCheck: (() -> Unit)? = null,
         timingObserver: ((AutoSyncRetimePhaseTimings) -> Unit)? = null,
     ): AutoSyncTimelineRetimeResult? {
@@ -201,7 +203,8 @@ internal object AutoSyncTimelineRetimer {
         // Structural DP and all final confidence checks still run unchanged. Any failure falls
         // through to the normal affine/FPS discovery path.
         val fastDelayOnly = precomputedDelayOnly?.takeIf { alignment ->
-            !allowAmbiguousDelayOnlyMargin &&
+            allowPrecomputedDelayFastPath &&
+                !allowAmbiguousDelayOnlyMargin &&
                 alignment.score >= DELAY_ONLY_FAST_PATH_MIN_SCORE &&
                 alignment.margin >= DELAY_ONLY_FAST_PATH_MIN_MARGIN &&
                 alignment.segmentsPassed >= DELAY_ONLY_FAST_PATH_REQUIRED_SEGMENTS
@@ -247,6 +250,7 @@ internal object AutoSyncTimelineRetimer {
             target = target,
             referenceActivity = referenceActivity,
             targetActivity = targetActivity,
+            precomputedUnitEvidence = precomputedDelayOnlyEvidence,
             cancellationCheck = cancellationCheck,
         ) ?: return null
         activitySearchMs += elapsedMs(activityMark)
@@ -636,11 +640,81 @@ internal object AutoSyncTimelineRetimer {
         )
     }
 
+    internal fun prepareDelayOnlySearchEvidence(
+        referenceActivity: PreparedActivity,
+        targetActivity: PreparedActivity,
+        cancellationCheck: (() -> Unit)? = null,
+    ): DelayOnlySearchEvidence? {
+        val maxOffsetBins = (ACTIVITY_MAX_OFFSET_MS / ACTIVITY_COARSE_BIN_MS).toInt()
+        val scores = DoubleArray(maxOffsetBins * 2 + 1) { Double.NaN }
+        val candidates = ArrayList<ActivityCandidate>(scores.size)
+
+        for (offsetBins in -maxOffsetBins..maxOffsetBins) {
+            if ((offsetBins + maxOffsetBins) % 64 == 0) cancellationCheck?.invoke()
+            val score = scoreActivityOffset(
+                referenceActivity.coarse,
+                targetActivity.coarse,
+                offsetBins,
+            ) ?: continue
+            scores[offsetBins + maxOffsetBins] = score
+            candidates += ActivityCandidate(
+                scale = 1.0,
+                interceptMs = offsetBins * ACTIVITY_COARSE_BIN_MS,
+                score = score,
+            )
+        }
+
+        val seed = buildDelayOnlySearchSeed(candidates) ?: return null
+        val refined = refineDelayOnlySearchSeed(
+            referenceFine = referenceActivity.fine,
+            targetFine = targetActivity.fine,
+            seed = seed,
+            cancellationCheck = cancellationCheck,
+        )
+        return DelayOnlySearchEvidence(
+            coarseScores = scores,
+            maxOffsetBins = maxOffsetBins,
+            seed = refined,
+        )
+    }
+
+    private fun refineDelayOnlySearchSeed(
+        referenceFine: ActivityTimeline,
+        targetFine: ActivityTimeline,
+        seed: DelayOnlySearchSeed,
+        cancellationCheck: (() -> Unit)? = null,
+    ): DelayOnlySearchSeed {
+        if (seed.fine != null) return seed
+
+        var fineBest: ActivityCandidate? = null
+        var offsetMs = seed.coarse.interceptMs - ACTIVITY_FINE_RADIUS_MS
+        while (offsetMs <= seed.coarse.interceptMs + ACTIVITY_FINE_RADIUS_MS) {
+            cancellationCheck?.invoke()
+            val offsetBins =
+                (offsetMs.toDouble() / ACTIVITY_FINE_BIN_MS.toDouble()).roundToInt()
+            val score = scoreActivityOffset(referenceFine, targetFine, offsetBins)
+            if (score != null) {
+                val candidate = ActivityCandidate(
+                    scale = 1.0,
+                    interceptMs = offsetBins * ACTIVITY_FINE_BIN_MS,
+                    score = score,
+                )
+                val current = fineBest
+                if (current == null || candidate.score > current.score) {
+                    fineBest = candidate
+                }
+            }
+            offsetMs += ACTIVITY_FINE_BIN_MS
+        }
+        return seed.copy(fine = fineBest)
+    }
+
     internal fun findDelayOnlyAlignmentPrepared(
         referenceActivity: PreparedActivity,
         targetActivity: PreparedActivity,
         targetSize: Int,
         allowAmbiguousMargin: Boolean = false,
+        precomputedEvidence: DelayOnlySearchEvidence? = null,
         cancellationCheck: (() -> Unit)? = null,
     ): AutoSyncDelayOnlyAlignment? =
         findDelayOnlyAlignmentPrepared(
@@ -648,7 +722,7 @@ internal object AutoSyncTimelineRetimer {
             targetActivity = targetActivity,
             targetSize = targetSize,
             allowAmbiguousMargin = allowAmbiguousMargin,
-            seed = null,
+            seed = precomputedEvidence?.seed,
             cancellationCheck = cancellationCheck,
         )
 
@@ -664,21 +738,13 @@ internal object AutoSyncTimelineRetimer {
         val referenceCoarse = referenceActivity.coarse
         val targetCoarse = targetActivity.coarse
 
-        val coarseSeed = seed ?: run {
-            val maxOffsetBins = (ACTIVITY_MAX_OFFSET_MS / ACTIVITY_COARSE_BIN_MS).toInt()
-            val coarseCandidates = ArrayList<ActivityCandidate>(maxOffsetBins * 2 + 1)
-            for (offsetBins in -maxOffsetBins..maxOffsetBins) {
-                if ((offsetBins + maxOffsetBins) % 64 == 0) cancellationCheck?.invoke()
-                val score =
-                    scoreActivityOffset(referenceCoarse, targetCoarse, offsetBins) ?: continue
-                coarseCandidates += ActivityCandidate(
-                    scale = 1.0,
-                    interceptMs = offsetBins * ACTIVITY_COARSE_BIN_MS,
-                    score = score,
-                )
-            }
-            buildDelayOnlySearchSeed(coarseCandidates) ?: return null
-        }
+        val coarseSeed = seed
+            ?: prepareDelayOnlySearchEvidence(
+                referenceActivity = referenceActivity,
+                targetActivity = targetActivity,
+                cancellationCheck = cancellationCheck,
+            )?.seed
+            ?: return null
 
         val coarse = coarseSeed.coarse
         val margin = coarseSeed.margin
@@ -897,6 +963,7 @@ internal object AutoSyncTimelineRetimer {
         target: List<SubtitleSyncCue>,
         referenceActivity: PreparedActivity,
         targetActivity: PreparedActivity,
+        precomputedUnitEvidence: DelayOnlySearchEvidence? = null,
         cancellationCheck: (() -> Unit)? = null,
     ): ActivityAlignment? {
         if (reference.size < MIN_CUES || target.size < MIN_CUES) return null
@@ -908,6 +975,28 @@ internal object AutoSyncTimelineRetimer {
 
         for (scale in activityScaleCandidates(reference, target)) {
             cancellationCheck?.invoke()
+
+            if (scale == 1.0 && precomputedUnitEvidence != null) {
+                val evidence = precomputedUnitEvidence
+                for (offsetBins in -maxOffsetBins..maxOffsetBins) {
+                    if ((offsetBins + maxOffsetBins) % 64 == 0) {
+                        cancellationCheck?.invoke()
+                    }
+                    val evidenceIndex = offsetBins + evidence.maxOffsetBins
+                    if (evidenceIndex !in evidence.coarseScores.indices) continue
+                    val score = evidence.coarseScores[evidenceIndex]
+                    if (score.isNaN()) continue
+                    val candidate = ActivityCandidate(
+                        scale = 1.0,
+                        interceptMs = offsetBins * ACTIVITY_COARSE_BIN_MS,
+                        score = score,
+                    )
+                    coarseCandidates += candidate
+                    unitScaleCandidates += candidate
+                }
+                continue
+            }
+
             val targetCoarse = if (scale == 1.0) {
                 targetActivity.coarse
             } else {
@@ -964,9 +1053,10 @@ internal object AutoSyncTimelineRetimer {
         }
 
         val best = fineBest ?: coarseBest
-        val unitSeed = buildDelayOnlySearchSeed(unitScaleCandidates)?.let { seed ->
-            if (coarseBest.scale == 1.0) seed.copy(fine = fineBest) else seed
-        }
+        val unitSeed = precomputedUnitEvidence?.seed
+            ?: buildDelayOnlySearchSeed(unitScaleCandidates)?.let { seed ->
+                if (coarseBest.scale == 1.0) seed.copy(fine = fineBest) else seed
+            }
 
         return ActivityAlignment(
             scale = best.scale,
@@ -1274,16 +1364,22 @@ internal object AutoSyncTimelineRetimer {
         val fine: ActivityTimeline,
     )
 
-    private data class ActivityCandidate(
+    internal data class ActivityCandidate(
         val scale: Double,
         val interceptMs: Long,
         val score: Double,
     )
 
-    private data class DelayOnlySearchSeed(
+    internal data class DelayOnlySearchSeed(
         val coarse: ActivityCandidate,
         val margin: Double,
         val fine: ActivityCandidate?,
+    )
+
+    internal data class DelayOnlySearchEvidence(
+        val coarseScores: DoubleArray,
+        val maxOffsetBins: Int,
+        val seed: DelayOnlySearchSeed,
     )
 
     private data class ActivityAlignment(

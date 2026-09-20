@@ -30,19 +30,30 @@ internal object AutoSyncDelayPreflight {
             match.margin >= REALLY_GOOD_MARGIN &&
             match.segmentsPassed >= 3
 
-    internal fun bestMatch(
+    internal data class Evidence(
+        val search: AutoSyncTimelineRetimer.DelayOnlySearchEvidence,
+        val validatedAlignment: AutoSyncDelayOnlyAlignment?,
+    )
+
+    internal data class Result(
+        val best: Match?,
+        val evidenceByReferenceKey: Map<String, Evidence>,
+    )
+
+    internal fun evaluate(
         referenceTracks: List<ReferenceTrack>,
         target: List<SubtitleSyncCue>,
         referenceActivityCache: MutableMap<String, AutoSyncTimelineRetimer.PreparedActivity?>,
         preparedTargetActivity: AutoSyncTimelineRetimer.PreparedActivity? = null,
         cancellationCheck: (() -> Unit)? = null,
-    ): Match? {
+    ): Result {
         val targetActivity =
             preparedTargetActivity
                 ?: AutoSyncTimelineRetimer.prepareUnitActivity(target)
-                ?: return null
+                ?: return Result(best = null, evidenceByReferenceKey = emptyMap())
 
         var best: Match? = null
+        val evidenceByReferenceKey = linkedMapOf<String, Evidence>()
 
         for (track in referenceTracks) {
             cancellationCheck?.invoke()
@@ -57,6 +68,13 @@ internal object AutoSyncDelayPreflight {
                 }
             } ?: continue
 
+            val searchEvidence =
+                AutoSyncTimelineRetimer.prepareDelayOnlySearchEvidence(
+                    referenceActivity = preparedReference,
+                    targetActivity = targetActivity,
+                    cancellationCheck = cancellationCheck,
+                ) ?: continue
+
             // Match the exact delay-margin relaxation used by authoritative V2.
             val overSegmentedReference =
                 track.cues.size.toLong() * 2L >= target.size.toLong() * 3L
@@ -70,8 +88,15 @@ internal object AutoSyncDelayPreflight {
                     targetActivity = targetActivity,
                     targetSize = target.size,
                     allowAmbiguousMargin = relaxDelayMargin,
+                    precomputedEvidence = searchEvidence,
                     cancellationCheck = cancellationCheck,
-                ) ?: continue
+                )
+
+            evidenceByReferenceKey[track.key] = Evidence(
+                search = searchEvidence,
+                validatedAlignment = alignment,
+            )
+            if (alignment == null) continue
 
             val candidate = Match(
                 referenceKey = track.key,
@@ -96,6 +121,25 @@ internal object AutoSyncDelayPreflight {
             }
         }
 
-        return best
+        return Result(
+            best = best,
+            evidenceByReferenceKey = evidenceByReferenceKey,
+        )
     }
+
+    internal fun bestMatch(
+        referenceTracks: List<ReferenceTrack>,
+        target: List<SubtitleSyncCue>,
+        referenceActivityCache: MutableMap<String, AutoSyncTimelineRetimer.PreparedActivity?>,
+        preparedTargetActivity: AutoSyncTimelineRetimer.PreparedActivity? = null,
+        cancellationCheck: (() -> Unit)? = null,
+    ): Match? =
+        evaluate(
+            referenceTracks = referenceTracks,
+            target = target,
+            referenceActivityCache = referenceActivityCache,
+            preparedTargetActivity = preparedTargetActivity,
+            cancellationCheck = cancellationCheck,
+        ).best
+
 }

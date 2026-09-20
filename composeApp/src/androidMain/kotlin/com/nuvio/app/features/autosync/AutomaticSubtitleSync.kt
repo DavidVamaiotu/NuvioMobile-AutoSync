@@ -650,7 +650,7 @@ internal object AutomaticSubtitleSync {
                     .thenBy { it.schedulingScore }
                     .thenBy { it.rankedReference.cheapAffinity }
                     .thenBy { it.rankedReference.suitability }
-                    .thenBy { if (it.preflightHint != null) 1 else 0 }
+                    .thenBy { if (it.preflightChampion) 1 else 0 }
                     .thenBy { -it.family.representative.index }
                     .thenBy { it.rankedReference.track.key }
 
@@ -688,9 +688,9 @@ internal object AutomaticSubtitleSync {
                 val activityPrepMs = SystemClock.elapsedRealtime() - activityPrepStarted
 
                 val preflightStarted = SystemClock.elapsedRealtime()
-                val preflight = if (targetActivity != null) {
+                val preflightResult = if (targetActivity != null) {
                     withContext(Dispatchers.Default) {
-                        AutoSyncDelayPreflight.bestMatch(
+                        AutoSyncDelayPreflight.evaluate(
                             referenceTracks = referenceTracks,
                             target = loaded.cues,
                             referenceActivityCache = referenceActivityCache,
@@ -699,8 +699,12 @@ internal object AutomaticSubtitleSync {
                         )
                     }
                 } else {
-                    null
+                    AutoSyncDelayPreflight.Result(
+                        best = null,
+                        evidenceByReferenceKey = emptyMap(),
+                    )
                 }
+                val preflight = preflightResult.best
                 val preflightMs = SystemClock.elapsedRealtime() - preflightStarted
 
                 val rankingStarted = SystemClock.elapsedRealtime()
@@ -725,20 +729,33 @@ internal object AutomaticSubtitleSync {
                     members = mutableListOf(alternative),
                     targetActivity = targetActivity,
                     preflight = preflight,
+                    preflightEvidenceByReferenceKey =
+                        preflightResult.evidenceByReferenceKey,
                     rankedReferences = rankedReferences,
                 )
                 timingFamilies += family
 
                 rankedReferences.forEach { ranked ->
-                    val hint =
-                        preflight?.takeIf { it.referenceKey == ranked.track.key }
+                    val isPreflightChampion =
+                        preflight?.referenceKey == ranked.track.key
+                    val evidence =
+                        preflightResult.evidenceByReferenceKey[ranked.track.key]
+                    val championHint =
+                        preflight?.takeIf { isPreflightChampion }
                     queuedPairs += PairHypothesis(
                         family = family,
                         rankedReference = ranked,
-                        preflightHint = hint,
+                        preflightHint = evidence?.validatedAlignment?.let { alignment ->
+                            AutoSyncDelayPreflight.Match(
+                                referenceKey = ranked.track.key,
+                                alignment = alignment,
+                            )
+                        },
+                        preflightEvidence = evidence?.search,
+                        preflightChampion = isPreflightChampion,
                         schedulingScore = maxOf(
                             ranked.cheapAffinity,
-                            hint?.score ?: Double.NEGATIVE_INFINITY,
+                            championHint?.score ?: Double.NEGATIVE_INFINITY,
                         ),
                     )
                 }
@@ -773,6 +790,8 @@ internal object AutomaticSubtitleSync {
                             rankedReference = hypothesis.rankedReference,
                             referenceActivityCache = referenceActivityCache,
                             preflightHint = hypothesis.preflightHint,
+                            preflightEvidence = hypothesis.preflightEvidence,
+                            allowPrecomputedDelayFastPath = hypothesis.preflightChampion,
                             preparedTargetActivity = hypothesis.family.targetActivity,
                         )
                         CompletedPairEvaluation(
@@ -1089,6 +1108,8 @@ internal object AutomaticSubtitleSync {
         rankedReference: RankedReferenceCandidate,
         referenceActivityCache: MutableMap<String, AutoSyncTimelineRetimer.PreparedActivity?>,
         preflightHint: AutoSyncDelayPreflight.Match? = null,
+        preflightEvidence: AutoSyncTimelineRetimer.DelayOnlySearchEvidence? = null,
+        allowPrecomputedDelayFastPath: Boolean = false,
         preparedTargetActivity: AutoSyncTimelineRetimer.PreparedActivity? = null,
     ): PairEvaluation = withContext(Dispatchers.Default) {
         val evaluationContext = currentCoroutineContext()
@@ -1133,6 +1154,8 @@ internal object AutomaticSubtitleSync {
                 preflightHint
                     ?.takeIf { it.referenceKey == track.key }
                     ?.alignment,
+            delayOnlyEvidence = preflightEvidence,
+            allowPrecomputedDelayFastPath = allowPrecomputedDelayFastPath,
             cancellationCheck = { evaluationContext.ensureActive() },
             timingObserver =
                 if (AutoSyncDebugLog.ENABLED) {
@@ -1860,6 +1883,8 @@ internal object AutomaticSubtitleSync {
         preparedReferenceActivity: AutoSyncTimelineRetimer.PreparedActivity?,
         preparedTargetActivity: AutoSyncTimelineRetimer.PreparedActivity?,
         delayOnlyHint: AutoSyncDelayOnlyAlignment? = null,
+        delayOnlyEvidence: AutoSyncTimelineRetimer.DelayOnlySearchEvidence? = null,
+        allowPrecomputedDelayFastPath: Boolean = true,
         cancellationCheck: (() -> Unit)? = null,
         timingObserver: ((AutoSyncRetimePhaseTimings) -> Unit)? = null,
     ): AutoSyncTimelineRetimeResult? {
@@ -1887,6 +1912,8 @@ internal object AutomaticSubtitleSync {
             preparedReferenceActivity = preparedReferenceActivity,
             preparedTargetActivity = preparedTargetActivity,
             precomputedDelayOnly = delayOnlyHint,
+            precomputedDelayOnlyEvidence = delayOnlyEvidence,
+            allowPrecomputedDelayFastPath = allowPrecomputedDelayFastPath,
             cancellationCheck = cancellationCheck,
             timingObserver = timingObserver,
         )
@@ -1955,6 +1982,7 @@ internal object AutomaticSubtitleSync {
         val members: MutableList<LoadedAlternative>,
         val targetActivity: AutoSyncTimelineRetimer.PreparedActivity?,
         val preflight: AutoSyncDelayPreflight.Match?,
+        val preflightEvidenceByReferenceKey: Map<String, AutoSyncDelayPreflight.Evidence>,
         val rankedReferences: List<RankedReferenceCandidate>,
         val startedReferenceKeys: MutableSet<String> = hashSetOf(),
         var completedUsableAttempts: Int = 0,
@@ -1965,6 +1993,8 @@ internal object AutomaticSubtitleSync {
         val family: CandidateTimingFamilyState,
         val rankedReference: RankedReferenceCandidate,
         val preflightHint: AutoSyncDelayPreflight.Match?,
+        val preflightEvidence: AutoSyncTimelineRetimer.DelayOnlySearchEvidence?,
+        val preflightChampion: Boolean,
         val schedulingScore: Double,
     )
     private data class CompletedPairEvaluation(
