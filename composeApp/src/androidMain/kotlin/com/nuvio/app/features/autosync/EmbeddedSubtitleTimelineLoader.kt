@@ -11,10 +11,15 @@ import androidx.media3.extractor.mp4.TrackSampleTable
 import com.nuvio.app.features.player.SubtitleSyncCue
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withTimeout
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import java.util.ArrayDeque
 import java.util.LinkedHashMap
 import java.util.concurrent.TimeUnit
@@ -137,11 +142,18 @@ internal object EmbeddedSubtitleTimelineLoader {
         }
 
         return try {
-            val loaded = withTimeoutOrNull(TOTAL_TIMEOUT_MS) {
-                withContext(Dispatchers.IO) {
-                    loadMatroskaCueIndex(sourceUrl, sourceHeaders)
+            val loaded = try {
+                withTimeout(TOTAL_TIMEOUT_MS) {
+                    withContext(Dispatchers.IO) {
+                        loadMatroskaCueIndex(sourceUrl, sourceHeaders)
+                    }
                 }
+            } catch (_: TimeoutCancellationException) {
+                // A transient deadline is not evidence that the container is unsupported.
+                // Do not publish a negative cache entry for timed-out work.
+                return null
             }
+
             synchronized(cacheLock) {
                 cache[cacheKey] = CachedLoadResult(
                     timeline = loaded,
@@ -150,6 +162,7 @@ internal object EmbeddedSubtitleTimelineLoader {
             }
             loaded
         } catch (cancel: CancellationException) {
+            // External cancellation must remain observable and must never publish cache state.
             throw cancel
         } catch (_: Exception) {
             synchronized(cacheLock) {
@@ -162,7 +175,7 @@ internal object EmbeddedSubtitleTimelineLoader {
         }
     }
 
-    private fun loadMatroskaCueIndex(
+    private suspend fun loadMatroskaCueIndex(
         sourceUrl: String,
         sourceHeaders: Map<String, String>,
     ): IndexedEmbeddedTimeline? {
@@ -421,7 +434,7 @@ internal object EmbeddedSubtitleTimelineLoader {
      * MP4/MOV equivalent of the Matroska Cues path. The complete subtitle timing lives in moov,
      * so this never scans mdat or decodes media samples.
      */
-    private fun loadMp4SampleTableIndex(
+    private suspend fun loadMp4SampleTableIndex(
         sourceUrl: String,
         sourceHeaders: Map<String, String>,
         initial: RangeResponse,
@@ -546,7 +559,7 @@ internal object EmbeddedSubtitleTimelineLoader {
     }
 
     /** Jump over top-level boxes by declared size; a huge mdat costs only its header. */
-    private fun findMp4Moov(
+    private suspend fun findMp4Moov(
         sourceUrl: String,
         sourceHeaders: Map<String, String>,
         initial: RangeResponse,
@@ -937,7 +950,7 @@ internal object EmbeddedSubtitleTimelineLoader {
         return value
     }
 
-    private fun findAndParseCuesNearFileEnd(
+    private suspend fun findAndParseCuesNearFileEnd(
         sourceUrl: String,
         sourceHeaders: Map<String, String>,
         totalLength: Long?,
@@ -1249,7 +1262,7 @@ internal object EmbeddedSubtitleTimelineLoader {
         return initialBytes.copyOfRange(start, end.toInt())
     }
 
-    private fun fetchElementAt(
+    private suspend fun fetchElementAt(
         sourceUrl: String,
         sourceHeaders: Map<String, String>,
         absolutePosition: Long,
@@ -1316,7 +1329,7 @@ internal object EmbeddedSubtitleTimelineLoader {
         )?.bytes
     }
 
-    private fun fetchRange(
+    private suspend fun fetchRange(
         sourceUrl: String,
         sourceHeaders: Map<String, String>,
         start: Long,
@@ -1354,43 +1367,111 @@ internal object EmbeddedSubtitleTimelineLoader {
             minOf(remainingBudgetMs.coerceAtLeast(1L), 5_000L),
             TimeUnit.MILLISECONDS,
         )
-        call.execute().use { response ->
-            if (!response.isSuccessful) return null
-            if (requirePartialContent && response.code != 206) return null
-            if (start > 0L && response.code != 206) return null
 
-            val contentRange = parseContentRange(response.header("Content-Range"))
-            if (response.code == 206) {
-                val parsedRange = contentRange ?: return null
-                if (parsedRange.start != start) return null
+        return suspendCancellableCoroutine { continuation ->
+            // OkHttp's async API lets structured coroutine cancellation interrupt DNS/connect/
+            // headers/body reads immediately instead of waiting for blocking execute() to return.
+            continuation.invokeOnCancellation {
+                call.cancel()
             }
 
-            val body = response.body ?: return null
-            val input = body.byteStream()
-            val bytes = ByteArray(length)
-            var offset = 0
-            while (offset < length) {
-                if (stats.remainingBudgetMs() <= 0L || stats.remainingByteBudget() <= 0L) return null
-                val allowedRead = minOf(
-                    length - offset,
-                    stats.remainingByteBudget().coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
-                )
-                if (allowedRead <= 0) return null
-                val read = input.read(bytes, offset, allowedRead)
-                if (read < 0) break
-                if (read == 0) continue
-                offset += read
-                stats.bytesDownloaded += read.toLong()
-            }
-            if (offset == 0) return null
-            if (requireExactLength && offset != length) return null
+            call.enqueue(
+                object : Callback {
+                    override fun onFailure(call: Call, error: java.io.IOException) {
+                        if (!continuation.isActive) return
+                        if (call.isCanceled()) {
+                            continuation.resumeWith(
+                                Result.failure(
+                                    CancellationException(
+                                        "Cancelled embedded index HTTP request",
+                                    ).also { it.initCause(error) },
+                                ),
+                            )
+                        } else {
+                            continuation.resumeWith(Result.failure(error))
+                        }
+                    }
 
-            val returnedBytes = if (offset == length) bytes else bytes.copyOf(offset)
-            val totalLength = contentRange?.total
-                ?: if (response.code == 200) response.header("Content-Length")?.toLongOrNull() else null
-            return RangeResponse(
-                bytes = returnedBytes,
-                totalLength = totalLength,
+                    override fun onResponse(call: Call, response: Response) {
+                        if (!continuation.isActive) {
+                            response.close()
+                            return
+                        }
+
+                        try {
+                            val result = response.use { current ->
+                                if (!current.isSuccessful) return@use null
+                                if (requirePartialContent && current.code != 206) return@use null
+                                if (start > 0L && current.code != 206) return@use null
+
+                                val contentRange = parseContentRange(
+                                    current.header("Content-Range"),
+                                )
+                                if (current.code == 206) {
+                                    val parsedRange = contentRange ?: return@use null
+                                    if (parsedRange.start != start) return@use null
+                                }
+
+                                val body = current.body ?: return@use null
+                                val input = body.byteStream()
+                                val bytes = ByteArray(length)
+                                var offset = 0
+                                while (offset < length) {
+                                    if (
+                                        stats.remainingBudgetMs() <= 0L ||
+                                        stats.remainingByteBudget() <= 0L
+                                    ) {
+                                        return@use null
+                                    }
+                                    val allowedRead = minOf(
+                                        length - offset,
+                                        stats.remainingByteBudget()
+                                            .coerceAtMost(Int.MAX_VALUE.toLong())
+                                            .toInt(),
+                                    )
+                                    if (allowedRead <= 0) return@use null
+                                    val read = input.read(bytes, offset, allowedRead)
+                                    if (read < 0) break
+                                    if (read == 0) continue
+                                    offset += read
+                                    stats.bytesDownloaded += read.toLong()
+                                }
+                                if (offset == 0) return@use null
+                                if (requireExactLength && offset != length) return@use null
+
+                                val returnedBytes =
+                                    if (offset == length) bytes else bytes.copyOf(offset)
+                                val totalLength = contentRange?.total
+                                    ?: if (current.code == 200) {
+                                        current.header("Content-Length")?.toLongOrNull()
+                                    } else {
+                                        null
+                                    }
+                                RangeResponse(
+                                    bytes = returnedBytes,
+                                    totalLength = totalLength,
+                                )
+                            }
+
+                            if (continuation.isActive) {
+                                continuation.resumeWith(Result.success(result))
+                            }
+                        } catch (error: Throwable) {
+                            if (!continuation.isActive) return
+                            if (call.isCanceled() && error !is CancellationException) {
+                                continuation.resumeWith(
+                                    Result.failure(
+                                        CancellationException(
+                                            "Cancelled embedded index HTTP request",
+                                        ).also { it.initCause(error) },
+                                    ),
+                                )
+                            } else {
+                                continuation.resumeWith(Result.failure(error))
+                            }
+                        }
+                    }
+                },
             )
         }
     }
