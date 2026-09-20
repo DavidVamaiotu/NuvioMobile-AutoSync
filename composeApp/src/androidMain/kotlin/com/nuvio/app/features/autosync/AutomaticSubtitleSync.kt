@@ -42,7 +42,7 @@ internal object AutomaticSubtitleSync {
     private const val EXCEPTIONAL_MATCH_TARGET_COVERAGE = 0.99
     private const val EXCEPTIONAL_MATCH_REFERENCE_COVERAGE = 0.97
     private const val EXCEPTIONAL_MATCH_SIMPLE_RATIO = 0.98
-    private const val REFERENCE_SEARCH_CHECKPOINT = 6
+    private const val REFERENCE_SEARCH_CHECKPOINT = 2
     private const val STRONG_CHECKPOINT_QUALITY = 0.92
     private const val STRONG_CHECKPOINT_TARGET_COVERAGE = 0.98
     private const val STRONG_CHECKPOINT_REFERENCE_COVERAGE = 0.90
@@ -508,6 +508,15 @@ internal object AutomaticSubtitleSync {
                         }
 
                         if (stopFallbackSearch) break
+                    }
+
+                    // Stop after the current two-worker pair when the best fallback is already
+                    // strong. Both workers still finish, preserving ranking within the pair.
+                    if (
+                        !stopFallbackSearch &&
+                        bestAlternativeMatch?.let(::isStrongCheckpointMatch) == true
+                    ) {
+                        stopFallbackSearch = true
                     }
 
                     // Preserve V2's existing exceptional early exit. At most the other member of

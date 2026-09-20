@@ -265,7 +265,7 @@ internal object AutoSyncTimelineRetimer {
                 center = centers[targetIndex],
             )
 
-            var referenceIndex = 0
+            var referenceIndex = row.keys.minOrNull() ?: continue
             while (referenceIndex <= rowMax) {
                 val cell = row[referenceIndex]
                 if (cell != null) {
