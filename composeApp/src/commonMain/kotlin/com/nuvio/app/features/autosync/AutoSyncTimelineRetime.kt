@@ -154,32 +154,32 @@ internal object AutoSyncTimelineRetimer {
         val targetActivity =
             preparedTargetActivity ?: prepareUnitActivity(target) ?: return null
 
-        // Constant delay is by far the common case. Validate scale=1.0 first and only pay
-        // for the multi-scale activity search when fixed-delay validation fails.
-        val delayOnly =
+        // Preserve V2's original final decision semantics: discover the best whole-film
+        // affine/FPS transform first. A preflight delay hint may save duplicate delay work,
+        // but it can only be used after V2 independently decides that scale is effectively 1.0.
+        val alignment = discoverActivityAlignment(
+            reference = reference,
+            target = target,
+            referenceActivity = referenceActivity,
+            targetActivity = targetActivity,
+        ) ?: return null
+
+        val delayOnly = if (abs(alignment.scale - 1.0) <= DELAY_ONLY_SCALE_TOLERANCE) {
             precomputedDelayOnly ?: findDelayOnlyAlignmentPrepared(
                 referenceActivity = referenceActivity,
                 targetActivity = targetActivity,
                 targetSize = target.size,
                 allowAmbiguousMargin = allowAmbiguousDelayOnlyMargin,
-                seed = null,
+                seed = alignment.delayOnlySeed,
             )
-
-        val alignment = if (delayOnly == null) {
-            discoverActivityAlignment(
-                reference = reference,
-                target = target,
-                referenceActivity = referenceActivity,
-                targetActivity = targetActivity,
-            ) ?: return null
         } else {
             null
         }
 
-        val candidateScale = if (delayOnly != null) 1.0 else alignment!!.scale
-        val candidateInterceptMs = delayOnly?.offsetMs ?: alignment!!.interceptMs
-        val candidateActivityScore = delayOnly?.score ?: alignment!!.score
-        val candidateActivityMargin = delayOnly?.margin ?: alignment!!.margin
+        val candidateScale = if (delayOnly != null) 1.0 else alignment.scale
+        val candidateInterceptMs = delayOnly?.offsetMs ?: alignment.interceptMs
+        val candidateActivityScore = delayOnly?.score ?: alignment.score
+        val candidateActivityMargin = delayOnly?.margin ?: alignment.margin
 
         val result = retimeWithSeed(
             reference = reference,
