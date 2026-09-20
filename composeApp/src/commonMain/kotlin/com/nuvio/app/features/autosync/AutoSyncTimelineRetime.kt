@@ -107,6 +107,15 @@ internal object AutoSyncTimelineRetimer {
         return normalized
     }
 
+    internal fun prepareUnitActivity(
+        cues: List<SubtitleSyncCue>,
+    ): PreparedActivity? {
+        if (cues.size < MIN_CUES) return null
+        val coarse = buildActivityTimeline(cues, 1.0, ACTIVITY_COARSE_BIN_MS) ?: return null
+        val fine = buildActivityTimeline(cues, 1.0, ACTIVITY_FINE_BIN_MS) ?: return null
+        return PreparedActivity(coarse = coarse, fine = fine)
+    }
+
     fun retime(
         reference: List<SubtitleSyncCue>,
         target: List<SubtitleSyncCue>,
@@ -115,6 +124,8 @@ internal object AutoSyncTimelineRetimer {
         discoverAlignment: Boolean = false,
         allowAmbiguousDelayOnlyMargin: Boolean = false,
         referenceEstimatedEndStartsMs: Set<Long> = emptySet(),
+        preparedReferenceActivity: PreparedActivity? = null,
+        preparedTargetActivity: PreparedActivity? = null,
     ): AutoSyncTimelineRetimeResult? {
         if (!discoverAlignment) {
             val result = retimeWithSeed(
@@ -137,15 +148,25 @@ internal object AutoSyncTimelineRetimer {
             )
         }
 
-        val alignment = discoverActivityAlignment(reference, target) ?: return null
+        val referenceActivity =
+            preparedReferenceActivity ?: prepareUnitActivity(reference) ?: return null
+        val targetActivity =
+            preparedTargetActivity ?: prepareUnitActivity(target) ?: return null
 
-        // Delay-only remains the cheap candidate finder, but it must now pass through
-        // the normal V2 cue/group validator before its correction can be applied.
+        val alignment = discoverActivityAlignment(
+            reference = reference,
+            target = target,
+            referenceActivity = referenceActivity,
+            targetActivity = targetActivity,
+        ) ?: return null
+
         val delayOnly = if (abs(alignment.scale - 1.0) <= DELAY_ONLY_SCALE_TOLERANCE) {
-            findDelayOnlyAlignment(
-                reference = reference,
-                target = target,
+            findDelayOnlyAlignmentPrepared(
+                referenceActivity = referenceActivity,
+                targetActivity = targetActivity,
+                targetSize = target.size,
                 allowAmbiguousMargin = allowAmbiguousDelayOnlyMargin,
+                seed = alignment.delayOnlySeed,
             )
         } else {
             null
@@ -438,59 +459,69 @@ internal object AutoSyncTimelineRetimer {
         allowAmbiguousMargin: Boolean = false,
     ): AutoSyncDelayOnlyAlignment? {
         if (reference.size < DELAY_ONLY_MIN_CUES || target.size < DELAY_ONLY_MIN_CUES) return null
+        val referenceActivity = prepareUnitActivity(reference) ?: return null
+        val targetActivity = prepareUnitActivity(target) ?: return null
+        return findDelayOnlyAlignmentPrepared(
+            referenceActivity = referenceActivity,
+            targetActivity = targetActivity,
+            targetSize = target.size,
+            allowAmbiguousMargin = allowAmbiguousMargin,
+            seed = null,
+        )
+    }
 
-        val referenceCoarse = buildActivityTimeline(reference, 1.0, ACTIVITY_COARSE_BIN_MS)
-            ?: return null
-        val targetCoarse = buildActivityTimeline(target, 1.0, ACTIVITY_COARSE_BIN_MS)
-            ?: return null
-        val maxOffsetBins = (ACTIVITY_MAX_OFFSET_MS / ACTIVITY_COARSE_BIN_MS).toInt()
+    private fun findDelayOnlyAlignmentPrepared(
+        referenceActivity: PreparedActivity,
+        targetActivity: PreparedActivity,
+        targetSize: Int,
+        allowAmbiguousMargin: Boolean,
+        seed: DelayOnlySearchSeed?,
+    ): AutoSyncDelayOnlyAlignment? {
+        val referenceCoarse = referenceActivity.coarse
+        val targetCoarse = targetActivity.coarse
 
-        var coarseBest: ActivityCandidate? = null
-        val coarseCandidates = ArrayList<ActivityCandidate>(maxOffsetBins * 2 + 1)
-        for (offsetBins in -maxOffsetBins..maxOffsetBins) {
-            val score = scoreActivityOffset(referenceCoarse, targetCoarse, offsetBins) ?: continue
-            val candidate = ActivityCandidate(
-                scale = 1.0,
-                interceptMs = offsetBins * ACTIVITY_COARSE_BIN_MS,
-                score = score,
-            )
-            coarseCandidates += candidate
-            val current = coarseBest
-            if (current == null || candidate.score > current.score) coarseBest = candidate
-        }
-
-        val coarse = coarseBest ?: return null
-        val secondDistinct = coarseCandidates.asSequence()
-            .filter { candidate ->
-                abs(candidate.interceptMs - coarse.interceptMs) >= DELAY_ONLY_DISTINCT_OFFSET_MS
-            }
-            .maxByOrNull { it.score }
-        val margin = coarse.score - (secondDistinct?.score ?: 0.0)
-        if (!allowAmbiguousMargin && margin < DELAY_ONLY_MIN_MARGIN) return null
-
-        val referenceFine = buildActivityTimeline(reference, 1.0, ACTIVITY_FINE_BIN_MS)
-            ?: return null
-        val targetFine = buildActivityTimeline(target, 1.0, ACTIVITY_FINE_BIN_MS)
-            ?: return null
-
-        var fineBest: ActivityCandidate? = null
-        var offsetMs = coarse.interceptMs - ACTIVITY_FINE_RADIUS_MS
-        while (offsetMs <= coarse.interceptMs + ACTIVITY_FINE_RADIUS_MS) {
-            val offsetBins = (offsetMs.toDouble() / ACTIVITY_FINE_BIN_MS.toDouble()).roundToInt()
-            val score = scoreActivityOffset(referenceFine, targetFine, offsetBins)
-            if (score != null) {
-                val candidate = ActivityCandidate(
+        val coarseSeed = seed ?: run {
+            val maxOffsetBins = (ACTIVITY_MAX_OFFSET_MS / ACTIVITY_COARSE_BIN_MS).toInt()
+            val coarseCandidates = ArrayList<ActivityCandidate>(maxOffsetBins * 2 + 1)
+            for (offsetBins in -maxOffsetBins..maxOffsetBins) {
+                val score =
+                    scoreActivityOffset(referenceCoarse, targetCoarse, offsetBins) ?: continue
+                coarseCandidates += ActivityCandidate(
                     scale = 1.0,
-                    interceptMs = offsetBins * ACTIVITY_FINE_BIN_MS,
+                    interceptMs = offsetBins * ACTIVITY_COARSE_BIN_MS,
                     score = score,
                 )
-                val current = fineBest
-                if (current == null || candidate.score > current.score) fineBest = candidate
             }
-            offsetMs += ACTIVITY_FINE_BIN_MS
+            buildDelayOnlySearchSeed(coarseCandidates) ?: return null
         }
 
-        val best = fineBest ?: coarse
+        val coarse = coarseSeed.coarse
+        val margin = coarseSeed.margin
+        if (!allowAmbiguousMargin && margin < DELAY_ONLY_MIN_MARGIN) return null
+
+        val referenceFine = referenceActivity.fine
+        val targetFine = targetActivity.fine
+        val best = coarseSeed.fine ?: run {
+            var fineBest: ActivityCandidate? = null
+            var offsetMs = coarse.interceptMs - ACTIVITY_FINE_RADIUS_MS
+            while (offsetMs <= coarse.interceptMs + ACTIVITY_FINE_RADIUS_MS) {
+                val offsetBins =
+                    (offsetMs.toDouble() / ACTIVITY_FINE_BIN_MS.toDouble()).roundToInt()
+                val score = scoreActivityOffset(referenceFine, targetFine, offsetBins)
+                if (score != null) {
+                    val candidate = ActivityCandidate(
+                        scale = 1.0,
+                        interceptMs = offsetBins * ACTIVITY_FINE_BIN_MS,
+                        score = score,
+                    )
+                    val current = fineBest
+                    if (current == null || candidate.score > current.score) fineBest = candidate
+                }
+                offsetMs += ACTIVITY_FINE_BIN_MS
+            }
+            fineBest ?: coarse
+        }
+
         if (best.score < DELAY_ONLY_MIN_SCORE) return null
 
         val globalOffsetBins =
@@ -504,9 +535,6 @@ internal object AutoSyncTimelineRetimer {
         var passedSegments = 0
         for (segment in 0..2) {
             if (allowAmbiguousMargin) {
-                // SDH/over-segmented references contain extra activity that can make each
-                // segment prefer a slightly different local offset. For a delay-only result
-                // we only care whether the ONE global delay still covers the target subtitle.
                 val targetCoverage = targetActivityCoverageAtOffsetSegment(
                     reference = referenceFine,
                     target = targetFine,
@@ -514,16 +542,13 @@ internal object AutoSyncTimelineRetimer {
                     segment = segment,
                 ) ?: continue
                 availableSegments++
-                if (targetCoverage >= DELAY_ONLY_MIN_SEGMENT_SCORE) {
-                    passedSegments++
-                }
+                if (targetCoverage >= DELAY_ONLY_MIN_SEGMENT_SCORE) passedSegments++
                 continue
             }
 
             var segmentBestScore = Double.NEGATIVE_INFINITY
             var segmentBestOffsetBins = globalOffsetBins
             var hasScore = false
-
             for (delta in -localRadiusBins..localRadiusBins) {
                 val candidateOffsetBins = globalOffsetBins + delta
                 val score = scoreActivityOffsetSegment(
@@ -549,7 +574,7 @@ internal object AutoSyncTimelineRetimer {
             }
         }
 
-        val requiredSegments = if (target.size < SMALL_SAMPLE_CUE_LIMIT) 2 else 3
+        val requiredSegments = if (targetSize < SMALL_SAMPLE_CUE_LIMIT) 2 else 3
         if (availableSegments < requiredSegments || passedSegments < requiredSegments) return null
 
         return AutoSyncDelayOnlyAlignment(
@@ -682,25 +707,32 @@ internal object AutoSyncTimelineRetimer {
     private fun discoverActivityAlignment(
         reference: List<SubtitleSyncCue>,
         target: List<SubtitleSyncCue>,
+        referenceActivity: PreparedActivity,
+        targetActivity: PreparedActivity,
     ): ActivityAlignment? {
         if (reference.size < MIN_CUES || target.size < MIN_CUES) return null
 
-        val referenceCoarse = buildActivityTimeline(reference, 1.0, ACTIVITY_COARSE_BIN_MS)
-            ?: return null
+        val referenceCoarse = referenceActivity.coarse
         val coarseCandidates = mutableListOf<ActivityCandidate>()
+        val unitScaleCandidates = mutableListOf<ActivityCandidate>()
         val maxOffsetBins = (ACTIVITY_MAX_OFFSET_MS / ACTIVITY_COARSE_BIN_MS).toInt()
 
         for (scale in activityScaleCandidates(reference, target)) {
-            val targetActivity = buildActivityTimeline(target, scale, ACTIVITY_COARSE_BIN_MS)
-                ?: continue
+            val targetCoarse = if (scale == 1.0) {
+                targetActivity.coarse
+            } else {
+                buildActivityTimeline(target, scale, ACTIVITY_COARSE_BIN_MS) ?: continue
+            }
             for (offsetBins in -maxOffsetBins..maxOffsetBins) {
-                val score = scoreActivityOffset(referenceCoarse, targetActivity, offsetBins)
+                val score = scoreActivityOffset(referenceCoarse, targetCoarse, offsetBins)
                     ?: continue
-                coarseCandidates += ActivityCandidate(
+                val candidate = ActivityCandidate(
                     scale = scale,
                     interceptMs = offsetBins * ACTIVITY_COARSE_BIN_MS,
                     score = score,
                 )
+                coarseCandidates += candidate
+                if (scale == 1.0) unitScaleCandidates += candidate
             }
         }
 
@@ -714,10 +746,13 @@ internal object AutoSyncTimelineRetimer {
             .maxByOrNull { it.score }
         val margin = coarseBest.score - (secondDistinct?.score ?: 0.0)
 
-        val referenceFine = buildActivityTimeline(reference, 1.0, ACTIVITY_FINE_BIN_MS)
-            ?: return null
-        val targetFine = buildActivityTimeline(target, coarseBest.scale, ACTIVITY_FINE_BIN_MS)
-            ?: return null
+        val referenceFine = referenceActivity.fine
+        val targetFine = if (coarseBest.scale == 1.0) {
+            targetActivity.fine
+        } else {
+            buildActivityTimeline(target, coarseBest.scale, ACTIVITY_FINE_BIN_MS)
+                ?: return null
+        }
 
         var fineBest: ActivityCandidate? = null
         var offsetMs = coarseBest.interceptMs - ACTIVITY_FINE_RADIUS_MS
@@ -737,11 +772,33 @@ internal object AutoSyncTimelineRetimer {
         }
 
         val best = fineBest ?: coarseBest
+        val unitSeed = buildDelayOnlySearchSeed(unitScaleCandidates)?.let { seed ->
+            if (coarseBest.scale == 1.0) seed.copy(fine = fineBest) else seed
+        }
+
         return ActivityAlignment(
             scale = best.scale,
             interceptMs = best.interceptMs.toDouble(),
             score = best.score,
             margin = margin,
+            delayOnlySeed = unitSeed,
+        )
+    }
+
+    private fun buildDelayOnlySearchSeed(
+        candidates: List<ActivityCandidate>,
+    ): DelayOnlySearchSeed? {
+        val coarse = candidates.maxByOrNull { it.score } ?: return null
+        val secondDistinct = candidates.asSequence()
+            .filter { candidate ->
+                abs(candidate.interceptMs - coarse.interceptMs) >=
+                    DELAY_ONLY_DISTINCT_OFFSET_MS
+            }
+            .maxByOrNull { it.score }
+        return DelayOnlySearchSeed(
+            coarse = coarse,
+            margin = coarse.score - (secondDistinct?.score ?: 0.0),
+            fine = null,
         )
     }
 
@@ -956,12 +1013,17 @@ internal object AutoSyncTimelineRetimer {
         val text: String,
     )
 
-    private data class ActivityTimeline(
+    internal data class ActivityTimeline(
         val bins: BooleanArray,
         val activeIndexes: IntArray,
         val prefix: IntArray,
         val firstActive: Int,
         val lastActive: Int,
+    )
+
+    internal data class PreparedActivity(
+        val coarse: ActivityTimeline,
+        val fine: ActivityTimeline,
     )
 
     private data class ActivityCandidate(
@@ -970,11 +1032,18 @@ internal object AutoSyncTimelineRetimer {
         val score: Double,
     )
 
+    private data class DelayOnlySearchSeed(
+        val coarse: ActivityCandidate,
+        val margin: Double,
+        val fine: ActivityCandidate?,
+    )
+
     private data class ActivityAlignment(
         val scale: Double,
         val interceptMs: Double,
         val score: Double,
         val margin: Double,
+        val delayOnlySeed: DelayOnlySearchSeed?,
     )
 
     private fun transplantGroupTiming(
