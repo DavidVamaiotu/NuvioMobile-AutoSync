@@ -364,20 +364,48 @@ internal object AutoSyncTimelineRetimer {
         if (!coarseScale.isFinite() || coarseScale !in 0.85..1.15) return null
         if (!coarseInterceptMs.isFinite()) return null
 
+        // These values are immutable for one seeded DP. Preparing them once removes repeated
+        // affine transforms, Long->Double conversions and boxed Set lookups from the hot
+        // group-shape loop without changing any scoring arithmetic or iteration order.
+        val referenceStarts = DoubleArray(reference.size)
+        val referenceEnds = DoubleArray(reference.size)
+        val estimatedEndPrefix = IntArray(reference.size + 1)
+        for (index in reference.indices) {
+            if ((index and 0xFF) == 0) cancellationCheck?.invoke()
+            val cue = reference[index]
+            referenceStarts[index] = cue.startTimeMs.toDouble()
+            referenceEnds[index] = cue.endTimeMs.toDouble()
+            estimatedEndPrefix[index + 1] =
+                estimatedEndPrefix[index] +
+                    if (
+                        referenceEstimatedEndStartsMs.isNotEmpty() &&
+                        cue.startTimeMs in referenceEstimatedEndStartsMs
+                    ) {
+                        1
+                    } else {
+                        0
+                    }
+        }
+
+        val transformedTargetStarts = DoubleArray(target.size)
+        val transformedTargetEnds = DoubleArray(target.size)
+        for (index in target.indices) {
+            if ((index and 0xFF) == 0) cancellationCheck?.invoke()
+            val cue = target[index]
+            transformedTargetStarts[index] =
+                transformTimeDouble(cue.startTimeMs, coarseScale, coarseInterceptMs)
+            transformedTargetEnds[index] =
+                transformTimeDouble(cue.endTimeMs, coarseScale, coarseInterceptMs)
+        }
+
         val centers = IntArray(target.size + 1)
         for (targetIndex in target.indices) {
-            val predictedStart = transformTime(
-                target[targetIndex].startTimeMs,
-                coarseScale,
-                coarseInterceptMs,
-            )
+            val predictedStart =
+                transformedTargetStarts[targetIndex].roundToLong().coerceAtLeast(0L)
             centers[targetIndex] = lowerBoundReference(reference, predictedStart)
         }
-        val predictedEnd = transformTime(
-            target.last().endTimeMs,
-            coarseScale,
-            coarseInterceptMs,
-        )
+        val predictedEnd =
+            transformedTargetEnds[target.lastIndex].roundToLong().coerceAtLeast(0L)
         centers[target.size] = lowerBoundReference(reference, predictedEnd)
 
         val rows = BandedDpRows(
@@ -448,15 +476,15 @@ internal object AutoSyncTimelineRetimer {
                         if (!isWithinBand(nextReferenceIndex, nextTargetIndex, centers, reference.size)) continue
 
                         val groupCost = groupCost(
-                            reference = reference,
+                            referenceStarts = referenceStarts,
+                            referenceEnds = referenceEnds,
+                            estimatedEndPrefix = estimatedEndPrefix,
                             referenceIndex = referenceIndex,
                             referenceCount = shape.referenceCount,
-                            target = target,
+                            transformedTargetStarts = transformedTargetStarts,
+                            transformedTargetEnds = transformedTargetEnds,
                             targetIndex = targetIndex,
                             targetCount = shape.targetCount,
-                            coarseScale = coarseScale,
-                            coarseInterceptMs = coarseInterceptMs,
-                            referenceEstimatedEndStartsMs = referenceEstimatedEndStartsMs,
                         )
                         if (!groupCost.isFinite() || groupCost > MAX_GROUP_COST) continue
 
@@ -1293,28 +1321,20 @@ internal object AutoSyncTimelineRetimer {
     }
 
     private fun groupCost(
-        reference: List<SubtitleSyncCue>,
+        referenceStarts: DoubleArray,
+        referenceEnds: DoubleArray,
+        estimatedEndPrefix: IntArray,
         referenceIndex: Int,
         referenceCount: Int,
-        target: List<SubtitleSyncCue>,
+        transformedTargetStarts: DoubleArray,
+        transformedTargetEnds: DoubleArray,
         targetIndex: Int,
         targetCount: Int,
-        coarseScale: Double,
-        coarseInterceptMs: Double,
-        referenceEstimatedEndStartsMs: Set<Long>,
     ): Double {
-        val referenceStart = reference[referenceIndex].startTimeMs.toDouble()
-        val referenceEnd = reference[referenceIndex + referenceCount - 1].endTimeMs.toDouble()
-        val targetStart = transformTimeDouble(
-            target[targetIndex].startTimeMs,
-            coarseScale,
-            coarseInterceptMs,
-        )
-        val targetEnd = transformTimeDouble(
-            target[targetIndex + targetCount - 1].endTimeMs,
-            coarseScale,
-            coarseInterceptMs,
-        )
+        val referenceStart = referenceStarts[referenceIndex]
+        val referenceEnd = referenceEnds[referenceIndex + referenceCount - 1]
+        val targetStart = transformedTargetStarts[targetIndex]
+        val targetEnd = transformedTargetEnds[targetIndex + targetCount - 1]
 
         val referenceDuration = max(1.0, referenceEnd - referenceStart)
         val targetDuration = max(1.0, targetEnd - targetStart)
@@ -1326,10 +1346,8 @@ internal object AutoSyncTimelineRetimer {
         val midpointError = abs(referenceMid - targetMid) / MIDPOINT_TOLERANCE_MS
         val durationError = abs(referenceDuration - targetDuration) / DURATION_TOLERANCE_MS
         val referenceEndEstimated =
-            referenceEstimatedEndStartsMs.isNotEmpty() &&
-                (referenceIndex until referenceIndex + referenceCount).any { index ->
-                    reference[index].startTimeMs in referenceEstimatedEndStartsMs
-                }
+            estimatedEndPrefix[referenceIndex + referenceCount] !=
+                estimatedEndPrefix[referenceIndex]
 
         return if (referenceEndEstimated) {
             // MKV CueTime is authoritative even when CueDuration is absent. Keep the inferred
