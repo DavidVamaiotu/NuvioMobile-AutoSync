@@ -53,10 +53,6 @@ internal object AutomaticSubtitleSync {
     private const val ASYMMETRIC_CHECKPOINT_MAX_GROUP_COST = 0.20
     private const val ASYMMETRIC_CHECKPOINT_MIN_REFERENCE_RATIO = 1.15
     private const val ASYMMETRIC_CHECKPOINT_MAX_TARGET_SKIP_RUN = 2
-    private const val FALLBACK_BATCH_STOP_QUALITY = 0.89
-    private const val FALLBACK_BATCH_STOP_TARGET_COVERAGE = 0.99
-    private const val FALLBACK_BATCH_STOP_REFERENCE_COVERAGE = 0.94
-    private const val FALLBACK_BATCH_STOP_SIMPLE_RATIO = 0.97
 
     // Scheduling-only reference pre-ranker. It never accepts/rejects a match.
     private const val CHEAP_REFERENCE_SAMPLE_CUES = 24
@@ -1925,20 +1921,6 @@ internal object AutomaticSubtitleSync {
             result.longestTargetSkipRun <= ASYMMETRIC_CHECKPOINT_MAX_TARGET_SKIP_RUN
     }
 
-    private fun isFallbackBatchStopMatch(
-        match: TimelineRetimeMatch,
-        targetCueCount: Int,
-    ): Boolean {
-        if (isStrongCheckpointMatch(match)) return true
-        if (isAsymmetricReferenceCheckpointMatch(match, targetCueCount)) return true
-
-        val result = match.timeline
-        return result.confident &&
-            directTimelineQualityScore(match) >= FALLBACK_BATCH_STOP_QUALITY &&
-            result.targetCoverage >= FALLBACK_BATCH_STOP_TARGET_COVERAGE &&
-            result.referenceCoverage >= FALLBACK_BATCH_STOP_REFERENCE_COVERAGE &&
-            result.simpleGroupRatio >= FALLBACK_BATCH_STOP_SIMPLE_RATIO
-    }
 
     private fun buildTimelineRetimeResult(
         track: ReferenceTrack,
