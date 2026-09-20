@@ -26,6 +26,7 @@ internal suspend fun applyAutoSyncSidecarTimeline(
     timeline: AutoSyncTimelineRetimeResult,
 ): Boolean {
     if (!timeline.confident || sidecar.activeSidecarSubtitleKey != url) return false
+    val expectedGeneration = sidecar.currentGenerationFor(url) ?: return false
 
     val totalStarted = SystemClock.elapsedRealtime()
     val waitStarted = SystemClock.elapsedRealtime()
@@ -39,7 +40,9 @@ internal suspend fun applyAutoSyncSidecarTimeline(
             delay(SIDECAR_WAIT_POLL_MS)
         }
         sidecar.sidecarTimedCues.takeIf {
-            sidecar.activeSidecarSubtitleKey == url && it.isNotEmpty()
+            sidecar.activeSidecarSubtitleKey == url &&
+                sidecar.currentGenerationFor(url) == expectedGeneration &&
+                it.isNotEmpty()
         }
     } ?: return false
     val waitMs = SystemClock.elapsedRealtime() - waitStarted
@@ -55,6 +58,7 @@ internal suspend fun applyAutoSyncSidecarTimeline(
         expectedCurrentUrl = url,
         newUrl = url,
         cues = retimed,
+        expectedGeneration = expectedGeneration,
     )
     val commitMs = SystemClock.elapsedRealtime() - commitStarted
     AutoSyncDebugLog.info {
@@ -77,6 +81,8 @@ internal suspend fun replaceAutoSyncSidecarSubtitle(
     if (!timeline.confident) return false
     if (!sidecar.canAttachAddonSubtitleViaSidecar(url, useLibass)) return false
     if (sidecar.activeSidecarSubtitleKey != expectedCurrentUrl) return false
+    val expectedGeneration =
+        sidecar.currentGenerationFor(expectedCurrentUrl) ?: return false
 
     val totalStarted = SystemClock.elapsedRealtime()
     var bodyMs = 0L
@@ -121,13 +127,19 @@ internal suspend fun replaceAutoSyncSidecarSubtitle(
         return false
     }
 
-    if (sidecar.activeSidecarSubtitleKey != expectedCurrentUrl) return false
+    if (
+        sidecar.activeSidecarSubtitleKey != expectedCurrentUrl ||
+        sidecar.currentGenerationFor(expectedCurrentUrl) != expectedGeneration
+    ) {
+        return false
+    }
 
     val commitStarted = SystemClock.elapsedRealtime()
     val committed = sidecar.commitPreparedSidecarSubtitle(
         expectedCurrentUrl = expectedCurrentUrl,
         newUrl = url,
         cues = retimed,
+        expectedGeneration = expectedGeneration,
     )
     val commitMs = SystemClock.elapsedRealtime() - commitStarted
     AutoSyncDebugLog.info {

@@ -41,6 +41,8 @@ internal class SidecarSubtitleController(
 ) {
     private var sidecarSubtitleJob: Job? = null
     private var sidecarRawBodyDeferred: CompletableDeferred<String?>? = null
+    private var sidecarGenerationCounter = 0L
+    private var activeSidecarGeneration = 0L
     var activeSidecarSubtitleKey: String? = null
         private set
     var sidecarTimedCues: List<CuesWithTiming> = emptyList()
@@ -53,6 +55,11 @@ internal class SidecarSubtitleController(
     internal fun rawBodyDeferredFor(url: String): Deferred<String?>? =
         sidecarRawBodyDeferred?.takeIf { activeSidecarSubtitleKey == url }
 
+    internal fun currentGenerationFor(url: String): Long? =
+        activeSidecarGeneration.takeIf {
+            activeSidecarSubtitleKey == url && it != 0L
+        }
+
     /**
      * Commits already-prepared cues only if the expected subtitle is still active.
      */
@@ -60,24 +67,39 @@ internal class SidecarSubtitleController(
         expectedCurrentUrl: String,
         newUrl: String,
         cues: List<CuesWithTiming>,
+        expectedGeneration: Long? = null,
     ): Boolean {
         if (cues.isEmpty() || activeSidecarSubtitleKey != expectedCurrentUrl) return false
+        if (
+            expectedGeneration != null &&
+            activeSidecarGeneration != expectedGeneration
+        ) {
+            return false
+        }
 
         if (newUrl != expectedCurrentUrl) {
             sidecarSubtitleJob?.cancel()
+            sidecarRawBodyDeferred?.complete(null)
+            sidecarRawBodyDeferred = null
             activeSidecarSubtitleKey = newUrl
+            activeSidecarGeneration = ++sidecarGenerationCounter
         }
 
+        val committedGeneration = activeSidecarGeneration
         sidecarTimedCues = cues
         lastSidecarCueSignature = null
         postToSubtitleView { view ->
-            view.setTag(R.id.player_view_sidecar_generation_tag, newUrl)
+            view.setTag(R.id.player_view_sidecar_generation_tag, committedGeneration)
         }
         renderSidecarCuesAtCurrentPosition()
 
         if (newUrl != expectedCurrentUrl) {
             sidecarSubtitleJob = scope.launch {
-                while (isActive && activeSidecarSubtitleKey == newUrl) {
+                while (
+                    isActive &&
+                    activeSidecarSubtitleKey == newUrl &&
+                    activeSidecarGeneration == committedGeneration
+                ) {
                     renderSidecarCuesAtCurrentPosition()
                     delay(SIDECAR_RENDER_INTERVAL_MS)
                 }
@@ -111,6 +133,7 @@ internal class SidecarSubtitleController(
         sidecarRawBodyDeferred?.complete(null)
         sidecarRawBodyDeferred = null
         activeSidecarSubtitleKey = null
+        activeSidecarGeneration = 0L
         sidecarTimedCues = emptyList()
         lastSidecarCueSignature = null
         if (clearView) {
@@ -136,11 +159,13 @@ internal class SidecarSubtitleController(
         sidecarRawBodyDeferred?.complete(null)
         val rawBodyDeferred = CompletableDeferred<String?>()
         sidecarRawBodyDeferred = rawBodyDeferred
+        val generation = ++sidecarGenerationCounter
+        activeSidecarGeneration = generation
         activeSidecarSubtitleKey = subtitleKey
         lastSidecarCueSignature = null
         sidecarTimedCues = emptyList()
         postToSubtitleView { view ->
-            view.setTag(R.id.player_view_sidecar_generation_tag, subtitleKey)
+            view.setTag(R.id.player_view_sidecar_generation_tag, generation)
             view.setCues(emptyList())
         }
 
@@ -157,13 +182,23 @@ internal class SidecarSubtitleController(
                 if (rawBody == null) {
                     throw IllegalStateException("Subtitle body unavailable")
                 }
-                if (activeSidecarSubtitleKey != subtitleKey) return@launch
+                if (
+                    activeSidecarSubtitleKey != subtitleKey ||
+                    activeSidecarGeneration != generation
+                ) {
+                    return@launch
+                }
 
                 val resolvedMime = PlayerSubtitleUtils.sniffSubtitleMimeType(rawBody, url)
                 val parseResult = withContext(Dispatchers.Default) {
                     parseSidecarTimedCuesRobust(rawBody, url)
                 }
-                if (activeSidecarSubtitleKey != subtitleKey) return@launch
+                if (
+                    activeSidecarSubtitleKey != subtitleKey ||
+                    activeSidecarGeneration != generation
+                ) {
+                    return@launch
+                }
 
                 if (parseResult.cues.isEmpty()) {
                     Log.w(
@@ -171,6 +206,7 @@ internal class SidecarSubtitleController(
                         "Sidecar subtitle parse empty for url=$url urlMime=$urlMimeHint sniffed=$resolvedMime (buffer preserved; no media reload)"
                     )
                     activeSidecarSubtitleKey = null
+                    activeSidecarGeneration = 0L
                     sidecarTimedCues = emptyList()
                     postToSubtitleView { view ->
                         view.setTag(R.id.player_view_sidecar_generation_tag, null)
@@ -185,7 +221,11 @@ internal class SidecarSubtitleController(
                     "Sidecar subtitle ready url=$url cues=${parseResult.cues.size} mime=${parseResult.effectiveMime} source=${parseResult.source} (buffer preserved)"
                 )
 
-                while (isActive && activeSidecarSubtitleKey == subtitleKey) {
+                while (
+                    isActive &&
+                    activeSidecarSubtitleKey == subtitleKey &&
+                    activeSidecarGeneration == generation
+                ) {
                     renderSidecarCuesAtCurrentPosition()
                     delay(SIDECAR_RENDER_INTERVAL_MS)
                 }
@@ -221,8 +261,14 @@ internal class SidecarSubtitleController(
         if (signature == lastSidecarCueSignature) return
         lastSidecarCueSignature = signature
         val currentKey = activeSidecarSubtitleKey ?: return
+        val currentGeneration = activeSidecarGeneration
+        if (currentGeneration == 0L) return
         postToSubtitleView { view ->
-            if (view.getTag(R.id.player_view_sidecar_generation_tag) == currentKey) {
+            if (
+                activeSidecarSubtitleKey == currentKey &&
+                activeSidecarGeneration == currentGeneration &&
+                view.getTag(R.id.player_view_sidecar_generation_tag) == currentGeneration
+            ) {
                 view.setCues(active)
             }
         }
