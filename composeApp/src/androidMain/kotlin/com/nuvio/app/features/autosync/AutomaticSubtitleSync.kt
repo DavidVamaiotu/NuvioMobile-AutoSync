@@ -37,6 +37,7 @@ internal object AutomaticSubtitleSync {
     private const val MAX_LOGGED_CUE_SAMPLES = 20
     private const val ALTERNATIVE_EXTERNAL_SUBTITLE_BATCH_SIZE = 2
     private const val MAX_PARALLEL_ALTERNATIVE_DOWNLOADS = 6
+    private const val MAX_PARALLEL_ALTERNATIVE_PARSES = 2
     private const val MAX_PARALLEL_ALTERNATIVE_MATCHES = 2
     private const val MAX_PARALLEL_PREFLIGHT_MATCHES = 2
     private const val HIGH_SCORE_PREFLIGHT_CHAMPION = 0.915
@@ -239,6 +240,7 @@ internal object AutomaticSubtitleSync {
             // V1 scheduling efficiency: overlap same-language candidate downloads with the
             // embedded MKV index. Scoring is still entirely V2.
             val alternativeDownloadSemaphore = Semaphore(MAX_PARALLEL_ALTERNATIVE_DOWNLOADS)
+            val alternativeParseSemaphore = Semaphore(MAX_PARALLEL_ALTERNATIVE_PARSES)
             val prefetchSnapshot =
                 (alternativeSubtitlesProvider?.invoke() ?: alternativeSubtitles)
                     .distinctBy { it.url }
@@ -268,14 +270,14 @@ internal object AutomaticSubtitleSync {
                 .take(MAX_PARALLEL_ALTERNATIVE_DOWNLOADS)
                 .forEach { candidate ->
                     prefetchedAlternativeLoads[candidate.url] = async {
-                    alternativeDownloadSemaphore.withPermit {
                         loadSelectedSubtitle(
                             url = candidate.url,
                             headers = emptyMap(),
+                            downloadSemaphore = alternativeDownloadSemaphore,
+                            parseSemaphore = alternativeParseSemaphore,
                         )
                     }
                 }
-            }
 
             val indexedTimeline = indexedTimelineDeferred.await()
             var selectedResolved = selectedSubtitleDeferred.isCompleted
@@ -432,12 +434,12 @@ internal object AutomaticSubtitleSync {
                         .firstOrNull { it.url !in prefetchedAlternativeLoads }
                     if (candidate != null) {
                         val job = async {
-                            alternativeDownloadSemaphore.withPermit {
-                                loadSelectedSubtitle(
-                                    url = candidate.url,
-                                    headers = emptyMap(),
-                                )
-                            }
+                            loadSelectedSubtitle(
+                                url = candidate.url,
+                                headers = emptyMap(),
+                                downloadSemaphore = alternativeDownloadSemaphore,
+                                parseSemaphore = alternativeParseSemaphore,
+                            )
                         }
                         prefetchedAlternativeLoads[candidate.url] = job
                         pendingSeedLoads[candidate.url] = job
@@ -635,12 +637,12 @@ internal object AutomaticSubtitleSync {
                         if (candidate.url == selectedSubtitleUrl) {
                             selected ?: selectedSubtitleDeferred.await()
                         } else {
-                            alternativeDownloadSemaphore.withPermit {
-                                loadSelectedSubtitle(
-                                    url = candidate.url,
-                                    headers = emptyMap(),
-                                )
-                            }
+                            loadSelectedSubtitle(
+                                url = candidate.url,
+                                headers = emptyMap(),
+                                downloadSemaphore = alternativeDownloadSemaphore,
+                                parseSemaphore = alternativeParseSemaphore,
+                            )
                         }
                     }
                 }
@@ -929,6 +931,7 @@ internal object AutomaticSubtitleSync {
             AutoSyncDebugLog.section { "GLOBAL V2 PAIR SCHEDULER" }
             AutoSyncDebugLog.info {
                 "downloads=$MAX_PARALLEL_ALTERNATIVE_DOWNLOADS " +
+                    "parses=$MAX_PARALLEL_ALTERNATIVE_PARSES " +
                     "pairWorkers=$MAX_PARALLEL_ALTERNATIVE_MATCHES " +
                     "hardSearchCap=none"
             }
@@ -1479,6 +1482,8 @@ internal object AutomaticSubtitleSync {
         url: String,
         headers: Map<String, String>,
         rawBodyOverride: String? = null,
+        downloadSemaphore: Semaphore? = null,
+        parseSemaphore: Semaphore? = null,
     ): LoadedSubtitle? {
         val traceStartedAtMs = SystemClock.elapsedRealtime()
         beginSubtitleLoadTrace(url)
@@ -1507,7 +1512,13 @@ internal object AutomaticSubtitleSync {
                 rawBodyOverride
             } else {
                 try {
-                    downloadSubtitleTextWithSingle429Retry(url, headers)
+                    if (downloadSemaphore != null) {
+                        downloadSemaphore.withPermit {
+                            downloadSubtitleTextWithSingle429Retry(url, headers)
+                        }
+                    } else {
+                        downloadSubtitleTextWithSingle429Retry(url, headers)
+                    }
                 } catch (cancel: CancellationException) {
                     throw cancel
                 } catch (error: Exception) {
@@ -1523,16 +1534,25 @@ internal object AutomaticSubtitleSync {
             markSubtitleLoadPhase(url, "PARSE")
             val parseStarted = SystemClock.elapsedRealtime()
             val cues = try {
-                withContext(Dispatchers.Default) {
-                    val parseContext = currentCoroutineContext()
-                    val parsed = PlayerSubtitleCueParser.parse(
-                        text = text,
-                        sourceUrl = url,
-                        cancellationCheck = { parseContext.ensureActive() },
-                    )
-                    parseContext.ensureActive()
-                    markSubtitleLoadPhase(url, "NORMALIZE")
-                    AutoSyncTimelineRetimer.normalizeExternalTimeline(parsed)
+                val parseAndNormalize: suspend () -> List<SubtitleSyncCue> = {
+                    withContext(Dispatchers.Default) {
+                        val parseContext = currentCoroutineContext()
+                        val parsed = PlayerSubtitleCueParser.parse(
+                            text = text,
+                            sourceUrl = url,
+                            cancellationCheck = { parseContext.ensureActive() },
+                        )
+                        parseContext.ensureActive()
+                        markSubtitleLoadPhase(url, "NORMALIZE")
+                        AutoSyncTimelineRetimer.normalizeExternalTimeline(parsed)
+                    }
+                }
+                if (parseSemaphore != null) {
+                    parseSemaphore.withPermit {
+                        parseAndNormalize()
+                    }
+                } else {
+                    parseAndNormalize()
                 }
             } catch (cancel: CancellationException) {
                 throw cancel
