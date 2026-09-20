@@ -254,23 +254,44 @@ internal object AutomaticSubtitleSync {
             }
 
             val indexedTimeline = indexedTimelineDeferred.await()
+            var selectedResolved = selectedSubtitleDeferred.isCompleted
             var selected =
-                if (selectedSubtitleDeferred.isCompleted) {
+                if (selectedResolved) {
                     selectedSubtitleDeferred.await()
                 } else {
                     null
                 }
-            val selectedPendingAfterIndex = !selectedSubtitleDeferred.isCompleted
+            var selectedLogged = false
 
-            AutoSyncDebugLog.section { "SELECTED SUBTITLE" }
-            if (selected != null) {
+            fun logSelectedOnce() {
+                val loaded = selected ?: return
+                if (selectedLogged) return
+                selectedLogged = true
                 logLoadedExternalSubtitle(
                     label = "SELECTED",
                     url = selectedSubtitleUrl,
-                    loaded = selected,
+                    loaded = loaded,
                     sampleLimit = MAX_LOGGED_CUE_SAMPLES,
                 )
-            } else if (selectedPendingAfterIndex) {
+            }
+
+            suspend fun consumeSelectedIfCompleted(): Boolean {
+                if (selectedResolved) {
+                    logSelectedOnce()
+                    return true
+                }
+                if (!selectedResolved) return false
+
+                selected = selectedSubtitleDeferred.await()
+                selectedResolved = true
+                logSelectedOnce()
+                return true
+            }
+
+            AutoSyncDebugLog.section { "SELECTED SUBTITLE" }
+            if (selected != null) {
+                logSelectedOnce()
+            } else if (!selectedResolved) {
                 AutoSyncDebugLog.info {
                     "selected subtitle still loading when embedded indexing became ready; " +
                         "using already-prefetched same-language candidates without blocking"
@@ -315,24 +336,44 @@ internal object AutomaticSubtitleSync {
             var alternatives = sameLanguageAlternatives(availableCandidates, language)
 
             suspend fun awaitSameLanguageAlternatives() {
-                if (alternativeSubtitlesProvider == null || alternatives.isNotEmpty() || selected != null) return
+                if (
+                    alternativeSubtitlesProvider == null ||
+                    alternatives.isNotEmpty() ||
+                    selected != null
+                ) {
+                    return
+                }
 
                 val waitStartedMs = SystemClock.elapsedRealtime()
-                while (alternatives.isEmpty()) {
+                while (alternatives.isEmpty() && selected == null) {
                     availableCandidates = currentExternalCandidates()
                     language = selectedLanguage(availableCandidates)
                     alternatives = sameLanguageAlternatives(availableCandidates, language)
                     if (alternatives.isNotEmpty()) break
+                    if (consumeSelectedIfCompleted() && selected != null) break
 
                     val elapsedMs = SystemClock.elapsedRealtime() - waitStartedMs
                     val remainingMs = FALLBACK_CANDIDATE_WAIT_MS - elapsedMs
                     if (remainingMs <= 0L) break
-                    delay(minOf(FALLBACK_CANDIDATE_POLL_MS, remainingMs))
+                    val waitSliceMs = minOf(FALLBACK_CANDIDATE_POLL_MS, remainingMs)
+
+                    if (!selectedResolved) {
+                        // Polling the provider must not hide a selected request that becomes
+                        // usable in the meantime. Timeout only cancels this waiter, not the
+                        // selected deferred itself.
+                        withTimeoutOrNull(waitSliceMs) {
+                            selectedSubtitleDeferred.await()
+                        }
+                        consumeSelectedIfCompleted()
+                    } else {
+                        delay(waitSliceMs)
+                    }
                 }
 
                 AutoSyncDebugLog.info {
                     "fallback candidate refresh total=${availableCandidates.size} " +
                         "sameLanguage=${alternatives.size} " +
+                        "selectedReady=${selected != null} " +
                         "waited=${SystemClock.elapsedRealtime() - waitStartedMs}ms"
                 }
             }
@@ -342,51 +383,70 @@ internal object AutomaticSubtitleSync {
             }
 
             var seedTarget = selected?.cues
-            if (seedTarget.isNullOrEmpty() && alternatives.isNotEmpty()) {
-                val pendingSeedLoads = linkedMapOf<String, Deferred<LoadedSubtitle?>>().apply {
-                    alternatives.forEach { candidate ->
-                        prefetchedAlternativeLoads[candidate.url]?.let { job ->
-                            put(candidate.url, job)
-                        }
+            if (seedTarget.isNullOrEmpty()) {
+                awaitSameLanguageAlternatives()
+                seedTarget = selected?.cues
+            }
+
+            if (seedTarget.isNullOrEmpty()) {
+                val pendingSeedLoads = linkedMapOf<String, Deferred<LoadedSubtitle?>>()
+
+                if (!selectedResolved) {
+                    pendingSeedLoads[selectedSubtitleUrl] = selectedSubtitleDeferred
+                }
+                alternatives.forEach { candidate ->
+                    prefetchedAlternativeLoads[candidate.url]?.let { job ->
+                        pendingSeedLoads.putIfAbsent(candidate.url, job)
                     }
                 }
 
-                var loadedSeed: LoadedSubtitle? = null
-                while (loadedSeed == null && pendingSeedLoads.isNotEmpty()) {
+                if (
+                    pendingSeedLoads.keys.none { it != selectedSubtitleUrl } &&
+                    alternatives.isNotEmpty()
+                ) {
+                    val candidate = broadCandidateOrder(alternatives)
+                        .firstOrNull { it.url !in prefetchedAlternativeLoads }
+                    if (candidate != null) {
+                        val job = async {
+                            alternativeDownloadSemaphore.withPermit {
+                                loadSelectedSubtitle(
+                                    url = candidate.url,
+                                    headers = emptyMap(),
+                                )
+                            }
+                        }
+                        prefetchedAlternativeLoads[candidate.url] = job
+                        pendingSeedLoads[candidate.url] = job
+                    }
+                }
+
+                while (seedTarget.isNullOrEmpty() && pendingSeedLoads.isNotEmpty()) {
                     val completed = select<Pair<String, LoadedSubtitle?>> {
                         pendingSeedLoads.forEach { (url, job) ->
                             job.onAwait { url to it }
                         }
                     }
                     pendingSeedLoads.remove(completed.first)
-                    loadedSeed = completed.second
-                }
 
-                if (loadedSeed == null) {
-                    val notPrefetched = alternatives.firstOrNull {
-                        it.url !in prefetchedAlternativeLoads
+                    if (completed.first == selectedSubtitleUrl) {
+                        selectedResolved = true
+                        selected = completed.second
+                        logSelectedOnce()
                     }
-                    if (notPrefetched != null) {
-                        loadedSeed = loadSelectedSubtitle(notPrefetched.url, emptyMap())
+
+                    completed.second?.let { loaded ->
+                        seedTarget = loaded.cues
                     }
                 }
-
-                if (loadedSeed != null) seedTarget = loadedSeed.cues
             }
 
-            // If there is no usable fallback seed, preserve the old selected-subtitle behavior:
-            // wait for its original request rather than rejecting early just because it was slow.
-            if (seedTarget.isNullOrEmpty() && !selectedSubtitleDeferred.isCompleted) {
+            // Preserve the original selected-subtitle fallback when every speculative seed
+            // failed, but always consume an already-completed result instead of skipping it.
+            if (seedTarget.isNullOrEmpty() && !selectedResolved) {
                 selected = selectedSubtitleDeferred.await()
-                if (selected != null) {
-                    logLoadedExternalSubtitle(
-                        label = "SELECTED",
-                        url = selectedSubtitleUrl,
-                        loaded = selected,
-                        sampleLimit = MAX_LOGGED_CUE_SAMPLES,
-                    )
-                    seedTarget = selected?.cues
-                }
+                selectedResolved = true
+                logSelectedOnce()
+                seedTarget = selected?.cues
             }
 
             if (seedTarget.isNullOrEmpty()) {
@@ -396,7 +456,7 @@ internal object AutomaticSubtitleSync {
                     }
                     job.cancel()
                 }
-                if (!selectedSubtitleDeferred.isCompleted) {
+                if (!selectedResolved) {
                     markSubtitleLoadCancellation(selectedSubtitleUrl, source = "selected")
                 }
                 selectedSubtitleDeferred.cancel()
@@ -458,7 +518,7 @@ internal object AutomaticSubtitleSync {
                     }
                     job.cancel()
                 }
-                if (!selectedSubtitleDeferred.isCompleted) {
+                if (!selectedResolved) {
                     markSubtitleLoadCancellation(selectedSubtitleUrl, source = "selected")
                 }
                 selectedSubtitleDeferred.cancel()
@@ -475,20 +535,9 @@ internal object AutomaticSubtitleSync {
                 mutableMapOf<String, AutoSyncTimelineRetimer.PreparedActivity?>()
 
             // The Nuvio-selected subtitle is usually automatic, so treat it as one timing
-            // candidate rather than giving it expensive V2 priority. A cheap fixed-delay
-            // preflight ranks all same-language candidates first.
-            if (selected == null && selectedSubtitleDeferred.isCompleted) {
-                selected = selectedSubtitleDeferred.await()
-                if (selected != null) {
-                    logLoadedExternalSubtitle(
-                        label = "SELECTED",
-                        url = selectedSubtitleUrl,
-                        loaded = selected,
-                        sampleLimit = MAX_LOGGED_CUE_SAMPLES,
-                    )
-                }
-            }
-
+            // candidate rather than giving it expensive V2 priority. Consume any completion
+            // that occurred while reference preparation was running before refreshing providers.
+            consumeSelectedIfCompleted()
             awaitSameLanguageAlternatives()
 
             val selectedCandidateMetadata =
@@ -950,7 +999,7 @@ internal object AutomaticSubtitleSync {
                     cleanupStartedAtMs = SystemClock.elapsedRealtime()
                     cleanupCanceledLoads = pendingLoads.size
                     cleanupCanceledPairs = pendingPairs.size
-                    cleanupSelectedPending = !selectedSubtitleDeferred.isCompleted
+                    cleanupSelectedPending = !selectedResolved
                 }
 
                 pendingLoads.forEach { (url, job) ->
@@ -974,7 +1023,7 @@ internal object AutomaticSubtitleSync {
             val winningFamily = bestFamily
             val winningMatch = bestMatch
             if (winningFamily == null || winningMatch == null || !winningMatch.timeline.confident) {
-                if (!selectedSubtitleDeferred.isCompleted) {
+                if (!selectedResolved) {
                     markSubtitleLoadCancellation(selectedSubtitleUrl, source = "selected")
                     selectedSubtitleDeferred.cancel()
                 }
@@ -1000,7 +1049,7 @@ internal object AutomaticSubtitleSync {
                     ) ?: winningMatch
                 }
 
-            if (!selectedSubtitleDeferred.isCompleted) {
+            if (!selectedResolved) {
                 markSubtitleLoadCancellation(selectedSubtitleUrl, source = "selected")
                 selectedSubtitleDeferred.cancel()
             }
