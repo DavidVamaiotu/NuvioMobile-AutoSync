@@ -509,142 +509,254 @@ internal object AutomaticSubtitleSync {
                     putAll(preflightJobs)
                 }
             var bestPreflightScoreSeen = Double.NEGATIVE_INFINITY
+            var authoritativeValidationJob: Deferred<CompletedAuthoritativeValidation>? = null
+            var activeValidationRequest: AuthoritativeValidationRequest? = null
+            var queuedValidationRequest: AuthoritativeValidationRequest? = null
 
-            while (pendingPreflights.isNotEmpty()) {
-                val completed = select<CompletedPreflight> {
-                    pendingPreflights.forEach { (_, job) ->
-                        job.onAwait { it }
+            fun isBetterValidationRequest(
+                candidate: AuthoritativeValidationRequest,
+                current: AuthoritativeValidationRequest,
+            ): Boolean =
+                candidate.match.score > current.match.score ||
+                    (
+                        candidate.match.score == current.match.score &&
+                            candidate.match.margin > current.match.margin
+                        )
+
+            fun launchAuthoritativeValidation(request: AuthoritativeValidationRequest) {
+                activeValidationRequest = request
+                AutoSyncDebugLog.info {
+                    "PREFLIGHT async authoritative V2 start " +
+                        "url=${request.candidate.url} reference=${request.match.referenceKey} " +
+                        "score=${fmt(request.match.score)} margin=${fmt(request.match.margin)}"
+                }
+
+                authoritativeValidationJob = async {
+                    val cachedTiming = cachedTimingEvaluation(request.loaded.cues)
+                    val evaluation = cachedTiming ?: evaluateExternalCandidate(
+                        label = "PREFLIGHT",
+                        url = request.candidate.url,
+                        target = request.loaded.cues,
+                        referenceTracks = referenceTracks,
+                        referenceActivityCache = referenceActivityCache,
+                        preferredReferenceKey = request.match.referenceKey,
+                        preflightHint = request.match,
+                    )
+                    if (cachedTiming == null) {
+                        cacheTimingEvaluation(request.loaded.cues, evaluation)
                     }
-                }
-                pendingPreflights.remove(completed.candidate.url)
 
-                val candidate = completed.candidate
-                val loaded = completed.loaded
-                val match = completed.match
-                val highScoreChampion =
-                    match != null &&
-                        match.score >= HIGH_SCORE_PREFLIGHT_CHAMPION &&
-                        match.segmentsPassed >= 3 &&
-                        match.score > bestPreflightScoreSeen
-                if (match != null && match.score > bestPreflightScoreSeen) {
-                    bestPreflightScoreSeen = match.score
+                    CompletedAuthoritativeValidation(
+                        request = request,
+                        evaluation = evaluation,
+                        reusedTiming = cachedTiming != null,
+                    )
                 }
+            }
 
-                if (loaded != null) {
-                    loadedByUrl[candidate.url] = loaded
-                }
-                if (match != null) {
-                    preflightByUrl[candidate.url] = match
-                    AutoSyncDebugLog.info {
-                        "PREFLIGHT url=${candidate.url} reference=${match.referenceKey} " +
-                            "offset=${"%.1f".format(match.offsetMs)}ms " +
-                            "score=${fmt(match.score)} margin=${fmt(match.margin)} " +
-                            "segments=${match.segmentsPassed} " +
-                            "strong=${AutoSyncDelayPreflight.isReallyGood(match)}"
-                    }
+            fun queueOrLaunchAuthoritativeValidation(
+                request: AuthoritativeValidationRequest,
+            ) {
+                val active = activeValidationRequest
+                if (authoritativeValidationJob == null || active == null) {
+                    launchAuthoritativeValidation(request)
+                    return
                 }
 
                 if (
-                    loaded != null &&
-                    match != null &&
-                    (
-                        AutoSyncDelayPreflight.isReallyGood(match) ||
-                            highScoreChampion
-                        )
+                    constantTimelineShiftMs(
+                        active.loaded.cues,
+                        request.loaded.cues,
+                    ) != null
                 ) {
                     AutoSyncDebugLog.info {
-                        "PREFLIGHT ${
-                            if (AutoSyncDelayPreflight.isReallyGood(match)) {
-                                "strong V2 delay evidence"
-                            } else {
-                                "high-score champion"
-                            }
-                        }; validating immediately " +
-                            "url=${candidate.url} reference=${match.referenceKey}"
+                        "PREFLIGHT async validation already covers timing family " +
+                            "url=${request.candidate.url}"
                     }
+                    return
+                }
 
-                    val cachedTiming = cachedTimingEvaluation(loaded.cues)
-                    val evaluation = cachedTiming ?: evaluateExternalCandidate(
-                        label = "PREFLIGHT",
-                        url = candidate.url,
-                        target = loaded.cues,
-                        referenceTracks = referenceTracks,
-                        referenceActivityCache = referenceActivityCache,
-                        preferredReferenceKey = match.referenceKey,
-                        preflightHint = match,
-                    )
-                    if (cachedTiming == null) {
-                        cacheTimingEvaluation(loaded.cues, evaluation)
-                    } else {
-                        AutoSyncDebugLog.info {
-                            "PREFLIGHT reused session timing-family V2 validation url=${candidate.url}"
-                        }
-                    }
-                    preflightV2Cache[candidate.url] = evaluation
-
-                    val best = evaluation.best
-                    val authoritativeFastAccept =
-                        best != null &&
-                            best.timeline.confident &&
-                            best.timeline.alignmentSource == "delay-only-validated" &&
-                            (
-                                isExceptionalMatch(best) ||
-                                    isStrongCheckpointMatch(best)
-                                )
-
-                    if (authoritativeFastAccept) {
-                        alternativeLoads.values
-                            .filterNot { it.isCompleted }
-                            .forEach { it.cancel() }
-                        preflightJobs.values
-                            .filterNot { it.isCompleted }
-                            .forEach { it.cancel() }
-                        if (!selectedSubtitleDeferred.isCompleted) {
-                            selectedSubtitleDeferred.cancel()
-                        }
-
-                        AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
-                        AutoSyncDebugLog.info {
-                            "V2 accepted completion-driven delay candidate " +
-                                "url=${candidate.url} name=${candidate.name ?: "<none>"} " +
-                                "reference=${best!!.track.key} " +
-                                "quality=${fmt(directTimelineQualityScore(best))}"
-                        }
-
-                        return@supervisorScope AutoSyncResolvedTimeline(
-                            subtitleUrl = candidate.url,
-                            subtitleHeaders = headersForCandidate(candidate.url),
-                            timeline = best!!.timeline,
-                        )
-                    }
-
+                val queued = queuedValidationRequest
+                if (queued == null || isBetterValidationRequest(request, queued)) {
+                    queuedValidationRequest = request
                     AutoSyncDebugLog.info {
-                        "PREFLIGHT candidate was not strong enough after authoritative V2; " +
-                            "continuing completion-driven scan"
+                        "PREFLIGHT queued next authoritative V2 candidate " +
+                            "url=${request.candidate.url} score=${fmt(request.match.score)}"
+                    }
+                }
+            }
+
+            fun finishAuthoritativeValidation(
+                completed: CompletedAuthoritativeValidation,
+            ): AutoSyncResolvedTimeline? {
+                val request = completed.request
+                val candidate = request.candidate
+                val evaluation = completed.evaluation
+                preflightV2Cache[candidate.url] = evaluation
+
+                if (completed.reusedTiming) {
+                    AutoSyncDebugLog.info {
+                        "PREFLIGHT reused session timing-family V2 validation url=${candidate.url}"
                     }
                 }
 
-                if (alternativeSubtitlesProvider != null) {
-                    availableCandidates = currentExternalCandidates()
-                    language = selectedLanguage(availableCandidates)
-                    val refreshed = sameLanguageAlternatives(availableCandidates, language)
-                    val knownUrls = alternatives.asSequence().map { it.url }.toHashSet()
-                    val newlyArrived = refreshed.filter { it.url !in knownUrls }
+                val best = evaluation.best
+                val authoritativeFastAccept =
+                    best != null &&
+                        best.timeline.confident &&
+                        best.timeline.alignmentSource == "delay-only-validated" &&
+                        (
+                            isExceptionalMatch(best) ||
+                                isStrongCheckpointMatch(best)
+                            )
 
-                    if (newlyArrived.isNotEmpty()) {
-                        alternatives = alternatives + newlyArrived
-                        scheduleAlternativeLoads()
-                        schedulePreflightJobs()
-                        newlyArrived.forEach { newCandidate ->
-                            preflightJobs[newCandidate.url]?.let { job ->
-                                pendingPreflights[newCandidate.url] = job
-                            }
+                if (authoritativeFastAccept) {
+                    alternativeLoads.values
+                        .filterNot { it.isCompleted }
+                        .forEach { it.cancel() }
+                    preflightJobs.values
+                        .filterNot { it.isCompleted }
+                        .forEach { it.cancel() }
+                    if (!selectedSubtitleDeferred.isCompleted) {
+                        selectedSubtitleDeferred.cancel()
+                    }
+
+                    AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
+                    AutoSyncDebugLog.info {
+                        "V2 accepted completion-driven delay candidate " +
+                            "url=${candidate.url} name=${candidate.name ?: "<none>"} " +
+                            "reference=${best!!.track.key} " +
+                            "quality=${fmt(directTimelineQualityScore(best))}"
+                    }
+
+                    return AutoSyncResolvedTimeline(
+                        subtitleUrl = candidate.url,
+                        subtitleHeaders = headersForCandidate(candidate.url),
+                        timeline = best!!.timeline,
+                    )
+                }
+
+                AutoSyncDebugLog.info {
+                    "PREFLIGHT candidate was not strong enough after authoritative V2; " +
+                        "continuing completion-driven scan"
+                }
+                return null
+            }
+
+            while (
+                pendingPreflights.isNotEmpty() ||
+                authoritativeValidationJob != null
+            ) {
+                val event = select<Any> {
+                    pendingPreflights.forEach { (_, job) ->
+                        job.onAwait { it }
+                    }
+                    authoritativeValidationJob?.let { job ->
+                        job.onAwait { it }
+                    }
+                }
+
+                when (event) {
+                    is CompletedAuthoritativeValidation -> {
+                        authoritativeValidationJob = null
+                        activeValidationRequest = null
+
+                        val resolved = finishAuthoritativeValidation(event)
+                        if (resolved != null) {
+                            return@supervisorScope resolved
                         }
-                        AutoSyncDebugLog.info {
-                            "preflight candidate refresh added=${newlyArrived.size} " +
-                                "total=${alternatives.size}"
+
+                        val queued = queuedValidationRequest
+                        queuedValidationRequest = null
+                        if (queued != null) {
+                            launchAuthoritativeValidation(queued)
                         }
                     }
+
+                    is CompletedPreflight -> {
+                        pendingPreflights.remove(event.candidate.url)
+
+                        val candidate = event.candidate
+                        val loaded = event.loaded
+                        val match = event.match
+                        val highScoreChampion =
+                            match != null &&
+                                match.score >= HIGH_SCORE_PREFLIGHT_CHAMPION &&
+                                match.segmentsPassed >= 3 &&
+                                match.score > bestPreflightScoreSeen
+                        if (match != null && match.score > bestPreflightScoreSeen) {
+                            bestPreflightScoreSeen = match.score
+                        }
+
+                        if (loaded != null) {
+                            loadedByUrl[candidate.url] = loaded
+                        }
+                        if (match != null) {
+                            preflightByUrl[candidate.url] = match
+                            AutoSyncDebugLog.info {
+                                "PREFLIGHT url=${candidate.url} reference=${match.referenceKey} " +
+                                    "offset=${"%.1f".format(match.offsetMs)}ms " +
+                                    "score=${fmt(match.score)} margin=${fmt(match.margin)} " +
+                                    "segments=${match.segmentsPassed} " +
+                                    "strong=${AutoSyncDelayPreflight.isReallyGood(match)}"
+                            }
+                        }
+
+                        if (
+                            loaded != null &&
+                            match != null &&
+                            (
+                                AutoSyncDelayPreflight.isReallyGood(match) ||
+                                    highScoreChampion
+                                )
+                        ) {
+                            AutoSyncDebugLog.info {
+                                "PREFLIGHT ${
+                                    if (AutoSyncDelayPreflight.isReallyGood(match)) {
+                                        "strong V2 delay evidence"
+                                    } else {
+                                        "high-score champion"
+                                    }
+                                }; scheduling authoritative validation " +
+                                    "url=${candidate.url} reference=${match.referenceKey}"
+                            }
+
+                            queueOrLaunchAuthoritativeValidation(
+                                AuthoritativeValidationRequest(
+                                    candidate = candidate,
+                                    loaded = loaded,
+                                    match = match,
+                                ),
+                            )
+                        }
+
+                        if (alternativeSubtitlesProvider != null) {
+                            availableCandidates = currentExternalCandidates()
+                            language = selectedLanguage(availableCandidates)
+                            val refreshed =
+                                sameLanguageAlternatives(availableCandidates, language)
+                            val knownUrls =
+                                alternatives.asSequence().map { it.url }.toHashSet()
+                            val newlyArrived = refreshed.filter { it.url !in knownUrls }
+
+                            if (newlyArrived.isNotEmpty()) {
+                                alternatives = alternatives + newlyArrived
+                                scheduleAlternativeLoads()
+                                schedulePreflightJobs()
+                                newlyArrived.forEach { newCandidate ->
+                                    preflightJobs[newCandidate.url]?.let { job ->
+                                        pendingPreflights[newCandidate.url] = job
+                                    }
+                                }
+                                AutoSyncDebugLog.info {
+                                    "preflight candidate refresh added=${newlyArrived.size} " +
+                                        "total=${alternatives.size}"
+                                }
+                            }
+                        }
+                    }
+
+                    else -> error("Unexpected AutoSync preflight event")
                 }
             }
 
@@ -1755,6 +1867,16 @@ internal object AutomaticSubtitleSync {
         val candidate: AutoSyncSubtitleCandidate,
         val loaded: LoadedSubtitle?,
         val match: AutoSyncDelayPreflight.Match?,
+    )
+    private data class AuthoritativeValidationRequest(
+        val candidate: AutoSyncSubtitleCandidate,
+        val loaded: LoadedSubtitle,
+        val match: AutoSyncDelayPreflight.Match,
+    )
+    private data class CompletedAuthoritativeValidation(
+        val request: AuthoritativeValidationRequest,
+        val evaluation: CandidateEvaluation,
+        val reusedTiming: Boolean,
     )
 
     private data class TimelineRetimeMatch(
