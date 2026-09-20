@@ -20,6 +20,7 @@ import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.roundToLong
@@ -107,7 +108,6 @@ internal object AutomaticSubtitleSync {
                     sourceHeaders = sourceHeaders,
                 )
             }
-            val selectedSubtitleStartedMs = SystemClock.elapsedRealtime()
             val selectedSubtitleDeferred = async {
                 loadSelectedSubtitle(
                     url = selectedSubtitleUrl,
