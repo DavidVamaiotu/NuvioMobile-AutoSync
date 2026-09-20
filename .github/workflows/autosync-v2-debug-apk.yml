@@ -29,13 +29,10 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Install stable AutoSync debug signing key
+      - name: Verify stable AutoSync debug signing key
         run: |
-          mkdir -p "$HOME/.android"
-          cp .github/keystores/autosync-debug.keystore "$HOME/.android/debug.keystore"
-          chmod 600 "$HOME/.android/debug.keystore"
           keytool -list \
-            -keystore "$HOME/.android/debug.keystore" \
+            -keystore .github/keystores/autosync-debug.keystore \
             -storepass android \
             -alias androiddebugkey >/dev/null
 
