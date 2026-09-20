@@ -126,6 +126,7 @@ internal object AutoSyncTimelineRetimer {
         referenceEstimatedEndStartsMs: Set<Long> = emptySet(),
         preparedReferenceActivity: PreparedActivity? = null,
         preparedTargetActivity: PreparedActivity? = null,
+        precomputedDelayOnly: AutoSyncDelayOnlyAlignment? = null,
     ): AutoSyncTimelineRetimeResult? {
         if (!discoverAlignment) {
             val result = retimeWithSeed(
@@ -155,13 +156,14 @@ internal object AutoSyncTimelineRetimer {
 
         // Constant delay is by far the common case. Validate scale=1.0 first and only pay
         // for the multi-scale activity search when fixed-delay validation fails.
-        val delayOnly = findDelayOnlyAlignmentPrepared(
-            referenceActivity = referenceActivity,
-            targetActivity = targetActivity,
-            targetSize = target.size,
-            allowAmbiguousMargin = allowAmbiguousDelayOnlyMargin,
-            seed = null,
-        )
+        val delayOnly =
+            precomputedDelayOnly ?: findDelayOnlyAlignmentPrepared(
+                referenceActivity = referenceActivity,
+                targetActivity = targetActivity,
+                targetSize = target.size,
+                allowAmbiguousMargin = allowAmbiguousDelayOnlyMargin,
+                seed = null,
+            )
 
         val alignment = if (delayOnly == null) {
             discoverActivityAlignment(
@@ -471,6 +473,20 @@ internal object AutoSyncTimelineRetimer {
             seed = null,
         )
     }
+
+    internal fun findDelayOnlyAlignmentPrepared(
+        referenceActivity: PreparedActivity,
+        targetActivity: PreparedActivity,
+        targetSize: Int,
+        allowAmbiguousMargin: Boolean = false,
+    ): AutoSyncDelayOnlyAlignment? =
+        findDelayOnlyAlignmentPrepared(
+            referenceActivity = referenceActivity,
+            targetActivity = targetActivity,
+            targetSize = targetSize,
+            allowAmbiguousMargin = allowAmbiguousMargin,
+            seed = null,
+        )
 
     private fun findDelayOnlyAlignmentPrepared(
         referenceActivity: PreparedActivity,

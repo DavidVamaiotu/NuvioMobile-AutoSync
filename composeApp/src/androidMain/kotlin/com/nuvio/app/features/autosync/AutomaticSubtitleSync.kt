@@ -15,11 +15,11 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.roundToLong
@@ -38,6 +38,7 @@ internal object AutomaticSubtitleSync {
     private const val ALTERNATIVE_EXTERNAL_SUBTITLE_BATCH_SIZE = 4
     private const val MAX_PARALLEL_ALTERNATIVE_DOWNLOADS = 6
     private const val MAX_PARALLEL_ALTERNATIVE_MATCHES = 2
+    private const val MAX_PARALLEL_PREFLIGHT_MATCHES = 2
     private const val EXCEPTIONAL_MATCH_QUALITY = 0.95
     private const val EXCEPTIONAL_MATCH_TARGET_COVERAGE = 0.99
     private const val EXCEPTIONAL_MATCH_REFERENCE_COVERAGE = 0.97
@@ -55,7 +56,6 @@ internal object AutomaticSubtitleSync {
 
     private const val FALLBACK_CANDIDATE_POLL_MS = 250L
     private const val FALLBACK_CANDIDATE_WAIT_MS = 10_000L
-    private const val SELECTED_SUBTITLE_GRACE_MS = 2_500L
 
     private const val MIN_FULL_DIALOGUE_CUES = 8
     private const val MIN_FULL_DIALOGUE_CLASSIFICATION_SPAN_MS = 30_000L
@@ -115,24 +115,50 @@ internal object AutomaticSubtitleSync {
                 )
             }
 
-            val indexedTimeline = indexedTimelineDeferred.await()
-            val selectedGraceRemainingMs =
-                (SELECTED_SUBTITLE_GRACE_MS -
-                    (SystemClock.elapsedRealtime() - selectedSubtitleStartedMs))
-                    .coerceAtLeast(0L)
+            // V1 scheduling efficiency: overlap same-language candidate downloads with the
+            // embedded MKV index. Scoring is still entirely V2.
+            val alternativeDownloadSemaphore = Semaphore(MAX_PARALLEL_ALTERNATIVE_DOWNLOADS)
+            val prefetchSnapshot =
+                (alternativeSubtitlesProvider?.invoke() ?: alternativeSubtitles)
+                    .distinctBy { it.url }
+            val prefetchLanguage =
+                prefetchSnapshot.firstOrNull { it.url == selectedSubtitleUrl }
+                    ?.language
+                    ?.takeIf { it.isNotBlank() }
+                    ?: preferredLanguage?.takeIf { it.isNotBlank() }
+            val prefetchedAlternativeLoads =
+                linkedMapOf<String, Deferred<LoadedSubtitle?>>()
 
-            var selected = when {
-                selectedSubtitleDeferred.isCompleted -> selectedSubtitleDeferred.await()
-                selectedGraceRemainingMs > 0L ->
-                    withTimeoutOrNull(selectedGraceRemainingMs) {
-                        selectedSubtitleDeferred.await()
+            prefetchSnapshot
+                .asSequence()
+                .filter { it.url.isNotBlank() && it.url != selectedSubtitleUrl }
+                .filter { candidate ->
+                    prefetchLanguage.isNullOrBlank() ||
+                        SubtitleLanguageMatching.matchesLanguageCode(
+                            candidate.language,
+                            prefetchLanguage,
+                        )
+                }
+                .distinctBy { it.url }
+                .forEach { candidate ->
+                    prefetchedAlternativeLoads[candidate.url] = async {
+                        alternativeDownloadSemaphore.withPermit {
+                            loadSelectedSubtitle(
+                                url = candidate.url,
+                                headers = emptyMap(),
+                            )
+                        }
                     }
-                else -> null
-            }
-            if (selected == null && selectedSubtitleDeferred.isCompleted) {
-                selected = selectedSubtitleDeferred.await()
-            }
-            val selectedPendingAfterGrace = !selectedSubtitleDeferred.isCompleted
+                }
+
+            val indexedTimeline = indexedTimelineDeferred.await()
+            var selected =
+                if (selectedSubtitleDeferred.isCompleted) {
+                    selectedSubtitleDeferred.await()
+                } else {
+                    null
+                }
+            val selectedPendingAfterIndex = !selectedSubtitleDeferred.isCompleted
 
             AutoSyncDebugLog.section { "SELECTED SUBTITLE" }
             if (selected != null) {
@@ -142,10 +168,10 @@ internal object AutomaticSubtitleSync {
                     loaded = selected,
                     sampleLimit = MAX_LOGGED_CUE_SAMPLES,
                 )
-            } else if (selectedPendingAfterGrace) {
+            } else if (selectedPendingAfterIndex) {
                 AutoSyncDebugLog.info {
-                    "selected subtitle still loading after ${SELECTED_SUBTITLE_GRACE_MS}ms; " +
-                        "preparing same-language fallback without blocking on the 15s timeout"
+                    "selected subtitle still loading when embedded indexing became ready; " +
+                        "using already-prefetched same-language candidates without blocking"
                 }
             } else {
                 AutoSyncDebugLog.warn {
@@ -215,8 +241,35 @@ internal object AutomaticSubtitleSync {
 
             var seedTarget = selected?.cues
             if (seedTarget.isNullOrEmpty() && alternatives.isNotEmpty()) {
-                val loaded = loadSelectedSubtitle(alternatives.first().url, emptyMap())
-                if (loaded != null) seedTarget = loaded.cues
+                val pendingSeedLoads = linkedMapOf<String, Deferred<LoadedSubtitle?>>().apply {
+                    alternatives.forEach { candidate ->
+                        prefetchedAlternativeLoads[candidate.url]?.let { job ->
+                            put(candidate.url, job)
+                        }
+                    }
+                }
+
+                var loadedSeed: LoadedSubtitle? = null
+                while (loadedSeed == null && pendingSeedLoads.isNotEmpty()) {
+                    val completed = select<Pair<String, LoadedSubtitle?>> {
+                        pendingSeedLoads.forEach { (url, job) ->
+                            job.onAwait { url to it }
+                        }
+                    }
+                    pendingSeedLoads.remove(completed.first)
+                    loadedSeed = completed.second
+                }
+
+                if (loadedSeed == null) {
+                    val notPrefetched = alternatives.firstOrNull {
+                        it.url !in prefetchedAlternativeLoads
+                    }
+                    if (notPrefetched != null) {
+                        loadedSeed = loadSelectedSubtitle(notPrefetched.url, emptyMap())
+                    }
+                }
+
+                if (loadedSeed != null) seedTarget = loadedSeed.cues
             }
 
             // If there is no usable fallback seed, preserve the old selected-subtitle behavior:
@@ -331,8 +384,10 @@ internal object AutomaticSubtitleSync {
             alternatives = (alternatives + selectedCandidateMetadata)
                 .distinctBy { it.url }
 
-            val alternativeDownloadSemaphore = Semaphore(MAX_PARALLEL_ALTERNATIVE_DOWNLOADS)
-            val alternativeLoads = linkedMapOf<String, Deferred<LoadedSubtitle?>>()
+            val alternativeLoads =
+                linkedMapOf<String, Deferred<LoadedSubtitle?>>().apply {
+                    putAll(prefetchedAlternativeLoads)
+                }
             val loadedByUrl = mutableMapOf<String, LoadedSubtitle>()
             val preflightByUrl = mutableMapOf<String, AutoSyncDelayPreflight.Match>()
             val preflightV2Cache = mutableMapOf<String, CandidateEvaluation>()
@@ -361,126 +416,161 @@ internal object AutomaticSubtitleSync {
 
             scheduleAlternativeLoads()
 
-            AutoSyncDebugLog.section { "DELAY-ONLY PREFLIGHT" }
-            AutoSyncDebugLog.info {
-                "scanning ${alternatives.size} same-language candidates with cheap fixed-delay timing"
+            val preflightSemaphore = Semaphore(MAX_PARALLEL_PREFLIGHT_MATCHES)
+            val preflightJobs =
+                linkedMapOf<String, Deferred<CompletedPreflight>>()
+
+            fun schedulePreflightJobs() {
+                alternatives.forEach { candidate ->
+                    if (candidate.url !in preflightJobs) {
+                        preflightJobs[candidate.url] = async {
+                            val loaded = alternativeLoads[candidate.url]?.await()
+                            val match =
+                                if (loaded == null) {
+                                    null
+                                } else {
+                                    preflightSemaphore.withPermit {
+                                        withContext(Dispatchers.Default) {
+                                            AutoSyncDelayPreflight.bestMatch(
+                                                referenceTracks = referenceTracks,
+                                                target = loaded.cues,
+                                                referenceActivityCache = referenceActivityCache,
+                                            )
+                                        }
+                                    }
+                                }
+                            CompletedPreflight(
+                                candidate = candidate,
+                                loaded = loaded,
+                                match = match,
+                            )
+                        }
+                    }
+                }
             }
 
-            // Scan progressively in the same bounded batches used by fallback. If a genuinely
-            // excellent constant-delay candidate appears, validate only that candidate with V2
-            // and finish. Otherwise retain all preflight evidence to order the heavy V2 pass.
-            var preflightStart = 0
-            while (preflightStart < alternatives.size) {
-                val preflightEnd = minOf(
-                    preflightStart + ALTERNATIVE_EXTERNAL_SUBTITLE_BATCH_SIZE,
-                    alternatives.size,
-                )
+            schedulePreflightJobs()
 
-                for (index in preflightStart until preflightEnd) {
-                    val candidate = alternatives[index]
-                    val loaded = alternativeLoads[candidate.url]?.await() ?: continue
+            AutoSyncDebugLog.section { "DELAY-ONLY PREFLIGHT" }
+            AutoSyncDebugLog.info {
+                "completion-driven V2 delay scan candidates=${alternatives.size} " +
+                    "downloads=$MAX_PARALLEL_ALTERNATIVE_DOWNLOADS " +
+                    "preflightWorkers=$MAX_PARALLEL_PREFLIGHT_MATCHES"
+            }
+
+            val pendingPreflights =
+                linkedMapOf<String, Deferred<CompletedPreflight>>().apply {
+                    putAll(preflightJobs)
+                }
+
+            while (pendingPreflights.isNotEmpty()) {
+                val completed = select<CompletedPreflight> {
+                    pendingPreflights.forEach { (_, job) ->
+                        job.onAwait { it }
+                    }
+                }
+                pendingPreflights.remove(completed.candidate.url)
+
+                val candidate = completed.candidate
+                val loaded = completed.loaded
+                val match = completed.match
+
+                if (loaded != null) {
                     loadedByUrl[candidate.url] = loaded
-
-                    val match = withContext(Dispatchers.Default) {
-                        AutoSyncDelayPreflight.bestMatch(
-                            referenceTracks = referenceTracks,
-                            target = loaded.cues,
-                        )
-                    } ?: continue
-
+                }
+                if (match != null) {
                     preflightByUrl[candidate.url] = match
                     AutoSyncDebugLog.info {
-                        "PREFLIGHT[$index] url=${candidate.url} reference=${match.referenceKey} " +
-                            "offset=${match.offsetMs}ms score=${fmt(match.score)} " +
-                            "margin=${fmt(match.margin)} participation=${fmt(match.participation)} " +
-                            "residual=${"%.1f".format(match.meanResidualMs)}ms " +
+                        "PREFLIGHT url=${candidate.url} reference=${match.referenceKey} " +
+                            "offset=${"%.1f".format(match.offsetMs)}ms " +
+                            "score=${fmt(match.score)} margin=${fmt(match.margin)} " +
+                            "segments=${match.segmentsPassed} " +
                             "strong=${AutoSyncDelayPreflight.isReallyGood(match)}"
                     }
                 }
 
-                val strongCandidate =
-                    (preflightStart until preflightEnd)
-                        .mapNotNull { index ->
-                            val candidate = alternatives[index]
-                            val match = preflightByUrl[candidate.url] ?: return@mapNotNull null
-                            if (!AutoSyncDelayPreflight.isReallyGood(match)) return@mapNotNull null
-                            Triple(index, candidate, match)
-                        }
-                        .maxWithOrNull(
-                            compareBy<Triple<Int, AutoSyncSubtitleCandidate, AutoSyncDelayPreflight.Match>> {
-                                it.third.score
-                            }.thenBy { it.third.participation }
-                                .thenByDescending { it.third.meanResidualMs },
-                        )
+                if (
+                    loaded != null &&
+                    match != null &&
+                    AutoSyncDelayPreflight.isReallyGood(match)
+                ) {
+                    AutoSyncDebugLog.info {
+                        "PREFLIGHT strong V2 delay evidence; validating immediately " +
+                            "url=${candidate.url} reference=${match.referenceKey}"
+                    }
 
-                if (strongCandidate != null) {
-                    val (index, candidate, match) = strongCandidate
-                    val loaded = loadedByUrl[candidate.url]
-                    if (loaded != null) {
+                    val evaluation = evaluateExternalCandidate(
+                        label = "PREFLIGHT",
+                        url = candidate.url,
+                        target = loaded.cues,
+                        referenceTracks = referenceTracks,
+                        referenceActivityCache = referenceActivityCache,
+                        preferredReferenceKey = match.referenceKey,
+                        preflightHint = match,
+                    )
+                    preflightV2Cache[candidate.url] = evaluation
+
+                    val best = evaluation.best
+                    val authoritativeFastAccept =
+                        best != null &&
+                            best.timeline.confident &&
+                            best.timeline.alignmentSource == "delay-only-validated" &&
+                            (
+                                isExceptionalMatch(best) ||
+                                    isStrongCheckpointMatch(best)
+                                )
+
+                    if (authoritativeFastAccept) {
+                        alternativeLoads.values
+                            .filterNot { it.isCompleted }
+                            .forEach { it.cancel() }
+                        preflightJobs.values
+                            .filterNot { it.isCompleted }
+                            .forEach { it.cancel() }
+                        if (!selectedSubtitleDeferred.isCompleted) {
+                            selectedSubtitleDeferred.cancel()
+                        }
+
+                        AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
                         AutoSyncDebugLog.info {
-                            "PREFLIGHT[$index] strong constant-delay candidate; " +
-                                "validating first with V2 reference=${match.referenceKey}"
+                            "V2 accepted completion-driven delay candidate " +
+                                "url=${candidate.url} name=${candidate.name ?: "<none>"} " +
+                                "reference=${best!!.track.key} " +
+                                "quality=${fmt(directTimelineQualityScore(best))}"
                         }
 
-                        val evaluation = evaluateExternalCandidate(
-                            label = "PREFLIGHT[$index]",
-                            url = candidate.url,
-                            target = loaded.cues,
-                            referenceTracks = referenceTracks,
-                            referenceActivityCache = referenceActivityCache,
-                            preferredReferenceKey = match.referenceKey,
-                            preflightHint = match,
+                        return@supervisorScope AutoSyncResolvedTimeline(
+                            subtitleUrl = candidate.url,
+                            subtitleHeaders = headersForCandidate(candidate.url),
+                            timeline = best!!.timeline,
                         )
-                        preflightV2Cache[candidate.url] = evaluation
+                    }
 
-                        val best = evaluation.best
-                        if (
-                            best?.timeline?.confident == true &&
-                            best.timeline.alignmentSource == "delay-only-validated"
-                        ) {
-                            alternativeLoads.values
-                                .filterNot { it.isCompleted }
-                                .forEach { it.cancel() }
-                            if (!selectedSubtitleDeferred.isCompleted) {
-                                selectedSubtitleDeferred.cancel()
-                            }
-
-                            AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
-                            AutoSyncDebugLog.info {
-                                "V2 accepted delay preflight candidate index=$index " +
-                                    "url=${candidate.url} name=${candidate.name ?: "<none>"} " +
-                                    "reference=${best.track.key} " +
-                                    "quality=${fmt(directTimelineQualityScore(best))}"
-                            }
-
-                            return@supervisorScope AutoSyncResolvedTimeline(
-                                subtitleUrl = candidate.url,
-                                subtitleHeaders = headersForCandidate(candidate.url),
-                                timeline = best.timeline,
-                            )
-                        }
-
-                        AutoSyncDebugLog.info {
-                            "PREFLIGHT[$index] fast evidence was not authoritative; continuing scan"
-                        }
+                    AutoSyncDebugLog.info {
+                        "PREFLIGHT candidate was not strong enough after authoritative V2; " +
+                            "continuing completion-driven scan"
                     }
                 }
 
-                preflightStart = preflightEnd
-
-                // Preserve progressive add-on discovery: append newly arrived same-language
-                // URLs to the same preflight queue instead of freezing the initial snapshot.
                 if (alternativeSubtitlesProvider != null) {
                     availableCandidates = currentExternalCandidates()
                     language = selectedLanguage(availableCandidates)
                     val refreshed = sameLanguageAlternatives(availableCandidates, language)
                     val knownUrls = alternatives.asSequence().map { it.url }.toHashSet()
                     val newlyArrived = refreshed.filter { it.url !in knownUrls }
+
                     if (newlyArrived.isNotEmpty()) {
                         alternatives = alternatives + newlyArrived
                         scheduleAlternativeLoads()
+                        schedulePreflightJobs()
+                        newlyArrived.forEach { newCandidate ->
+                            preflightJobs[newCandidate.url]?.let { job ->
+                                pendingPreflights[newCandidate.url] = job
+                            }
+                        }
                         AutoSyncDebugLog.info {
-                            "preflight candidate refresh added=${newlyArrived.size} total=${alternatives.size}"
+                            "preflight candidate refresh added=${newlyArrived.size} " +
+                                "total=${alternatives.size}"
                         }
                     }
                 }
@@ -495,9 +585,7 @@ internal object AutomaticSubtitleSync {
                 }.thenByDescending {
                     preflightByUrl[it.url]?.margin ?: Double.NEGATIVE_INFINITY
                 }.thenByDescending {
-                    preflightByUrl[it.url]?.participation ?: 0.0
-                }.thenBy {
-                    preflightByUrl[it.url]?.meanResidualMs ?: Double.POSITIVE_INFINITY
+                    preflightByUrl[it.url]?.segmentsPassed ?: 0
                 },
             )
 
@@ -725,8 +813,8 @@ internal object AutomaticSubtitleSync {
         preflightHint?.let { hint ->
             AutoSyncDebugLog.info {
                 "$label preflight hint reference=${hint.referenceKey} " +
-                    "offset=${hint.offsetMs}ms score=${fmt(hint.score)} " +
-                    "margin=${fmt(hint.margin)} participation=${fmt(hint.participation)}"
+                    "offset=${"%.1f".format(hint.offsetMs)}ms score=${fmt(hint.score)} " +
+                    "margin=${fmt(hint.margin)} segments=${hint.segmentsPassed}"
             }
         }
 
@@ -762,6 +850,10 @@ internal object AutomaticSubtitleSync {
                 target = target,
                 preparedReferenceActivity = preparedReference,
                 preparedTargetActivity = targetActivity,
+                delayOnlyHint =
+                    preflightHint
+                        ?.takeIf { it.referenceKey == track.key }
+                        ?.alignment,
             ) ?: continue
             val match = TimelineRetimeMatch(track, timeline)
             attempts += match
@@ -1260,7 +1352,7 @@ internal object AutomaticSubtitleSync {
         return label.contains("audio description") || label.contains("descriptive subtitle")
     }
 
-    private fun isSdhReferenceTrack(track: ReferenceTrack): Boolean {
+    internal fun isSdhReferenceTrack(track: ReferenceTrack): Boolean {
         if ((track.roleFlags and C.ROLE_FLAG_DESCRIBES_MUSIC_AND_SOUND) != 0) return true
         val label = track.label.orEmpty().lowercase()
         return label.contains("sdh") ||
@@ -1348,6 +1440,7 @@ internal object AutomaticSubtitleSync {
         target: List<SubtitleSyncCue>,
         preparedReferenceActivity: AutoSyncTimelineRetimer.PreparedActivity?,
         preparedTargetActivity: AutoSyncTimelineRetimer.PreparedActivity?,
+        delayOnlyHint: AutoSyncDelayOnlyAlignment? = null,
     ): AutoSyncTimelineRetimeResult? {
         val overSegmentedReference =
             track.cues.size.toLong() * 2L >= target.size.toLong() * 3L
@@ -1372,6 +1465,7 @@ internal object AutomaticSubtitleSync {
             referenceEstimatedEndStartsMs = track.estimatedEndStartsMs,
             preparedReferenceActivity = preparedReferenceActivity,
             preparedTargetActivity = preparedTargetActivity,
+            precomputedDelayOnly = delayOnlyHint,
         )
     }
 
@@ -1427,6 +1521,11 @@ internal object AutomaticSubtitleSync {
     private data class EvaluatedAlternativeTimingGroup(
         val members: List<LoadedAlternative>,
         val evaluation: CandidateEvaluation,
+    )
+    private data class CompletedPreflight(
+        val candidate: AutoSyncSubtitleCandidate,
+        val loaded: LoadedSubtitle?,
+        val match: AutoSyncDelayPreflight.Match?,
     )
 
     private data class TimelineRetimeMatch(
