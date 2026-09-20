@@ -40,6 +40,7 @@ internal object AutomaticSubtitleSync {
     private const val STRONG_CHECKPOINT_REFERENCE_COVERAGE = 0.90
     private const val FALLBACK_CANDIDATE_POLL_MS = 250L
     private const val FALLBACK_CANDIDATE_WAIT_MS = 10_000L
+    private const val SELECTED_SUBTITLE_GRACE_MS = 2_500L
 
     private const val MIN_FULL_DIALOGUE_CUES = 8
     private const val MIN_FULL_DIALOGUE_CLASSIFICATION_SPAN_MS = 30_000L
@@ -91,6 +92,7 @@ internal object AutomaticSubtitleSync {
                     sourceHeaders = sourceHeaders,
                 )
             }
+            val selectedSubtitleStartedMs = SystemClock.elapsedRealtime()
             val selectedSubtitleDeferred = async {
                 loadSelectedSubtitle(
                     url = selectedSubtitleUrl,
@@ -99,20 +101,41 @@ internal object AutomaticSubtitleSync {
             }
 
             val indexedTimeline = indexedTimelineDeferred.await()
-            val selected = selectedSubtitleDeferred.await()
+            val selectedGraceRemainingMs =
+                (SELECTED_SUBTITLE_GRACE_MS -
+                    (SystemClock.elapsedRealtime() - selectedSubtitleStartedMs))
+                    .coerceAtLeast(0L)
+
+            var selected = when {
+                selectedSubtitleDeferred.isCompleted -> selectedSubtitleDeferred.await()
+                selectedGraceRemainingMs > 0L ->
+                    withTimeoutOrNull(selectedGraceRemainingMs) {
+                        selectedSubtitleDeferred.await()
+                    }
+                else -> null
+            }
+            if (selected == null && selectedSubtitleDeferred.isCompleted) {
+                selected = selectedSubtitleDeferred.await()
+            }
+            val selectedPendingAfterGrace = !selectedSubtitleDeferred.isCompleted
 
             AutoSyncDebugLog.section { "SELECTED SUBTITLE" }
-            if (selected == null) {
-                AutoSyncDebugLog.warn {
-                    "selected subtitle could not be downloaded or parsed; searching alternatives"
-                }
-            } else {
+            if (selected != null) {
                 logLoadedExternalSubtitle(
                     label = "SELECTED",
                     url = selectedSubtitleUrl,
                     loaded = selected,
                     sampleLimit = MAX_LOGGED_CUE_SAMPLES,
                 )
+            } else if (selectedPendingAfterGrace) {
+                AutoSyncDebugLog.info {
+                    "selected subtitle still loading after ${SELECTED_SUBTITLE_GRACE_MS}ms; " +
+                        "preparing same-language fallback without blocking on the 15s timeout"
+                }
+            } else {
+                AutoSyncDebugLog.warn {
+                    "selected subtitle could not be downloaded or parsed; searching alternatives"
+                }
             }
 
             fun currentExternalCandidates(): List<AutoSyncSubtitleCandidate> =
@@ -182,7 +205,23 @@ internal object AutomaticSubtitleSync {
                 if (loaded != null) seedTarget = loaded.cues
             }
 
+            // If there is no usable fallback seed, preserve the old selected-subtitle behavior:
+            // wait for its original request rather than rejecting early just because it was slow.
+            if (seedTarget.isNullOrEmpty() && !selectedSubtitleDeferred.isCompleted) {
+                selected = selectedSubtitleDeferred.await()
+                if (selected != null) {
+                    logLoadedExternalSubtitle(
+                        label = "SELECTED",
+                        url = selectedSubtitleUrl,
+                        loaded = selected,
+                        sampleLimit = MAX_LOGGED_CUE_SAMPLES,
+                    )
+                    seedTarget = selected?.cues
+                }
+            }
+
             if (seedTarget.isNullOrEmpty()) {
+                selectedSubtitleDeferred.cancel()
                 AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
                 AutoSyncDebugLog.warn {
                     "REJECT no usable external subtitle candidate could be parsed"
@@ -235,6 +274,7 @@ internal object AutomaticSubtitleSync {
             }
 
             if (referenceTracks.isEmpty()) {
+                selectedSubtitleDeferred.cancel()
                 AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
                 AutoSyncDebugLog.warn {
                     "REJECT no complete embedded subtitle timeline is available for V2"
@@ -244,20 +284,47 @@ internal object AutomaticSubtitleSync {
 
             onReferenceReady()
 
-            if (selected != null) {
+            var selectedEvaluationAttempted = false
+
+            suspend fun evaluateSelectedIfConfident(
+                loaded: LoadedSubtitle,
+            ): AutoSyncResolvedTimeline? {
+                selectedEvaluationAttempted = true
                 val selectedEvaluation = evaluateExternalCandidate(
                     label = "SELECTED",
                     url = selectedSubtitleUrl,
-                    target = selected.cues,
+                    target = loaded.cues,
                     referenceTracks = referenceTracks,
                 )
                 val selectedBest = selectedEvaluation.best
-                if (selectedBest?.timeline?.confident == true) {
-                    return@supervisorScope AutoSyncResolvedTimeline(
+                return if (selectedBest?.timeline?.confident == true) {
+                    AutoSyncResolvedTimeline(
                         subtitleUrl = selectedSubtitleUrl,
                         subtitleHeaders = selectedSubtitleHeaders,
                         timeline = selectedBest.timeline,
                     )
+                } else {
+                    null
+                }
+            }
+
+            // The selected request kept running while the embedded index/fallback seed was
+            // prepared. If it finished in that time, it still has first priority.
+            if (selected == null && selectedSubtitleDeferred.isCompleted) {
+                selected = selectedSubtitleDeferred.await()
+                if (selected != null) {
+                    logLoadedExternalSubtitle(
+                        label = "SELECTED",
+                        url = selectedSubtitleUrl,
+                        loaded = selected,
+                        sampleLimit = MAX_LOGGED_CUE_SAMPLES,
+                    )
+                }
+            }
+
+            selected?.let { loaded ->
+                evaluateSelectedIfConfident(loaded)?.let {
+                    return@supervisorScope it
                 }
 
                 // Add-on results arrive progressively. Re-read the coordinator's current
@@ -319,9 +386,36 @@ internal object AutomaticSubtitleSync {
                 if (isExceptionalMatch(best)) break
             }
 
+            // Give the user's selected subtitle one final priority check if it completed
+            // naturally while alternatives were being evaluated.
+            if (!selectedEvaluationAttempted && selectedSubtitleDeferred.isCompleted) {
+                selected = selectedSubtitleDeferred.await()
+                if (selected != null) {
+                    logLoadedExternalSubtitle(
+                        label = "SELECTED",
+                        url = selectedSubtitleUrl,
+                        loaded = selected,
+                        sampleLimit = MAX_LOGGED_CUE_SAMPLES,
+                    )
+                    evaluateSelectedIfConfident(selected!!)?.let {
+                        return@supervisorScope it
+                    }
+                }
+            }
+
             val chosenAlternative = bestAlternative
             val chosenAlternativeMatch = bestAlternativeMatch
             if (chosenAlternative != null && chosenAlternativeMatch != null) {
+                // A confident fallback is ready. Do not keep supervisorScope alive solely for
+                // a selected-subtitle HTTP request that is still heading toward its 15s timeout.
+                if (!selectedSubtitleDeferred.isCompleted) {
+                    AutoSyncDebugLog.info {
+                        "selected subtitle still pending; cancelling slow request because a " +
+                            "confident same-language fallback is ready"
+                    }
+                    selectedSubtitleDeferred.cancel()
+                }
+
                 AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
                 AutoSyncDebugLog.info {
                     "V2 selected best external subtitle index=$bestAlternativeIndex " +
@@ -331,6 +425,23 @@ internal object AutomaticSubtitleSync {
                         "quality=${fmt(directTimelineQualityScore(chosenAlternativeMatch))}"
                 }
                 return@supervisorScope chosenAlternative
+            }
+
+            // No alternative matched confidently. In that case reliability wins over latency:
+            // allow the original selected request to use the remainder of its normal timeout.
+            if (!selectedEvaluationAttempted && !selectedSubtitleDeferred.isCompleted) {
+                selected = selectedSubtitleDeferred.await()
+                if (selected != null) {
+                    logLoadedExternalSubtitle(
+                        label = "SELECTED",
+                        url = selectedSubtitleUrl,
+                        loaded = selected,
+                        sampleLimit = MAX_LOGGED_CUE_SAMPLES,
+                    )
+                    evaluateSelectedIfConfident(selected!!)?.let {
+                        return@supervisorScope it
+                    }
+                }
             }
 
             AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
