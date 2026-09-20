@@ -98,6 +98,70 @@ internal object AutomaticSubtitleSync {
             ): Boolean = size > MAX_PARSED_SUBTITLE_CACHE_ENTRIES
         }
 
+    private val subtitleLoadTraceLock = Any()
+    private val subtitleLoadTraces = mutableMapOf<String, SubtitleLoadTrace>()
+
+    private fun beginSubtitleLoadTrace(url: String) {
+        if (!AutoSyncDebugLog.ENABLED) return
+        synchronized(subtitleLoadTraceLock) {
+            subtitleLoadTraces[url] = SubtitleLoadTrace(phase = "CACHE_LOOKUP")
+        }
+    }
+
+    private fun markSubtitleLoadPhase(
+        url: String,
+        phase: String,
+    ) {
+        if (!AutoSyncDebugLog.ENABLED) return
+        synchronized(subtitleLoadTraceLock) {
+            subtitleLoadTraces[url]?.phase = phase
+        }
+    }
+
+    private fun markSubtitleLoadCancellation(
+        url: String,
+        source: String,
+    ) {
+        if (!AutoSyncDebugLog.ENABLED) return
+
+        val now = SystemClock.elapsedRealtime()
+        val phase = synchronized(subtitleLoadTraceLock) {
+            val trace = subtitleLoadTraces[url]
+            if (trace != null && trace.cancelRequestedAtMs == null) {
+                trace.cancelRequestedAtMs = now
+                trace.cancelSource = source
+            }
+            trace?.phase ?: "WAITING_OR_NOT_STARTED"
+        }
+
+        AutoSyncDebugLog.info {
+            "LOAD_CANCEL source=$source phase=$phase url=$url"
+        }
+    }
+
+    private fun finishSubtitleLoadTrace(
+        url: String,
+        outcome: String,
+        startedAtMs: Long,
+    ) {
+        if (!AutoSyncDebugLog.ENABLED) return
+
+        val now = SystemClock.elapsedRealtime()
+        val trace = synchronized(subtitleLoadTraceLock) {
+            subtitleLoadTraces.remove(url)
+        } ?: return
+
+        val cancelRequestedAtMs = trace.cancelRequestedAtMs
+        if (cancelRequestedAtMs != null || outcome == "canceled") {
+            AutoSyncDebugLog.info {
+                "LOAD_EXIT outcome=$outcome phase=${trace.phase} " +
+                    "source=${trace.cancelSource ?: "<untracked>"} " +
+                    "cancelToExit=${cancelRequestedAtMs?.let { "${now - it}ms" } ?: "<unknown>"} " +
+                    "total=${now - startedAtMs}ms url=$url"
+            }
+        }
+    }
+
     suspend fun findTimelineRetime(
         sourceKey: String,
         selectedSubtitleUrl: String,
@@ -327,7 +391,15 @@ internal object AutomaticSubtitleSync {
             }
 
             if (seedTarget.isNullOrEmpty()) {
-                prefetchedAlternativeLoads.values.forEach { it.cancel() }
+                prefetchedAlternativeLoads.forEach { (url, job) ->
+                    if (!job.isCompleted) {
+                        markSubtitleLoadCancellation(url, source = "seed-reject")
+                    }
+                    job.cancel()
+                }
+                if (!selectedSubtitleDeferred.isCompleted) {
+                    markSubtitleLoadCancellation(selectedSubtitleUrl, source = "selected")
+                }
                 selectedSubtitleDeferred.cancel()
                 AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
                 AutoSyncDebugLog.warn {
@@ -381,7 +453,15 @@ internal object AutomaticSubtitleSync {
             }
 
             if (referenceTracks.isEmpty()) {
-                prefetchedAlternativeLoads.values.forEach { it.cancel() }
+                prefetchedAlternativeLoads.forEach { (url, job) ->
+                    if (!job.isCompleted) {
+                        markSubtitleLoadCancellation(url, source = "reference-reject")
+                    }
+                    job.cancel()
+                }
+                if (!selectedSubtitleDeferred.isCompleted) {
+                    markSubtitleLoadCancellation(selectedSubtitleUrl, source = "selected")
+                }
                 selectedSubtitleDeferred.cancel()
                 AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
                 AutoSyncDebugLog.warn {
@@ -458,6 +538,7 @@ internal object AutomaticSubtitleSync {
                     activeLoads[url] = job
                     scheduledUrls += url
                 } else {
+                    markSubtitleLoadCancellation(url, source = "prefetch-discard")
                     job.cancel()
                 }
             }
@@ -814,7 +895,7 @@ internal object AutomaticSubtitleSync {
                 }
             } finally {
                 val pendingLoads =
-                    activeLoads.values.filterNot { it.isCompleted }
+                    activeLoads.filterValues { !it.isCompleted }
                 val pendingPairs =
                     activePairJobs.values.filterNot { it.isCompleted }
 
@@ -825,7 +906,15 @@ internal object AutomaticSubtitleSync {
                     cleanupSelectedPending = !selectedSubtitleDeferred.isCompleted
                 }
 
-                pendingLoads.forEach { it.cancel() }
+                pendingLoads.forEach { (url, job) ->
+                    if (url != selectedSubtitleUrl) {
+                        markSubtitleLoadCancellation(
+                            url = url,
+                            source = "candidate:${candidateOrder[url] ?: -1}",
+                        )
+                    }
+                    job.cancel()
+                }
                 pendingPairs.forEach { it.cancel() }
             }
 
@@ -839,6 +928,7 @@ internal object AutomaticSubtitleSync {
             val winningMatch = bestMatch
             if (winningFamily == null || winningMatch == null || !winningMatch.timeline.confident) {
                 if (!selectedSubtitleDeferred.isCompleted) {
+                    markSubtitleLoadCancellation(selectedSubtitleUrl, source = "selected")
                     selectedSubtitleDeferred.cancel()
                 }
                 AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
@@ -867,6 +957,7 @@ internal object AutomaticSubtitleSync {
                 }
 
             if (!selectedSubtitleDeferred.isCompleted) {
+                markSubtitleLoadCancellation(selectedSubtitleUrl, source = "selected")
                 selectedSubtitleDeferred.cancel()
             }
 
@@ -1326,71 +1417,95 @@ internal object AutomaticSubtitleSync {
         url: String,
         headers: Map<String, String>,
     ): LoadedSubtitle? {
-        val cacheKey = ParsedSubtitleCacheKey(url, stableHeaderIdentity(headers))
-        synchronized(parsedSubtitleCacheLock) {
-            parsedSubtitleCache[cacheKey]
-        }?.let { cached ->
-            return LoadedSubtitle(
-                cues = cached.cues,
-                rawBody = cached.rawBody,
-                downloadMs = 0L,
-                parseMs = 0L,
-                cacheHit = true,
-            )
-        }
+        val traceStartedAtMs = SystemClock.elapsedRealtime()
+        beginSubtitleLoadTrace(url)
+        var traceOutcome = "complete"
 
-        val downloadStarted = SystemClock.elapsedRealtime()
-        val text = try {
-            downloadSubtitleTextWithSingle429Retry(url, headers)
-        } catch (cancel: CancellationException) {
-            throw cancel
-        } catch (error: Exception) {
-            AutoSyncDebugLog.error(error) { "selected subtitle download failed" }
-            return null
-        }
-        val downloadMs = SystemClock.elapsedRealtime() - downloadStarted
-
-        val parseStarted = SystemClock.elapsedRealtime()
-        val cues = try {
-            withContext(Dispatchers.Default) {
-                val parseContext = currentCoroutineContext()
-                val parsed = PlayerSubtitleCueParser.parse(
-                    text = text,
-                    sourceUrl = url,
-                    cancellationCheck = { parseContext.ensureActive() },
+        try {
+            val cacheKey = ParsedSubtitleCacheKey(url, stableHeaderIdentity(headers))
+            synchronized(parsedSubtitleCacheLock) {
+                parsedSubtitleCache[cacheKey]
+            }?.let { cached ->
+                markSubtitleLoadPhase(url, "COMPLETE")
+                return LoadedSubtitle(
+                    cues = cached.cues,
+                    rawBody = cached.rawBody,
+                    downloadMs = 0L,
+                    parseMs = 0L,
+                    cacheHit = true,
                 )
-                parseContext.ensureActive()
-                AutoSyncTimelineRetimer.normalizeExternalTimeline(parsed)
             }
-        } catch (cancel: CancellationException) {
-            throw cancel
-        } catch (error: Exception) {
-            AutoSyncDebugLog.error(error) { "selected subtitle parse failed" }
-            return null
-        }
-        val parseMs = SystemClock.elapsedRealtime() - parseStarted
 
-        if (cues.size < MIN_SELECTED_CUES) {
-            AutoSyncDebugLog.warn {
-                "selected subtitle rejected before V2 cues=${cues.size} required=$MIN_SELECTED_CUES"
+            markSubtitleLoadPhase(url, "DOWNLOAD")
+            val downloadStarted = SystemClock.elapsedRealtime()
+            val text = try {
+                downloadSubtitleTextWithSingle429Retry(url, headers)
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (error: Exception) {
+                traceOutcome = "unavailable"
+                AutoSyncDebugLog.error(error) { "selected subtitle download failed" }
+                return null
             }
-            return null
-        }
+            val downloadMs = SystemClock.elapsedRealtime() - downloadStarted
 
-        val immutable = cues.toList()
-        synchronized(parsedSubtitleCacheLock) {
-            parsedSubtitleCache[cacheKey] = CachedParsedSubtitle(
+            markSubtitleLoadPhase(url, "PARSE")
+            val parseStarted = SystemClock.elapsedRealtime()
+            val cues = try {
+                withContext(Dispatchers.Default) {
+                    val parseContext = currentCoroutineContext()
+                    val parsed = PlayerSubtitleCueParser.parse(
+                        text = text,
+                        sourceUrl = url,
+                        cancellationCheck = { parseContext.ensureActive() },
+                    )
+                    parseContext.ensureActive()
+                    markSubtitleLoadPhase(url, "NORMALIZE")
+                    AutoSyncTimelineRetimer.normalizeExternalTimeline(parsed)
+                }
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (error: Exception) {
+                traceOutcome = "unavailable"
+                AutoSyncDebugLog.error(error) { "selected subtitle parse failed" }
+                return null
+            }
+            val parseMs = SystemClock.elapsedRealtime() - parseStarted
+
+            if (cues.size < MIN_SELECTED_CUES) {
+                traceOutcome = "unavailable"
+                AutoSyncDebugLog.warn {
+                    "selected subtitle rejected before V2 cues=${cues.size} required=$MIN_SELECTED_CUES"
+                }
+                return null
+            }
+
+            markSubtitleLoadPhase(url, "CACHE")
+            val immutable = cues.toList()
+            synchronized(parsedSubtitleCacheLock) {
+                parsedSubtitleCache[cacheKey] = CachedParsedSubtitle(
+                    cues = immutable,
+                    rawBody = text,
+                )
+            }
+            markSubtitleLoadPhase(url, "COMPLETE")
+            return LoadedSubtitle(
                 cues = immutable,
                 rawBody = text,
+                downloadMs = downloadMs,
+                parseMs = parseMs,
+                cacheHit = false,
+            )
+        } catch (cancel: CancellationException) {
+            traceOutcome = "canceled"
+            throw cancel
+        } finally {
+            finishSubtitleLoadTrace(
+                url = url,
+                outcome = traceOutcome,
+                startedAtMs = traceStartedAtMs,
             )
         }
-        return LoadedSubtitle(
-            cues = immutable,
-            rawBody = text,
-            downloadMs = downloadMs,
-            parseMs = parseMs,
-            cacheHit = false,
-        )
     }
 
     private suspend fun downloadSubtitleTextWithSingle429Retry(
@@ -1778,6 +1893,12 @@ internal object AutomaticSubtitleSync {
         val url: String,
         val headers: List<Pair<String, String>>,
     )
+    private data class SubtitleLoadTrace(
+        var phase: String,
+        var cancelRequestedAtMs: Long? = null,
+        var cancelSource: String? = null,
+    )
+
     private data class LoadedSubtitle(
         val cues: List<SubtitleSyncCue>,
         val rawBody: String?,
