@@ -234,44 +234,51 @@ internal object AutomaticSubtitleSync {
             // embedded MKV index. Scoring is still entirely V2.
             val alternativeDownloadSemaphore = Semaphore(MAX_PARALLEL_ALTERNATIVE_DOWNLOADS)
             val alternativeParseSemaphore = Semaphore(MAX_PARALLEL_ALTERNATIVE_PARSES)
-            val prefetchSnapshot =
-                (alternativeSubtitlesProvider?.invoke() ?: alternativeSubtitles)
-                    .distinctBy { it.url }
-            val prefetchLanguage =
-                prefetchSnapshot.firstOrNull { it.url == selectedSubtitleUrl }
-                    ?.language
-                    ?.takeIf { it.isNotBlank() }
-                    ?: preferredLanguage?.takeIf { it.isNotBlank() }
             val prefetchedAlternativeLoads =
                 linkedMapOf<String, Deferred<LoadedSubtitle?>>()
 
-            val prefetchCandidates =
-                prefetchSnapshot
-                    .asSequence()
-                    .filter { it.url.isNotBlank() && it.url != selectedSubtitleUrl }
-                    .filter { candidate ->
-                        prefetchLanguage.isNullOrBlank() ||
-                            SubtitleLanguageMatching.matchesLanguageCode(
-                                candidate.language,
-                                prefetchLanguage,
-                            )
-                    }
-                    .distinctBy { it.url }
-                    .toList()
+            fun currentPrefetchCandidates(): List<AutoSyncSubtitleCandidate> {
+                val snapshot =
+                    (alternativeSubtitlesProvider?.invoke() ?: alternativeSubtitles)
+                        .distinctBy { it.url }
+                val language =
+                    snapshot.firstOrNull { it.url == selectedSubtitleUrl }
+                        ?.language
+                        ?.takeIf { it.isNotBlank() }
+                        ?: preferredLanguage?.takeIf { it.isNotBlank() }
 
-            val orderedPrefetchCandidates = broadCandidateOrder(prefetchCandidates)
-            var nextPrefetchIndex = 0
+                return broadCandidateOrder(
+                    snapshot
+                        .asSequence()
+                        .filter { it.url.isNotBlank() && it.url != selectedSubtitleUrl }
+                        .filter { candidate ->
+                            language.isNullOrBlank() ||
+                                SubtitleLanguageMatching.matchesLanguageCode(
+                                    candidate.language,
+                                    language,
+                                )
+                        }
+                        .distinctBy { it.url }
+                        .toList(),
+                )
+            }
 
             fun fillPrefetchSlots() {
+                if (indexedTimelineDeferred.isCompleted) return
+
                 var activeCount =
                     prefetchedAlternativeLoads.values.count { !it.isCompleted }
+                val candidates = currentPrefetchCandidates()
 
-                while (
-                    !indexedTimelineDeferred.isCompleted &&
-                    activeCount < MAX_PARALLEL_ALTERNATIVE_DOWNLOADS &&
-                    nextPrefetchIndex < orderedPrefetchCandidates.size
-                ) {
-                    val candidate = orderedPrefetchCandidates[nextPrefetchIndex++]
+                for (candidate in candidates) {
+                    if (
+                        indexedTimelineDeferred.isCompleted ||
+                        activeCount >= MAX_PARALLEL_ALTERNATIVE_DOWNLOADS
+                    ) {
+                        break
+                    }
+                    if (candidate.url in prefetchedAlternativeLoads) continue
+
                     prefetchedAlternativeLoads[candidate.url] = async {
                         loadSelectedSubtitle(
                             url = candidate.url,
@@ -284,25 +291,32 @@ internal object AutomaticSubtitleSync {
                 }
             }
 
-            fillPrefetchSlots()
-            while (
-                !indexedTimelineDeferred.isCompleted &&
-                nextPrefetchIndex < orderedPrefetchCandidates.size
-            ) {
+            while (!indexedTimelineDeferred.isCompleted) {
+                fillPrefetchSlots()
+                if (indexedTimelineDeferred.isCompleted) break
+
                 val activePrefetches =
                     prefetchedAlternativeLoads.values.filterNot { it.isCompleted }
-                if (activePrefetches.isEmpty()) {
-                    fillPrefetchSlots()
-                    continue
-                }
 
-                select<Unit> {
-                    indexedTimelineDeferred.onAwait { }
-                    activePrefetches.forEach { job ->
-                        job.onAwait { }
+                if (activePrefetches.size < MAX_PARALLEL_ALTERNATIVE_DOWNLOADS) {
+                    // Candidate providers can populate after AutoSync starts. Poll only while
+                    // there is spare capacity; a full prefetch set already has useful work.
+                    withTimeoutOrNull(FALLBACK_CANDIDATE_POLL_MS) {
+                        select<Unit> {
+                            indexedTimelineDeferred.onAwait { }
+                            activePrefetches.forEach { job ->
+                                job.onAwait { }
+                            }
+                        }
+                    }
+                } else {
+                    select<Unit> {
+                        indexedTimelineDeferred.onAwait { }
+                        activePrefetches.forEach { job ->
+                            job.onAwait { }
+                        }
                     }
                 }
-                fillPrefetchSlots()
             }
 
             AutoSyncDebugLog.info {
