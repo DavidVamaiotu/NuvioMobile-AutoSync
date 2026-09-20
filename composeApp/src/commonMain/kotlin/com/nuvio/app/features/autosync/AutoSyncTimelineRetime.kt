@@ -7,6 +7,8 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 
 /**
  * Lightweight, text-independent full-timeline subtitle retiming.
@@ -131,8 +133,35 @@ internal object AutoSyncTimelineRetimer {
         preparedTargetActivity: PreparedActivity? = null,
         precomputedDelayOnly: AutoSyncDelayOnlyAlignment? = null,
         cancellationCheck: (() -> Unit)? = null,
+        timingObserver: ((AutoSyncRetimePhaseTimings) -> Unit)? = null,
     ): AutoSyncTimelineRetimeResult? {
+        val timingEnabled = timingObserver != null
+        val totalMark = if (timingEnabled) TimeSource.Monotonic.markNow() else null
+        var prepareActivityMs = 0L
+        var delayValidationMs = 0L
+        var activitySearchMs = 0L
+        var dpMs = 0L
+        var validationMs = 0L
+
+        fun elapsedMs(mark: TimeMark?): Long =
+            mark?.elapsedNow()?.inWholeMilliseconds ?: 0L
+
+        fun reportTimings(path: String) {
+            timingObserver?.invoke(
+                AutoSyncRetimePhaseTimings(
+                    path = path,
+                    prepareActivityMs = prepareActivityMs,
+                    delayValidationMs = delayValidationMs,
+                    activitySearchMs = activitySearchMs,
+                    dpMs = dpMs,
+                    validationMs = validationMs,
+                    totalMs = elapsedMs(totalMark),
+                ),
+            )
+        }
+
         if (!discoverAlignment) {
+            val dpMark = if (timingEnabled) TimeSource.Monotonic.markNow() else null
             val result = retimeWithSeed(
                 reference = reference,
                 target = target,
@@ -141,7 +170,10 @@ internal object AutoSyncTimelineRetimer {
                 referenceEstimatedEndStartsMs = referenceEstimatedEndStartsMs,
                 cancellationCheck = cancellationCheck,
             ) ?: return null
-            return result.copy(
+            dpMs += elapsedMs(dpMark)
+
+            val validationMark = if (timingEnabled) TimeSource.Monotonic.markNow() else null
+            val finalized = result.copy(
                 alignmentSource = "provided",
                 alignmentScale = coarseScale,
                 alignmentInterceptMs = coarseInterceptMs,
@@ -152,12 +184,17 @@ internal object AutoSyncTimelineRetimer {
                     targetSize = target.size,
                 ),
             )
+            validationMs += elapsedMs(validationMark)
+            reportTimings("provided")
+            return finalized
         }
 
+        val prepareMark = if (timingEnabled) TimeSource.Monotonic.markNow() else null
         val referenceActivity =
             preparedReferenceActivity ?: prepareUnitActivity(reference) ?: return null
         val targetActivity =
             preparedTargetActivity ?: prepareUnitActivity(target) ?: return null
+        prepareActivityMs += elapsedMs(prepareMark)
 
         // A precomputed delay can skip affine discovery only when the existing V2
         // delay validator already proved a strong, unambiguous, three-segment constant offset.
@@ -170,6 +207,7 @@ internal object AutoSyncTimelineRetimer {
                 alignment.segmentsPassed >= DELAY_ONLY_FAST_PATH_REQUIRED_SEGMENTS
         }
         if (fastDelayOnly != null) {
+            val fastDpMark = if (timingEnabled) TimeSource.Monotonic.markNow() else null
             val fastResult = retimeWithSeed(
                 reference = reference,
                 target = target,
@@ -178,7 +216,10 @@ internal object AutoSyncTimelineRetimer {
                 referenceEstimatedEndStartsMs = referenceEstimatedEndStartsMs,
                 cancellationCheck = cancellationCheck,
             )
+            dpMs += elapsedMs(fastDpMark)
             if (fastResult != null) {
+                val fastValidationMark =
+                    if (timingEnabled) TimeSource.Monotonic.markNow() else null
                 val validatedFast = finalizeDiscoveredResult(
                     result = fastResult,
                     referenceSize = reference.size,
@@ -190,12 +231,17 @@ internal object AutoSyncTimelineRetimer {
                     delayOnly = true,
                     allowAmbiguousDelayOnlyMargin = false,
                 )
-                if (validatedFast.confident) return validatedFast
+                validationMs += elapsedMs(fastValidationMark)
+                if (validatedFast.confident) {
+                    reportTimings("fast-delay")
+                    return validatedFast
+                }
             }
         }
 
         // Full V2 fallback remains authoritative whenever the proven-delay fast path is absent
         // or fails structural validation.
+        val activityMark = if (timingEnabled) TimeSource.Monotonic.markNow() else null
         val alignment = discoverActivityAlignment(
             reference = reference,
             target = target,
@@ -203,7 +249,9 @@ internal object AutoSyncTimelineRetimer {
             targetActivity = targetActivity,
             cancellationCheck = cancellationCheck,
         ) ?: return null
+        activitySearchMs += elapsedMs(activityMark)
 
+        val delayMark = if (timingEnabled) TimeSource.Monotonic.markNow() else null
         val delayOnly = if (abs(alignment.scale - 1.0) <= DELAY_ONLY_SCALE_TOLERANCE) {
             precomputedDelayOnly ?: findDelayOnlyAlignmentPrepared(
                 referenceActivity = referenceActivity,
@@ -217,12 +265,14 @@ internal object AutoSyncTimelineRetimer {
         } else {
             null
         }
+        delayValidationMs += elapsedMs(delayMark)
 
         val candidateScale = if (delayOnly != null) 1.0 else alignment.scale
         val candidateInterceptMs = delayOnly?.offsetMs ?: alignment.interceptMs
         val candidateActivityScore = delayOnly?.score ?: alignment.score
         val candidateActivityMargin = delayOnly?.margin ?: alignment.margin
 
+        val dpMark = if (timingEnabled) TimeSource.Monotonic.markNow() else null
         val result = retimeWithSeed(
             reference = reference,
             target = target,
@@ -231,8 +281,10 @@ internal object AutoSyncTimelineRetimer {
             referenceEstimatedEndStartsMs = referenceEstimatedEndStartsMs,
             cancellationCheck = cancellationCheck,
         ) ?: return null
+        dpMs += elapsedMs(dpMark)
 
-        return finalizeDiscoveredResult(
+        val validationMark = if (timingEnabled) TimeSource.Monotonic.markNow() else null
+        val finalized = finalizeDiscoveredResult(
             result = result,
             referenceSize = reference.size,
             targetSize = target.size,
@@ -245,6 +297,9 @@ internal object AutoSyncTimelineRetimer {
                 allowAmbiguousDelayOnlyMargin ||
                     (delayOnly?.stableSegmentMarginOverride == true),
         )
+        validationMs += elapsedMs(validationMark)
+        reportTimings(if (delayOnly != null) "delay-only" else "activity")
+        return finalized
     }
 
     private fun finalizeDiscoveredResult(
@@ -1426,6 +1481,16 @@ internal object AutoSyncTimelineRetimer {
     )
 }
 
+
+internal data class AutoSyncRetimePhaseTimings(
+    val path: String,
+    val prepareActivityMs: Long,
+    val delayValidationMs: Long,
+    val activitySearchMs: Long,
+    val dpMs: Long,
+    val validationMs: Long,
+    val totalMs: Long,
+)
 internal data class AutoSyncCueGroup(
     val referenceStartIndex: Int,
     val referenceCount: Int,

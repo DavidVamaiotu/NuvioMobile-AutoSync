@@ -532,9 +532,13 @@ internal object AutomaticSubtitleSync {
                     return
                 }
 
+                val activityPrepStarted = SystemClock.elapsedRealtime()
                 val targetActivity = withContext(Dispatchers.Default) {
                     AutoSyncTimelineRetimer.prepareUnitActivity(loaded.cues)
                 }
+                val activityPrepMs = SystemClock.elapsedRealtime() - activityPrepStarted
+
+                val preflightStarted = SystemClock.elapsedRealtime()
                 val preflight = if (targetActivity != null) {
                     withContext(Dispatchers.Default) {
                         AutoSyncDelayPreflight.bestMatch(
@@ -548,13 +552,23 @@ internal object AutomaticSubtitleSync {
                 } else {
                     null
                 }
+                val preflightMs = SystemClock.elapsedRealtime() - preflightStarted
 
+                val rankingStarted = SystemClock.elapsedRealtime()
                 val rankedReferences = withContext(Dispatchers.Default) {
                     rankReferenceCandidates(
                         target = loaded.cues,
                         referenceTracks = referenceTracks,
                         preferredReferenceKey = preflight?.referenceKey,
                     )
+                }
+                val rankingMs = SystemClock.elapsedRealtime() - rankingStarted
+
+                if (AutoSyncDebugLog.ENABLED) {
+                    AutoSyncDebugLog.info {
+                        "SCHED_TIMING candidate=$index activityPrep=${activityPrepMs}ms " +
+                            "preflight=${preflightMs}ms ranking=${rankingMs}ms"
+                    }
                 }
 
                 val family = CandidateTimingFamilyState(
@@ -924,6 +938,7 @@ internal object AutomaticSubtitleSync {
                 }
             }
 
+            val pairStarted = SystemClock.elapsedRealtime()
             val timeline = buildTimelineRetimeResult(
                 track = track,
                 target = target,
@@ -934,7 +949,31 @@ internal object AutomaticSubtitleSync {
                         ?.takeIf { it.referenceKey == track.key }
                         ?.alignment,
                 cancellationCheck = { evaluationContext.ensureActive() },
-            ) ?: continue
+                timingObserver =
+                    if (AutoSyncDebugLog.ENABLED) {
+                        { timing ->
+                            AutoSyncDebugLog.info {
+                                "$label MATCH_TIMING reference=${track.key} path=${timing.path} " +
+                                    "prepare=${timing.prepareActivityMs}ms " +
+                                    "delay=${timing.delayValidationMs}ms " +
+                                    "activity=${timing.activitySearchMs}ms " +
+                                    "dp=${timing.dpMs}ms validate=${timing.validationMs}ms " +
+                                    "total=${timing.totalMs}ms"
+                            }
+                        }
+                    } else {
+                        null
+                    },
+            )
+            val pairTotalMs = SystemClock.elapsedRealtime() - pairStarted
+            if (timeline == null) {
+                if (AutoSyncDebugLog.ENABLED) {
+                    AutoSyncDebugLog.info {
+                        "$label MATCH_TIMING reference=${track.key} result=none total=${pairTotalMs}ms"
+                    }
+                }
+                continue
+            }
             val match = TimelineRetimeMatch(track, timeline)
             attempts += match
 
@@ -1667,6 +1706,7 @@ internal object AutomaticSubtitleSync {
         preparedTargetActivity: AutoSyncTimelineRetimer.PreparedActivity?,
         delayOnlyHint: AutoSyncDelayOnlyAlignment? = null,
         cancellationCheck: (() -> Unit)? = null,
+        timingObserver: ((AutoSyncRetimePhaseTimings) -> Unit)? = null,
     ): AutoSyncTimelineRetimeResult? {
         val overSegmentedReference =
             track.cues.size.toLong() * 2L >= target.size.toLong() * 3L
@@ -1693,6 +1733,7 @@ internal object AutomaticSubtitleSync {
             preparedTargetActivity = preparedTargetActivity,
             precomputedDelayOnly = delayOnlyHint,
             cancellationCheck = cancellationCheck,
+            timingObserver = timingObserver,
         )
     }
 
