@@ -402,6 +402,40 @@ internal object AutomaticSubtitleSync {
             val loadedByUrl = mutableMapOf<String, LoadedSubtitle>()
             val preflightByUrl = mutableMapOf<String, AutoSyncDelayPreflight.Match>()
             val preflightV2Cache = mutableMapOf<String, CandidateEvaluation>()
+            val timingEvaluationCache = mutableListOf<CachedTimingEvaluation>()
+
+            fun cachedTimingEvaluation(
+                target: List<SubtitleSyncCue>,
+            ): CandidateEvaluation? = synchronized(timingEvaluationCache) {
+                var reused: CandidateEvaluation? = null
+                for (cached in timingEvaluationCache) {
+                    reused = reuseShiftEquivalentEvaluation(
+                        evaluation = cached.evaluation,
+                        representativeTarget = cached.target,
+                        target = target,
+                    )
+                    if (reused != null) break
+                }
+                reused
+            }
+
+            fun cacheTimingEvaluation(
+                target: List<SubtitleSyncCue>,
+                evaluation: CandidateEvaluation,
+            ) {
+                synchronized(timingEvaluationCache) {
+                    if (
+                        timingEvaluationCache.none { cached ->
+                            constantTimelineShiftMs(cached.target, target) != null
+                        }
+                    ) {
+                        timingEvaluationCache += CachedTimingEvaluation(
+                            target = target.toList(),
+                            evaluation = evaluation,
+                        )
+                    }
+                }
+            }
 
             fun headersForCandidate(url: String): Map<String, String> =
                 if (url == selectedSubtitleUrl) selectedSubtitleHeaders else emptyMap()
@@ -510,7 +544,8 @@ internal object AutomaticSubtitleSync {
                             "url=${candidate.url} reference=${match.referenceKey}"
                     }
 
-                    val evaluation = evaluateExternalCandidate(
+                    val cachedTiming = cachedTimingEvaluation(loaded.cues)
+                    val evaluation = cachedTiming ?: evaluateExternalCandidate(
                         label = "PREFLIGHT",
                         url = candidate.url,
                         target = loaded.cues,
@@ -519,6 +554,13 @@ internal object AutomaticSubtitleSync {
                         preferredReferenceKey = match.referenceKey,
                         preflightHint = match,
                     )
+                    if (cachedTiming == null) {
+                        cacheTimingEvaluation(loaded.cues, evaluation)
+                    } else {
+                        AutoSyncDebugLog.info {
+                            "PREFLIGHT reused session timing-family V2 validation url=${candidate.url}"
+                        }
+                    }
                     preflightV2Cache[candidate.url] = evaluation
 
                     val best = evaluation.best
@@ -683,10 +725,15 @@ internal object AutomaticSubtitleSync {
                     val evaluatedPair = groupPair.map { group ->
                         async {
                             val representative = group.first()
-                            val cached = preflightV2Cache[representative.candidate.url]
-                            EvaluatedAlternativeTimingGroup(
-                                members = group,
-                                evaluation = cached ?: evaluateExternalCandidate(
+                            val cachedByUrl = preflightV2Cache[representative.candidate.url]
+                            val cachedByTiming =
+                                if (cachedByUrl == null) {
+                                    cachedTimingEvaluation(representative.loaded.cues)
+                                } else {
+                                    null
+                                }
+                            val evaluation =
+                                cachedByUrl ?: cachedByTiming ?: evaluateExternalCandidate(
                                     label = "CANDIDATE[${representative.index}]",
                                     url = representative.candidate.url,
                                     target = representative.loaded.cues,
@@ -696,7 +743,18 @@ internal object AutomaticSubtitleSync {
                                         preflightByUrl[representative.candidate.url]?.referenceKey,
                                     preflightHint =
                                         preflightByUrl[representative.candidate.url],
-                                ),
+                                )
+                            if (cachedByUrl == null && cachedByTiming == null) {
+                                cacheTimingEvaluation(representative.loaded.cues, evaluation)
+                            } else if (cachedByTiming != null) {
+                                AutoSyncDebugLog.info {
+                                    "CANDIDATE[${representative.index}] reused session timing-family " +
+                                        "V2 validation"
+                                }
+                            }
+                            EvaluatedAlternativeTimingGroup(
+                                members = group,
+                                evaluation = evaluation,
                             )
                         }
                     }.awaitAll()
@@ -1660,6 +1718,10 @@ internal object AutomaticSubtitleSync {
     private data class CandidateEvaluation(
         val best: TimelineRetimeMatch?,
         val attempts: List<TimelineRetimeMatch>,
+    )
+    private data class CachedTimingEvaluation(
+        val target: List<SubtitleSyncCue>,
+        val evaluation: CandidateEvaluation,
     )
     private data class LoadedAlternative(
         val index: Int,

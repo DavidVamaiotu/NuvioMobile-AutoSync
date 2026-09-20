@@ -63,6 +63,9 @@ internal object AutoSyncTimelineRetimer {
     private const val DELAY_ONLY_SEGMENT_SEARCH_RADIUS_MS = 1_000L
     private const val DELAY_ONLY_MAX_SEGMENT_OFFSET_DELTA_MS = 500L
     private const val DELAY_ONLY_DISTINCT_OFFSET_MS = 3_000L
+    private const val DELAY_ONLY_FAST_PATH_MIN_SCORE = 0.90
+    private const val DELAY_ONLY_FAST_PATH_MIN_MARGIN = 0.04
+    private const val DELAY_ONLY_FAST_PATH_REQUIRED_SEGMENTS = 3
     private const val SMALL_SAMPLE_CUE_LIMIT = 8
     private const val SMALL_SAMPLE_ACTIVITY_MIN_SCORE = 0.72
     private const val SMALL_SAMPLE_ACTIVITY_MIN_MARGIN = 0.03
@@ -154,9 +157,42 @@ internal object AutoSyncTimelineRetimer {
         val targetActivity =
             preparedTargetActivity ?: prepareUnitActivity(target) ?: return null
 
-        // Preserve V2's original final decision semantics: discover the best whole-film
-        // affine/FPS transform first. A preflight delay hint may save duplicate delay work,
-        // but it can only be used after V2 independently decides that scale is effectively 1.0.
+        // A precomputed delay can skip affine discovery only when the existing V2
+        // delay validator already proved a strong, unambiguous, three-segment constant offset.
+        // Structural DP and all final confidence checks still run unchanged. Any failure falls
+        // through to the normal affine/FPS discovery path.
+        val fastDelayOnly = precomputedDelayOnly?.takeIf { alignment ->
+            !allowAmbiguousDelayOnlyMargin &&
+                alignment.score >= DELAY_ONLY_FAST_PATH_MIN_SCORE &&
+                alignment.margin >= DELAY_ONLY_FAST_PATH_MIN_MARGIN &&
+                alignment.segmentsPassed >= DELAY_ONLY_FAST_PATH_REQUIRED_SEGMENTS
+        }
+        if (fastDelayOnly != null) {
+            val fastResult = retimeWithSeed(
+                reference = reference,
+                target = target,
+                coarseScale = 1.0,
+                coarseInterceptMs = fastDelayOnly.offsetMs,
+                referenceEstimatedEndStartsMs = referenceEstimatedEndStartsMs,
+            )
+            if (fastResult != null) {
+                val validatedFast = finalizeDiscoveredResult(
+                    result = fastResult,
+                    referenceSize = reference.size,
+                    targetSize = target.size,
+                    candidateScale = 1.0,
+                    candidateInterceptMs = fastDelayOnly.offsetMs,
+                    candidateActivityScore = fastDelayOnly.score,
+                    candidateActivityMargin = fastDelayOnly.margin,
+                    delayOnly = true,
+                    allowAmbiguousDelayOnlyMargin = false,
+                )
+                if (validatedFast.confident) return validatedFast
+            }
+        }
+
+        // Full V2 fallback remains authoritative whenever the proven-delay fast path is absent
+        // or fails structural validation.
         val alignment = discoverActivityAlignment(
             reference = reference,
             target = target,
@@ -189,13 +225,37 @@ internal object AutoSyncTimelineRetimer {
             referenceEstimatedEndStartsMs = referenceEstimatedEndStartsMs,
         ) ?: return null
 
-        val coverageSegments = coverageSegmentsPassed(result, target.size)
-        val simpleRatio = structuralGroupRatio(
+        return finalizeDiscoveredResult(
             result = result,
             referenceSize = reference.size,
             targetSize = target.size,
+            candidateScale = candidateScale,
+            candidateInterceptMs = candidateInterceptMs,
+            candidateActivityScore = candidateActivityScore,
+            candidateActivityMargin = candidateActivityMargin,
+            delayOnly = delayOnly != null,
+            allowAmbiguousDelayOnlyMargin = allowAmbiguousDelayOnlyMargin,
         )
-        val smallSample = target.size < SMALL_SAMPLE_CUE_LIMIT
+    }
+
+    private fun finalizeDiscoveredResult(
+        result: AutoSyncTimelineRetimeResult,
+        referenceSize: Int,
+        targetSize: Int,
+        candidateScale: Double,
+        candidateInterceptMs: Double,
+        candidateActivityScore: Double,
+        candidateActivityMargin: Double,
+        delayOnly: Boolean,
+        allowAmbiguousDelayOnlyMargin: Boolean,
+    ): AutoSyncTimelineRetimeResult {
+        val coverageSegments = coverageSegmentsPassed(result, targetSize)
+        val simpleRatio = structuralGroupRatio(
+            result = result,
+            referenceSize = referenceSize,
+            targetSize = targetSize,
+        )
+        val smallSample = targetSize < SMALL_SAMPLE_CUE_LIMIT
         val requiredActivityScore =
             if (smallSample) SMALL_SAMPLE_ACTIVITY_MIN_SCORE else ACTIVITY_MIN_SCORE
         val requiredActivityMargin =
@@ -204,7 +264,7 @@ internal object AutoSyncTimelineRetimer {
             if (smallSample) SMALL_SAMPLE_REQUIRED_COVERAGE_SEGMENTS else 3
         val activityMarginAccepted =
             candidateActivityMargin >= requiredActivityMargin ||
-                (delayOnly != null && allowAmbiguousDelayOnlyMargin)
+                (delayOnly && allowAmbiguousDelayOnlyMargin)
 
         val confirmed =
             result.confident &&
@@ -218,7 +278,7 @@ internal object AutoSyncTimelineRetimer {
 
         return result.copy(
             confident = confirmed,
-            alignmentSource = if (delayOnly != null) "delay-only-validated" else "activity-correlation",
+            alignmentSource = if (delayOnly) "delay-only-validated" else "activity-correlation",
             alignmentScale = candidateScale,
             alignmentInterceptMs = candidateInterceptMs,
             activityScore = candidateActivityScore,
@@ -278,14 +338,12 @@ internal object AutoSyncTimelineRetimer {
                             rows = rows,
                             toTargetIndex = targetIndex,
                             toReferenceIndex = referenceIndex + 1,
-                            candidate = Cell(
-                                cost = cell.cost + SKIP_REFERENCE_COST,
-                                previousReferenceIndex = referenceIndex,
-                                previousTargetIndex = targetIndex,
-                                referenceCount = 1,
-                                targetCount = 0,
-                                step = Step.SKIP_REFERENCE,
-                            ),
+                            candidateCost = cell.cost + SKIP_REFERENCE_COST,
+                            previousReferenceIndex = referenceIndex,
+                            previousTargetIndex = targetIndex,
+                            referenceCount = 1,
+                            targetCount = 0,
+                            step = Step.SKIP_REFERENCE,
                         )
                     }
 
@@ -296,14 +354,12 @@ internal object AutoSyncTimelineRetimer {
                             rows = rows,
                             toTargetIndex = targetIndex + 1,
                             toReferenceIndex = referenceIndex,
-                            candidate = Cell(
-                                cost = cell.cost + SKIP_TARGET_COST,
-                                previousReferenceIndex = referenceIndex,
-                                previousTargetIndex = targetIndex,
-                                referenceCount = 0,
-                                targetCount = 1,
-                                step = Step.SKIP_TARGET,
-                            ),
+                            candidateCost = cell.cost + SKIP_TARGET_COST,
+                            previousReferenceIndex = referenceIndex,
+                            previousTargetIndex = targetIndex,
+                            referenceCount = 0,
+                            targetCount = 1,
+                            step = Step.SKIP_TARGET,
                         )
                     }
 
@@ -330,17 +386,15 @@ internal object AutoSyncTimelineRetimer {
                             rows = rows,
                             toTargetIndex = nextTargetIndex,
                             toReferenceIndex = nextReferenceIndex,
-                            candidate = Cell(
-                                cost = cell.cost + groupCost +
-                                    GROUP_COMPLEXITY_COST *
-                                    (shape.referenceCount + shape.targetCount - 2),
-                                previousReferenceIndex = referenceIndex,
-                                previousTargetIndex = targetIndex,
-                                referenceCount = shape.referenceCount,
-                                targetCount = shape.targetCount,
-                                step = Step.GROUP,
-                                localGroupCost = groupCost,
-                            ),
+                            candidateCost = cell.cost + groupCost +
+                                GROUP_COMPLEXITY_COST *
+                                (shape.referenceCount + shape.targetCount - 2),
+                            previousReferenceIndex = referenceIndex,
+                            previousTargetIndex = targetIndex,
+                            referenceCount = shape.referenceCount,
+                            targetCount = shape.targetCount,
+                            step = Step.GROUP,
+                            localGroupCost = groupCost,
                         )
                     }
                 }
@@ -663,19 +717,16 @@ internal object AutoSyncTimelineRetimer {
         }
         if (segmentEnd < segmentStart) return null
 
-        var visibleTarget = 0
-        var intersection = 0
-        for (targetIndex in target.activeIndexes) {
-            if (targetIndex < segmentStart) continue
-            if (targetIndex > segmentEnd) break
-            visibleTarget++
-            val shiftedIndex = targetIndex + offsetBins
-            if (shiftedIndex in reference.bins.indices && reference.bins[shiftedIndex]) {
-                intersection++
-            }
-        }
-
+        val visibleTarget =
+            target.prefix[segmentEnd + 1] - target.prefix[segmentStart]
         if (visibleTarget <= 0) return null
+        val intersection = countShiftedActivityIntersection(
+            reference = reference,
+            target = target,
+            offsetBins = offsetBins,
+            sourceStart = segmentStart,
+            sourceEnd = segmentEnd,
+        )
         return intersection.toDouble() / visibleTarget.toDouble()
     }
 
@@ -697,18 +748,16 @@ internal object AutoSyncTimelineRetimer {
         }
         if (segmentEnd < segmentStart) return null
 
-        var visibleTarget = 0
-        var intersection = 0
-        for (targetIndex in target.activeIndexes) {
-            if (targetIndex < segmentStart) continue
-            if (targetIndex > segmentEnd) break
-            visibleTarget++
-            val shiftedIndex = targetIndex + offsetBins
-            if (shiftedIndex in reference.bins.indices && reference.bins[shiftedIndex]) {
-                intersection++
-            }
-        }
+        val visibleTarget =
+            target.prefix[segmentEnd + 1] - target.prefix[segmentStart]
         if (visibleTarget <= 0) return null
+        val intersection = countShiftedActivityIntersection(
+            reference = reference,
+            target = target,
+            offsetBins = offsetBins,
+            sourceStart = segmentStart,
+            sourceEnd = segmentEnd,
+        )
 
         val referenceWindowStart = max(0, segmentStart + offsetBins)
         val referenceWindowEnd = min(reference.bins.lastIndex, segmentEnd + offsetBins)
@@ -858,10 +907,13 @@ internal object AutoSyncTimelineRetimer {
 
         val activeIndexes = IntArray(activeCount)
         val prefix = IntArray(binCount + 1)
+        val packed = LongArray((binCount + 63) ushr 6)
         var cursor = 0
         for (index in bins.indices) {
             if (bins[index]) {
                 activeIndexes[cursor++] = index
+                packed[index ushr 6] =
+                    packed[index ushr 6] or (1L shl (index and 63))
                 prefix[index + 1] = prefix[index] + 1
             } else {
                 prefix[index + 1] = prefix[index]
@@ -869,11 +921,63 @@ internal object AutoSyncTimelineRetimer {
         }
         return ActivityTimeline(
             bins = bins,
+            packed = packed,
             activeIndexes = activeIndexes,
             prefix = prefix,
             firstActive = activeIndexes.first(),
             lastActive = activeIndexes.last(),
         )
+    }
+
+    private fun countShiftedActivityIntersection(
+        reference: ActivityTimeline,
+        target: ActivityTimeline,
+        offsetBins: Int,
+        sourceStart: Int,
+        sourceEnd: Int,
+    ): Int {
+        if (sourceEnd < sourceStart) return 0
+
+        val firstWord = sourceStart ushr 6
+        val lastWord = sourceEnd ushr 6
+        var intersection = 0
+
+        for (wordIndex in firstWord..lastWord) {
+            val alignedReference = packedActivityWindow(
+                packed = reference.packed,
+                startBit = (wordIndex shl 6) + offsetBins,
+            )
+            val firstBit = if (wordIndex == firstWord) sourceStart and 63 else 0
+            val lastBit = if (wordIndex == lastWord) sourceEnd and 63 else 63
+            val mask = activityRangeMask(firstBit, lastBit)
+            intersection +=
+                (target.packed[wordIndex] and alignedReference and mask).countOneBits()
+        }
+
+        return intersection
+    }
+
+    private fun packedActivityWindow(
+        packed: LongArray,
+        startBit: Int,
+    ): Long {
+        val wordIndex = startBit shr 6
+        val bitOffset = startBit and 63
+        val low = if (wordIndex in packed.indices) packed[wordIndex] else 0L
+        if (bitOffset == 0) return low
+
+        val highIndex = wordIndex + 1
+        val high = if (highIndex in packed.indices) packed[highIndex] else 0L
+        return (low ushr bitOffset) or (high shl (64 - bitOffset))
+    }
+
+    private fun activityRangeMask(
+        firstBit: Int,
+        lastBit: Int,
+    ): Long {
+        val lower = -1L shl firstBit
+        val upper = if (lastBit == 63) -1L else (1L shl (lastBit + 1)) - 1L
+        return lower and upper
     }
 
     private fun scoreActivityOffset(
@@ -887,13 +991,13 @@ internal object AutoSyncTimelineRetimer {
         val visibleTarget = target.prefix[sourceEnd + 1] - target.prefix[sourceStart]
         if (visibleTarget <= 0) return null
 
-        var intersection = 0
-        for (targetIndex in target.activeIndexes) {
-            val shiftedIndex = targetIndex + offsetBins
-            if (shiftedIndex in reference.bins.indices && reference.bins[shiftedIndex]) {
-                intersection++
-            }
-        }
+        val intersection = countShiftedActivityIntersection(
+            reference = reference,
+            target = target,
+            offsetBins = offsetBins,
+            sourceStart = sourceStart,
+            sourceEnd = sourceEnd,
+        )
 
         val referenceWindowStart = max(0, target.firstActive + offsetBins)
         val referenceWindowEnd = min(reference.bins.lastIndex, target.lastActive + offsetBins)
@@ -1033,6 +1137,7 @@ internal object AutoSyncTimelineRetimer {
 
     internal data class ActivityTimeline(
         val bins: BooleanArray,
+        val packed: LongArray,
         val activeIndexes: IntArray,
         val prefix: IntArray,
         val firstActive: Int,
@@ -1179,11 +1284,25 @@ internal object AutoSyncTimelineRetimer {
         rows: Array<HashMap<Int, Cell>>,
         toTargetIndex: Int,
         toReferenceIndex: Int,
-        candidate: Cell,
+        candidateCost: Double,
+        previousReferenceIndex: Int,
+        previousTargetIndex: Int,
+        referenceCount: Int,
+        targetCount: Int,
+        step: Step,
+        localGroupCost: Double = 0.0,
     ) {
         val current = rows[toTargetIndex][toReferenceIndex]
-        if (current == null || candidate.cost + 1e-9 < current.cost) {
-            rows[toTargetIndex][toReferenceIndex] = candidate
+        if (current == null || candidateCost + 1e-9 < current.cost) {
+            rows[toTargetIndex][toReferenceIndex] = Cell(
+                cost = candidateCost,
+                previousReferenceIndex = previousReferenceIndex,
+                previousTargetIndex = previousTargetIndex,
+                referenceCount = referenceCount,
+                targetCount = targetCount,
+                step = step,
+                localGroupCost = localGroupCost,
+            )
         }
     }
 
