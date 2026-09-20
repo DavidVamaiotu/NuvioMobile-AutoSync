@@ -301,33 +301,9 @@ internal object AutomaticSubtitleSync {
             val referenceActivityCache =
                 mutableMapOf<String, AutoSyncTimelineRetimer.PreparedActivity?>()
 
-            var selectedEvaluationAttempted = false
-
-            suspend fun evaluateSelectedIfConfident(
-                loaded: LoadedSubtitle,
-            ): AutoSyncResolvedTimeline? {
-                selectedEvaluationAttempted = true
-                val selectedEvaluation = evaluateExternalCandidate(
-                    label = "SELECTED",
-                    url = selectedSubtitleUrl,
-                    target = loaded.cues,
-                    referenceTracks = referenceTracks,
-                    referenceActivityCache = referenceActivityCache,
-                )
-                val selectedBest = selectedEvaluation.best
-                return if (selectedBest?.timeline?.confident == true) {
-                    AutoSyncResolvedTimeline(
-                        subtitleUrl = selectedSubtitleUrl,
-                        subtitleHeaders = selectedSubtitleHeaders,
-                        timeline = selectedBest.timeline,
-                    )
-                } else {
-                    null
-                }
-            }
-
-            // The selected request kept running while the embedded index/fallback seed was
-            // prepared. If it finished in that time, it still has first priority.
+            // The Nuvio-selected subtitle is usually automatic, so treat it as one timing
+            // candidate rather than giving it expensive V2 priority. A cheap fixed-delay
+            // preflight ranks all same-language candidates first.
             if (selected == null && selectedSubtitleDeferred.isCompleted) {
                 selected = selectedSubtitleDeferred.await()
                 if (selected != null) {
@@ -340,21 +316,202 @@ internal object AutomaticSubtitleSync {
                 }
             }
 
-            selected?.let { loaded ->
-                evaluateSelectedIfConfident(loaded)?.let {
-                    return@supervisorScope it
+            awaitSameLanguageAlternatives()
+
+            val selectedCandidateMetadata =
+                availableCandidates.firstOrNull { it.url == selectedSubtitleUrl }
+                    ?: AutoSyncSubtitleCandidate(
+                        url = selectedSubtitleUrl,
+                        language = language ?: preferredLanguage.orEmpty(),
+                        name = "Selected",
+                    )
+
+            // Put the selected subtitle into the same pool. It remains eligible, but is no
+            // longer privileged merely because Nuvio auto-selected it.
+            alternatives = (alternatives + selectedCandidateMetadata)
+                .distinctBy { it.url }
+
+            val alternativeDownloadSemaphore = Semaphore(MAX_PARALLEL_ALTERNATIVE_DOWNLOADS)
+            val alternativeLoads = linkedMapOf<String, Deferred<LoadedSubtitle?>>()
+            val loadedByUrl = mutableMapOf<String, LoadedSubtitle>()
+            val preflightByUrl = mutableMapOf<String, AutoSyncDelayPreflight.Match>()
+            val preflightV2Cache = mutableMapOf<String, CandidateEvaluation>()
+
+            fun headersForCandidate(url: String): Map<String, String> =
+                if (url == selectedSubtitleUrl) selectedSubtitleHeaders else emptyMap()
+
+            fun scheduleAlternativeLoads() {
+                alternatives.forEach { candidate ->
+                    if (candidate.url !in alternativeLoads) {
+                        alternativeLoads[candidate.url] = async {
+                            if (candidate.url == selectedSubtitleUrl) {
+                                selected ?: selectedSubtitleDeferred.await()
+                            } else {
+                                alternativeDownloadSemaphore.withPermit {
+                                    loadSelectedSubtitle(
+                                        url = candidate.url,
+                                        headers = emptyMap(),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            scheduleAlternativeLoads()
+
+            AutoSyncDebugLog.section { "DELAY-ONLY PREFLIGHT" }
+            AutoSyncDebugLog.info {
+                "scanning ${alternatives.size} same-language candidates with cheap fixed-delay timing"
+            }
+
+            // Scan progressively in the same bounded batches used by fallback. If a genuinely
+            // excellent constant-delay candidate appears, validate only that candidate with V2
+            // and finish. Otherwise retain all preflight evidence to order the heavy V2 pass.
+            var preflightStart = 0
+            while (preflightStart < alternatives.size) {
+                val preflightEnd = minOf(
+                    preflightStart + ALTERNATIVE_EXTERNAL_SUBTITLE_BATCH_SIZE,
+                    alternatives.size,
+                )
+
+                for (index in preflightStart until preflightEnd) {
+                    val candidate = alternatives[index]
+                    val loaded = alternativeLoads[candidate.url]?.await() ?: continue
+                    loadedByUrl[candidate.url] = loaded
+
+                    val match = withContext(Dispatchers.Default) {
+                        AutoSyncDelayPreflight.bestMatch(
+                            referenceTracks = referenceTracks,
+                            target = loaded.cues,
+                        )
+                    } ?: continue
+
+                    preflightByUrl[candidate.url] = match
+                    AutoSyncDebugLog.info {
+                        "PREFLIGHT[$index] url=${candidate.url} reference=${match.referenceKey} " +
+                            "offset=${match.offsetMs}ms score=${fmt(match.score)} " +
+                            "margin=${fmt(match.margin)} participation=${fmt(match.participation)} " +
+                            "residual=${"%.1f".format(match.meanResidualMs)}ms " +
+                            "strong=${AutoSyncDelayPreflight.isReallyGood(match)}"
+                    }
                 }
 
-                // Add-on results arrive progressively. Re-read the coordinator's current
-                // candidate list only when fallback is actually needed, so the fast selected
-                // subtitle path is never delayed.
-                awaitSameLanguageAlternatives()
+                val strongCandidate =
+                    (preflightStart until preflightEnd)
+                        .mapNotNull { index ->
+                            val candidate = alternatives[index]
+                            val match = preflightByUrl[candidate.url] ?: return@mapNotNull null
+                            if (!AutoSyncDelayPreflight.isReallyGood(match)) return@mapNotNull null
+                            Triple(index, candidate, match)
+                        }
+                        .maxWithOrNull(
+                            compareBy<Triple<Int, AutoSyncSubtitleCandidate, AutoSyncDelayPreflight.Match>> {
+                                it.third.score
+                            }.thenBy { it.third.participation }
+                                .thenByDescending { it.third.meanResidualMs },
+                        )
 
-                AutoSyncDebugLog.section { "EXTERNAL SUBTITLE FALLBACK" }
+                if (strongCandidate != null) {
+                    val (index, candidate, match) = strongCandidate
+                    val loaded = loadedByUrl[candidate.url]
+                    if (loaded != null) {
+                        AutoSyncDebugLog.info {
+                            "PREFLIGHT[$index] strong constant-delay candidate; " +
+                                "validating first with V2 reference=${match.referenceKey}"
+                        }
+
+                        val evaluation = evaluateExternalCandidate(
+                            label = "PREFLIGHT[$index]",
+                            url = candidate.url,
+                            target = loaded.cues,
+                            referenceTracks = referenceTracks,
+                            referenceActivityCache = referenceActivityCache,
+                            preferredReferenceKey = match.referenceKey,
+                            preflightHint = match,
+                        )
+                        preflightV2Cache[candidate.url] = evaluation
+
+                        val best = evaluation.best
+                        if (
+                            best?.timeline?.confident == true &&
+                            best.timeline.alignmentSource == "delay-only-validated"
+                        ) {
+                            alternativeLoads.values
+                                .filterNot { it.isCompleted }
+                                .forEach { it.cancel() }
+                            if (!selectedSubtitleDeferred.isCompleted) {
+                                selectedSubtitleDeferred.cancel()
+                            }
+
+                            AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
+                            AutoSyncDebugLog.info {
+                                "V2 accepted delay preflight candidate index=$index " +
+                                    "url=${candidate.url} name=${candidate.name ?: "<none>"} " +
+                                    "reference=${best.track.key} " +
+                                    "quality=${fmt(directTimelineQualityScore(best))}"
+                            }
+
+                            return@supervisorScope AutoSyncResolvedTimeline(
+                                subtitleUrl = candidate.url,
+                                subtitleHeaders = headersForCandidate(candidate.url),
+                                timeline = best.timeline,
+                            )
+                        }
+
+                        AutoSyncDebugLog.info {
+                            "PREFLIGHT[$index] fast evidence was not authoritative; continuing scan"
+                        }
+                    }
+                }
+
+                preflightStart = preflightEnd
+
+                // Preserve progressive add-on discovery: append newly arrived same-language
+                // URLs to the same preflight queue instead of freezing the initial snapshot.
+                if (alternativeSubtitlesProvider != null) {
+                    availableCandidates = currentExternalCandidates()
+                    language = selectedLanguage(availableCandidates)
+                    val refreshed = sameLanguageAlternatives(availableCandidates, language)
+                    val knownUrls = alternatives.asSequence().map { it.url }.toHashSet()
+                    val newlyArrived = refreshed.filter { it.url !in knownUrls }
+                    if (newlyArrived.isNotEmpty()) {
+                        alternatives = alternatives + newlyArrived
+                        scheduleAlternativeLoads()
+                        AutoSyncDebugLog.info {
+                            "preflight candidate refresh added=${newlyArrived.size} total=${alternatives.size}"
+                        }
+                    }
+                }
+            }
+
+            // No excellent delay-only candidate survived V2 validation. Pass the preflight
+            // evidence forward: V2 now tries candidates in this order, and each candidate tries
+            // its preflight-winning embedded reference first.
+            alternatives = alternatives.sortedWith(
+                compareByDescending<AutoSyncSubtitleCandidate> {
+                    preflightByUrl[it.url]?.score ?: Double.NEGATIVE_INFINITY
+                }.thenByDescending {
+                    preflightByUrl[it.url]?.margin ?: Double.NEGATIVE_INFINITY
+                }.thenByDescending {
+                    preflightByUrl[it.url]?.participation ?: 0.0
+                }.thenBy {
+                    preflightByUrl[it.url]?.meanResidualMs ?: Double.POSITIVE_INFINITY
+                },
+            )
+
+            AutoSyncDebugLog.section { "V2 CANDIDATE ORDER FROM PREFLIGHT" }
+            alternatives.forEachIndexed { index, candidate ->
+                val hint = preflightByUrl[candidate.url]
                 AutoSyncDebugLog.info {
-                    "selected subtitle did not produce a confident result; " +
-                        "trying ${alternatives.size} same-language alternatives in batches of " +
-                        "$ALTERNATIVE_EXTERNAL_SUBTITLE_BATCH_SIZE"
+                    "[$index] url=${candidate.url} name=${candidate.name ?: "<none>"} " +
+                        if (hint == null) {
+                            "preflight=<none>"
+                        } else {
+                            "reference=${hint.referenceKey} offset=${hint.offsetMs}ms " +
+                                "score=${fmt(hint.score)} margin=${fmt(hint.margin)}"
+                        }
                 }
             }
 
@@ -364,30 +521,10 @@ internal object AutomaticSubtitleSync {
             var bestAlternativeName: String? = null
             var bestAlternativeCueCount = 0
 
-            // V1 efficiency only: once fallback is actually needed, overlap candidate network
-            // work with matching. V2's matcher, confidence gates and batch selection stay intact.
-            val alternativeDownloadSemaphore = Semaphore(MAX_PARALLEL_ALTERNATIVE_DOWNLOADS)
-            val alternativeLoads = linkedMapOf<String, Deferred<LoadedSubtitle?>>()
-
-            fun scheduleAlternativeLoads() {
-                alternatives.forEach { candidate ->
-                    if (candidate.url !in alternativeLoads) {
-                        alternativeLoads[candidate.url] = async {
-                            alternativeDownloadSemaphore.withPermit {
-                                loadSelectedSubtitle(
-                                    url = candidate.url,
-                                    headers = emptyMap(),
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            scheduleAlternativeLoads()
-
             var batchStartIndex = 0
             var stopFallbackSearch = false
+
+            AutoSyncDebugLog.section { "FULL V2 FALLBACK" }
 
             while (batchStartIndex < alternatives.size && !stopFallbackSearch) {
                 val batchEndExclusive = minOf(
@@ -396,24 +533,20 @@ internal object AutomaticSubtitleSync {
                 )
 
                 AutoSyncDebugLog.info {
-                    "fallback batch candidates=$batchStartIndex..${batchEndExclusive - 1}"
+                    "V2 batch candidates=$batchStartIndex..${batchEndExclusive - 1}"
                 }
 
-                // Downloads were already started together (bounded to six, as in V1). Awaiting
-                // them in candidate order does not serialize the network work.
                 val loadedBatch = ArrayList<LoadedAlternative>(
                     batchEndExclusive - batchStartIndex,
                 )
                 for (index in batchStartIndex until batchEndExclusive) {
                     val candidate = alternatives[index]
-                    val loaded = alternativeLoads[candidate.url]?.await() ?: continue
+                    val loaded =
+                        loadedByUrl[candidate.url]
+                            ?: alternativeLoads[candidate.url]?.await()
+                            ?: continue
+                    loadedByUrl[candidate.url] = loaded
 
-                    logLoadedExternalSubtitle(
-                        label = "ALTERNATIVE[$index]",
-                        url = candidate.url,
-                        loaded = loaded,
-                        sampleLimit = 3,
-                    )
                     loadedBatch += LoadedAlternative(
                         index = index,
                         candidate = candidate,
@@ -421,8 +554,6 @@ internal object AutomaticSubtitleSync {
                     )
                 }
 
-                // V1 timing deduplication: external text never participates in V2 matching, so
-                // exact-equal start/end timelines can safely share one authoritative evaluation.
                 val timingBuckets =
                     linkedMapOf<ReferenceTimingFingerprint, MutableList<MutableList<LoadedAlternative>>>()
                 for (alternative in loadedBatch) {
@@ -449,27 +580,30 @@ internal object AutomaticSubtitleSync {
                     }
                 }
 
-                // V1 used two matcher workers. Keep the same bound so weak TV boxes don't get
-                // four simultaneous CPU-heavy V2 DP/activity-correlation jobs.
+                // Keep the existing two-worker bound for TV hardware. Candidate ordering is from
+                // preflight; the second worker is only speculative parallel work.
                 for (groupPair in timingGroups.chunked(MAX_PARALLEL_ALTERNATIVE_MATCHES)) {
                     val evaluatedPair = groupPair.map { group ->
                         async {
                             val representative = group.first()
+                            val cached = preflightV2Cache[representative.candidate.url]
                             EvaluatedAlternativeTimingGroup(
                                 members = group,
-                                evaluation = evaluateExternalCandidate(
-                                    label = "ALTERNATIVE[${representative.index}]",
+                                evaluation = cached ?: evaluateExternalCandidate(
+                                    label = "CANDIDATE[${representative.index}]",
                                     url = representative.candidate.url,
                                     target = representative.loaded.cues,
                                     referenceTracks = referenceTracks,
                                     referenceActivityCache = referenceActivityCache,
+                                    preferredReferenceKey =
+                                        preflightByUrl[representative.candidate.url]?.referenceKey,
+                                    preflightHint =
+                                        preflightByUrl[representative.candidate.url],
                                 ),
                             )
                         }
                     }.awaitAll()
 
-                    // Process in original candidate order. Parallel execution changes latency,
-                    // never ranking or acceptance semantics.
                     for (evaluated in evaluatedPair.sortedBy { it.members.first().index }) {
                         val representative = evaluated.members.first()
                         val best = evaluated.evaluation.best
@@ -477,8 +611,8 @@ internal object AutomaticSubtitleSync {
                         for (alternative in evaluated.members.sortedBy { it.index }) {
                             if (alternative.index != representative.index) {
                                 AutoSyncDebugLog.info {
-                                    "ALTERNATIVE[${alternative.index}] reused exact timing result " +
-                                        "from ALTERNATIVE[${representative.index}]"
+                                    "CANDIDATE[${alternative.index}] reused exact timing result " +
+                                        "from CANDIDATE[${representative.index}]"
                                 }
                             }
 
@@ -493,7 +627,8 @@ internal object AutomaticSubtitleSync {
                                 bestAlternativeMatch = best
                                 bestAlternative = AutoSyncResolvedTimeline(
                                     subtitleUrl = alternative.candidate.url,
-                                    subtitleHeaders = emptyMap(),
+                                    subtitleHeaders =
+                                        headersForCandidate(alternative.candidate.url),
                                     timeline = best.timeline,
                                 )
                                 bestAlternativeIndex = alternative.index
@@ -510,8 +645,6 @@ internal object AutomaticSubtitleSync {
                         if (stopFallbackSearch) break
                     }
 
-                    // Stop after the current two-worker pair when the best fallback is already
-                    // strong. Both workers still finish, preserving ranking within the pair.
                     if (
                         !stopFallbackSearch &&
                         bestAlternativeMatch?.let(::isStrongCheckpointMatch) == true
@@ -519,96 +652,32 @@ internal object AutomaticSubtitleSync {
                         stopFallbackSearch = true
                     }
 
-                    // Preserve V2's existing exceptional early exit. At most the other member of
-                    // the current two-worker pair may already have done speculative CPU work.
                     if (stopFallbackSearch) break
                 }
 
-                // A confident result in this batch is enough. We still compare all timing groups
-                // inside the batch and keep the best one, preserving the existing behavior.
                 if (bestAlternative != null || stopFallbackSearch) break
-
                 batchStartIndex = batchEndExclusive
-
-                // Add-on results are progressive. Re-read the existing provider after every
-                // failed batch and immediately add any newly arrived URLs to the same bounded
-                // download pipeline.
-                if (alternativeSubtitlesProvider != null) {
-                    availableCandidates = currentExternalCandidates()
-                    language = selectedLanguage(availableCandidates)
-                    alternatives = sameLanguageAlternatives(availableCandidates, language)
-                    scheduleAlternativeLoads()
-                }
-
-                if (batchStartIndex < alternatives.size) {
-                    AutoSyncDebugLog.info {
-                        "fallback batch produced no confident match; trying next " +
-                            "up to $ALTERNATIVE_EXTERNAL_SUBTITLE_BATCH_SIZE candidates"
-                    }
-                }
             }
 
-            // Don't keep speculative fallback downloads alive after the batch decision is made.
             alternativeLoads.values
                 .filterNot { it.isCompleted }
                 .forEach { it.cancel() }
 
-            // Give the user's selected subtitle one final priority check if it completed
-            // naturally while alternatives were being evaluated.
-            if (!selectedEvaluationAttempted && selectedSubtitleDeferred.isCompleted) {
-                selected = selectedSubtitleDeferred.await()
-                if (selected != null) {
-                    logLoadedExternalSubtitle(
-                        label = "SELECTED",
-                        url = selectedSubtitleUrl,
-                        loaded = selected,
-                        sampleLimit = MAX_LOGGED_CUE_SAMPLES,
-                    )
-                    evaluateSelectedIfConfident(selected!!)?.let {
-                        return@supervisorScope it
-                    }
-                }
-            }
-
             val chosenAlternative = bestAlternative
             val chosenAlternativeMatch = bestAlternativeMatch
             if (chosenAlternative != null && chosenAlternativeMatch != null) {
-                // A confident fallback is ready. Do not keep supervisorScope alive solely for
-                // a selected-subtitle HTTP request that is still heading toward its 15s timeout.
                 if (!selectedSubtitleDeferred.isCompleted) {
-                    AutoSyncDebugLog.info {
-                        "selected subtitle still pending; cancelling slow request because a " +
-                            "confident same-language fallback is ready"
-                    }
                     selectedSubtitleDeferred.cancel()
                 }
-
                 AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
                 AutoSyncDebugLog.info {
-                    "V2 selected best external subtitle index=$bestAlternativeIndex " +
+                    "V2 selected preflight-ranked candidate index=$bestAlternativeIndex " +
                         "url=${chosenAlternative.subtitleUrl} name=${bestAlternativeName ?: "<none>"} " +
                         "cues=$bestAlternativeCueCount " +
                         "alignment=${chosenAlternative.timeline.alignmentSource} " +
                         "quality=${fmt(directTimelineQualityScore(chosenAlternativeMatch))}"
                 }
                 return@supervisorScope chosenAlternative
-            }
-
-            // No alternative matched confidently. In that case reliability wins over latency:
-            // allow the original selected request to use the remainder of its normal timeout.
-            if (!selectedEvaluationAttempted && !selectedSubtitleDeferred.isCompleted) {
-                selected = selectedSubtitleDeferred.await()
-                if (selected != null) {
-                    logLoadedExternalSubtitle(
-                        label = "SELECTED",
-                        url = selectedSubtitleUrl,
-                        loaded = selected,
-                        sampleLimit = MAX_LOGGED_CUE_SAMPLES,
-                    )
-                    evaluateSelectedIfConfident(selected!!)?.let {
-                        return@supervisorScope it
-                    }
-                }
             }
 
             AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
@@ -625,6 +694,8 @@ internal object AutomaticSubtitleSync {
         target: List<SubtitleSyncCue>,
         referenceTracks: List<ReferenceTrack>,
         referenceActivityCache: MutableMap<String, AutoSyncTimelineRetimer.PreparedActivity?>,
+        preferredReferenceKey: String? = null,
+        preflightHint: AutoSyncDelayPreflight.Match? = null,
     ): CandidateEvaluation = withContext(Dispatchers.Default) {
         val targetActivity = AutoSyncTimelineRetimer.prepareUnitActivity(target)
 
@@ -643,11 +714,21 @@ internal object AutomaticSubtitleSync {
                 )
             }
             .sortedWith(
-                compareByDescending<RankedReferenceCandidate> { it.suitability }
+                compareByDescending<RankedReferenceCandidate> {
+                    if (it.track.key == preferredReferenceKey) 1 else 0
+                }.thenByDescending { it.suitability }
                     .thenByDescending { it.cheapAffinity }
                     .thenBy { isSdhReferenceTrack(it.track) }
                     .thenBy { it.track.key },
             )
+
+        preflightHint?.let { hint ->
+            AutoSyncDebugLog.info {
+                "$label preflight hint reference=${hint.referenceKey} " +
+                    "offset=${hint.offsetMs}ms score=${fmt(hint.score)} " +
+                    "margin=${fmt(hint.margin)} participation=${fmt(hint.participation)}"
+            }
+        }
 
         AutoSyncDebugLog.section { "$label EMBEDDED REFERENCE ORDER" }
         representatives.forEachIndexed { index, ranked ->

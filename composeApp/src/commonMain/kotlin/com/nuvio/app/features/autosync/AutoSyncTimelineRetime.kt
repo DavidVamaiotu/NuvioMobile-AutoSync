@@ -153,29 +153,31 @@ internal object AutoSyncTimelineRetimer {
         val targetActivity =
             preparedTargetActivity ?: prepareUnitActivity(target) ?: return null
 
-        val alignment = discoverActivityAlignment(
-            reference = reference,
-            target = target,
+        // Constant delay is by far the common case. Validate scale=1.0 first and only pay
+        // for the multi-scale activity search when fixed-delay validation fails.
+        val delayOnly = findDelayOnlyAlignmentPrepared(
             referenceActivity = referenceActivity,
             targetActivity = targetActivity,
-        ) ?: return null
+            targetSize = target.size,
+            allowAmbiguousMargin = allowAmbiguousDelayOnlyMargin,
+            seed = null,
+        )
 
-        val delayOnly = if (abs(alignment.scale - 1.0) <= DELAY_ONLY_SCALE_TOLERANCE) {
-            findDelayOnlyAlignmentPrepared(
+        val alignment = if (delayOnly == null) {
+            discoverActivityAlignment(
+                reference = reference,
+                target = target,
                 referenceActivity = referenceActivity,
                 targetActivity = targetActivity,
-                targetSize = target.size,
-                allowAmbiguousMargin = allowAmbiguousDelayOnlyMargin,
-                seed = alignment.delayOnlySeed,
-            )
+            ) ?: return null
         } else {
             null
         }
 
-        val candidateScale = if (delayOnly != null) 1.0 else alignment.scale
-        val candidateInterceptMs = delayOnly?.offsetMs ?: alignment.interceptMs
-        val candidateActivityScore = delayOnly?.score ?: alignment.score
-        val candidateActivityMargin = delayOnly?.margin ?: alignment.margin
+        val candidateScale = if (delayOnly != null) 1.0 else alignment!!.scale
+        val candidateInterceptMs = delayOnly?.offsetMs ?: alignment!!.interceptMs
+        val candidateActivityScore = delayOnly?.score ?: alignment!!.score
+        val candidateActivityMargin = delayOnly?.margin ?: alignment!!.margin
 
         val result = retimeWithSeed(
             reference = reference,
