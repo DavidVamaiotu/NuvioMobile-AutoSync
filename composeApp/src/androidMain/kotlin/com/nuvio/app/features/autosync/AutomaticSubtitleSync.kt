@@ -114,6 +114,23 @@ internal object AutomaticSubtitleSync {
         )
 
         return supervisorScope {
+            fun broadCandidateOrder(
+                candidates: List<AutoSyncSubtitleCandidate>,
+            ): List<AutoSyncSubtitleCandidate> {
+                if (candidates.size < 3) return candidates
+
+                val ordered = ArrayList<AutoSyncSubtitleCandidate>(candidates.size)
+                var front = 0
+                var back = candidates.lastIndex
+                while (front <= back) {
+                    ordered += candidates[front++]
+                    if (front <= back) {
+                        ordered += candidates[back--]
+                    }
+                }
+                return ordered
+            }
+
             val indexedTimelineDeferred = async {
                 EmbeddedSubtitleTimelineLoader.load(
                     sourceUrl = sourceKey,
@@ -141,27 +158,30 @@ internal object AutomaticSubtitleSync {
             val prefetchedAlternativeLoads =
                 linkedMapOf<String, Deferred<LoadedSubtitle?>>()
 
-            prefetchSnapshot
-                .asSequence()
-                .filter { it.url.isNotBlank() && it.url != selectedSubtitleUrl }
-                .filter { candidate ->
-                    prefetchLanguage.isNullOrBlank() ||
-                        SubtitleLanguageMatching.matchesLanguageCode(
-                            candidate.language,
-                            prefetchLanguage,
-                        )
-                }
-                .distinctBy { it.url }
-                .forEach { candidate ->
-                    prefetchedAlternativeLoads[candidate.url] = async {
-                        alternativeDownloadSemaphore.withPermit {
-                            loadSelectedSubtitle(
-                                url = candidate.url,
-                                headers = emptyMap(),
+            val prefetchCandidates =
+                prefetchSnapshot
+                    .asSequence()
+                    .filter { it.url.isNotBlank() && it.url != selectedSubtitleUrl }
+                    .filter { candidate ->
+                        prefetchLanguage.isNullOrBlank() ||
+                            SubtitleLanguageMatching.matchesLanguageCode(
+                                candidate.language,
+                                prefetchLanguage,
                             )
-                        }
+                    }
+                    .distinctBy { it.url }
+                    .toList()
+
+            broadCandidateOrder(prefetchCandidates).forEach { candidate ->
+                prefetchedAlternativeLoads[candidate.url] = async {
+                    alternativeDownloadSemaphore.withPermit {
+                        loadSelectedSubtitle(
+                            url = candidate.url,
+                            headers = emptyMap(),
+                        )
                     }
                 }
+            }
 
             val indexedTimeline = indexedTimelineDeferred.await()
             var selected =
@@ -442,18 +462,17 @@ internal object AutomaticSubtitleSync {
                 if (url == selectedSubtitleUrl) selectedSubtitleHeaders else emptyMap()
 
             fun scheduleAlternativeLoads() {
-                alternatives.forEach { candidate ->
-                    if (candidate.url !in alternativeLoads) {
-                        alternativeLoads[candidate.url] = async {
-                            if (candidate.url == selectedSubtitleUrl) {
-                                selected ?: selectedSubtitleDeferred.await()
-                            } else {
-                                alternativeDownloadSemaphore.withPermit {
-                                    loadSelectedSubtitle(
-                                        url = candidate.url,
-                                        headers = emptyMap(),
-                                    )
-                                }
+                val unscheduled = alternatives.filter { it.url !in alternativeLoads }
+                broadCandidateOrder(unscheduled).forEach { candidate ->
+                    alternativeLoads[candidate.url] = async {
+                        if (candidate.url == selectedSubtitleUrl) {
+                            selected ?: selectedSubtitleDeferred.await()
+                        } else {
+                            alternativeDownloadSemaphore.withPermit {
+                                loadSelectedSubtitle(
+                                    url = candidate.url,
+                                    headers = emptyMap(),
+                                )
                             }
                         }
                     }
@@ -501,6 +520,7 @@ internal object AutomaticSubtitleSync {
             AutoSyncDebugLog.info {
                 "completion-driven V2 delay scan candidates=${alternatives.size} " +
                     "downloads=$MAX_PARALLEL_ALTERNATIVE_DOWNLOADS " +
+                    "downloadOrder=front-back " +
                     "preflightWorkers=$MAX_PARALLEL_PREFLIGHT_MATCHES"
             }
 
