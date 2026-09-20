@@ -35,6 +35,7 @@ internal suspend fun applyAutoSyncSidecarTimeline(
     ) {
         while (
             sidecar.activeSidecarSubtitleKey == url &&
+            sidecar.currentGenerationFor(url) == expectedGeneration &&
             sidecar.sidecarTimedCues.isEmpty()
         ) {
             delay(SIDECAR_WAIT_POLL_MS)

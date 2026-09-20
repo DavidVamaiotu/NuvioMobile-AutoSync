@@ -234,12 +234,18 @@ internal class SidecarSubtitleController(
                 throw e
             } catch (e: Exception) {
                 rawBodyDeferred.complete(null)
-                if (activeSidecarSubtitleKey != subtitleKey) return@launch
+                if (
+                    activeSidecarSubtitleKey != subtitleKey ||
+                    activeSidecarGeneration != generation
+                ) {
+                    return@launch
+                }
                 Log.w(
                     SIDECAR_TAG,
                     "Sidecar subtitle failed url=$url: ${e.message} (buffer preserved; no media reload)"
                 )
                 activeSidecarSubtitleKey = null
+                activeSidecarGeneration = 0L
                 sidecarTimedCues = emptyList()
                 postToSubtitleView { view ->
                     view.setTag(R.id.player_view_sidecar_generation_tag, null)
