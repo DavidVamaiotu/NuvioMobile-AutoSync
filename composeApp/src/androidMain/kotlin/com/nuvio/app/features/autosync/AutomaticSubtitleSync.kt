@@ -36,7 +36,7 @@ import kotlin.math.roundToLong
 internal object AutomaticSubtitleSync {
     private const val MIN_SELECTED_CUES = 1
     private const val MAX_LOGGED_CUE_SAMPLES = 20
-    private const val ALTERNATIVE_EXTERNAL_SUBTITLE_BATCH_SIZE = 4
+    private const val ALTERNATIVE_EXTERNAL_SUBTITLE_BATCH_SIZE = 2
     private const val MAX_PARALLEL_ALTERNATIVE_DOWNLOADS = 6
     private const val MAX_PARALLEL_ALTERNATIVE_MATCHES = 2
     private const val MAX_PARALLEL_PREFLIGHT_MATCHES = 2
@@ -48,6 +48,17 @@ internal object AutomaticSubtitleSync {
     private const val STRONG_CHECKPOINT_QUALITY = 0.92
     private const val STRONG_CHECKPOINT_TARGET_COVERAGE = 0.98
     private const val STRONG_CHECKPOINT_REFERENCE_COVERAGE = 0.90
+    private const val ASYMMETRIC_CHECKPOINT_QUALITY = 0.94
+    private const val ASYMMETRIC_CHECKPOINT_TARGET_COVERAGE = 0.995
+    private const val ASYMMETRIC_CHECKPOINT_REFERENCE_COVERAGE = 0.84
+    private const val ASYMMETRIC_CHECKPOINT_SIMPLE_RATIO = 0.97
+    private const val ASYMMETRIC_CHECKPOINT_MAX_GROUP_COST = 0.20
+    private const val ASYMMETRIC_CHECKPOINT_MIN_REFERENCE_RATIO = 1.15
+    private const val ASYMMETRIC_CHECKPOINT_MAX_TARGET_SKIP_RUN = 2
+    private const val FALLBACK_BATCH_STOP_QUALITY = 0.89
+    private const val FALLBACK_BATCH_STOP_TARGET_COVERAGE = 0.99
+    private const val FALLBACK_BATCH_STOP_REFERENCE_COVERAGE = 0.94
+    private const val FALLBACK_BATCH_STOP_SIMPLE_RATIO = 0.97
 
     // Scheduling-only reference pre-ranker. It never accepts/rejects a match.
     private const val CHEAP_REFERENCE_SAMPLE_CUES = 24
@@ -642,28 +653,26 @@ internal object AutomaticSubtitleSync {
                     )
                 }
 
-                val timingBuckets =
-                    linkedMapOf<ReferenceTimingFingerprint, MutableList<MutableList<LoadedAlternative>>>()
+                // Exact constant-shift timing families are structurally identical for V2.
+                // Group only when every cue has the same relative start/end timing; no fuzzy reuse.
+                val timingGroups = mutableListOf<MutableList<LoadedAlternative>>()
                 for (alternative in loadedBatch) {
-                    val fingerprint = referenceTimingFingerprint(alternative.loaded.cues)
-                    val bucket = timingBuckets.getOrPut(fingerprint) { mutableListOf() }
-                    val existing = bucket.firstOrNull { group ->
-                        sameReferenceTiming(
+                    val existing = timingGroups.firstOrNull { group ->
+                        constantTimelineShiftMs(
                             group.first().loaded.cues,
                             alternative.loaded.cues,
-                        )
+                        ) != null
                     }
                     if (existing != null) {
                         existing += alternative
                     } else {
-                        bucket += mutableListOf(alternative)
+                        timingGroups.add(mutableListOf(alternative))
                     }
                 }
-                val timingGroups = timingBuckets.values.flatten()
                 val duplicatesSaved = loadedBatch.size - timingGroups.size
                 if (duplicatesSaved > 0) {
                     AutoSyncDebugLog.info {
-                        "fallback timing dedup timelines=${timingGroups.size}/${loadedBatch.size} " +
+                        "fallback shift-equivalent dedup timelines=${timingGroups.size}/${loadedBatch.size} " +
                             "duplicatesSaved=$duplicatesSaved"
                     }
                 }
@@ -694,13 +703,39 @@ internal object AutomaticSubtitleSync {
 
                     for (evaluated in evaluatedPair.sortedBy { it.members.first().index }) {
                         val representative = evaluated.members.first()
-                        val best = evaluated.evaluation.best
 
                         for (alternative in evaluated.members.sortedBy { it.index }) {
+                            val memberEvaluation =
+                                if (alternative.index == representative.index) {
+                                    evaluated.evaluation
+                                } else {
+                                    reuseShiftEquivalentEvaluation(
+                                        evaluation = evaluated.evaluation,
+                                        representativeTarget = representative.loaded.cues,
+                                        target = alternative.loaded.cues,
+                                    ) ?: evaluateExternalCandidate(
+                                        label = "CANDIDATE[${alternative.index}]",
+                                        url = alternative.candidate.url,
+                                        target = alternative.loaded.cues,
+                                        referenceTracks = referenceTracks,
+                                        referenceActivityCache = referenceActivityCache,
+                                        preferredReferenceKey =
+                                            preflightByUrl[alternative.candidate.url]?.referenceKey,
+                                        preflightHint =
+                                            preflightByUrl[alternative.candidate.url],
+                                    )
+                                }
+                            val best = memberEvaluation.best
+
                             if (alternative.index != representative.index) {
+                                val shiftMs = constantTimelineShiftMs(
+                                    representative.loaded.cues,
+                                    alternative.loaded.cues,
+                                ) ?: 0L
                                 AutoSyncDebugLog.info {
-                                    "CANDIDATE[${alternative.index}] reused exact timing result " +
-                                        "from CANDIDATE[${representative.index}]"
+                                    "CANDIDATE[${alternative.index}] reused exact shift-equivalent " +
+                                        "timing result from CANDIDATE[${representative.index}] " +
+                                        "shift=${shiftMs}ms"
                                 }
                             }
 
@@ -743,7 +778,18 @@ internal object AutomaticSubtitleSync {
                     if (stopFallbackSearch) break
                 }
 
-                if (bestAlternative != null || stopFallbackSearch) break
+                if (
+                    stopFallbackSearch ||
+                    (
+                        bestAlternativeMatch != null &&
+                            isFallbackBatchStopMatch(
+                                bestAlternativeMatch!!,
+                                targetCueCount = bestAlternativeCueCount,
+                            )
+                        )
+                ) {
+                    break
+                }
                 batchStartIndex = batchEndExclusive
             }
 
@@ -888,7 +934,16 @@ internal object AutomaticSubtitleSync {
 
             if (attempts.size >= REFERENCE_SEARCH_CHECKPOINT) {
                 val checkpointBest = bestConfident
-                if (checkpointBest != null && isStrongCheckpointMatch(checkpointBest)) {
+                if (
+                    checkpointBest != null &&
+                    (
+                        isStrongCheckpointMatch(checkpointBest) ||
+                            isAsymmetricReferenceCheckpointMatch(
+                                checkpointBest,
+                                targetCueCount = target.size,
+                            )
+                        )
+                ) {
                     AutoSyncDebugLog.info {
                         "$label reference search stopped after ${attempts.size} usable candidates " +
                             "best=${checkpointBest.track.key} " +
@@ -941,6 +996,66 @@ internal object AutomaticSubtitleSync {
                 )
             }
         }
+    }
+
+    private fun constantTimelineShiftMs(
+        representative: List<SubtitleSyncCue>,
+        candidate: List<SubtitleSyncCue>,
+    ): Long? {
+        if (representative.size < 4 || representative.size != candidate.size) return null
+
+        val shiftMs = candidate.first().startTimeMs - representative.first().startTimeMs
+        for (index in representative.indices) {
+            val left = representative[index]
+            val right = candidate[index]
+            if (
+                right.startTimeMs - left.startTimeMs != shiftMs ||
+                right.endTimeMs - left.endTimeMs != shiftMs
+            ) {
+                return null
+            }
+        }
+        return shiftMs
+    }
+
+    private fun reuseShiftEquivalentEvaluation(
+        evaluation: CandidateEvaluation,
+        representativeTarget: List<SubtitleSyncCue>,
+        target: List<SubtitleSyncCue>,
+    ): CandidateEvaluation? {
+        val shiftMs = constantTimelineShiftMs(representativeTarget, target)
+            ?: return null
+
+        fun shifted(match: TimelineRetimeMatch): TimelineRetimeMatch? {
+            val timeline = match.timeline
+            if (timeline.cues.size != target.size) return null
+
+            return match.copy(
+                timeline = timeline.copy(
+                    cues = timeline.cues.mapIndexed { index, cue ->
+                        val targetCue = target[index]
+                        cue.copy(
+                            originalStartTimeMs = targetCue.startTimeMs,
+                            originalEndTimeMs = targetCue.endTimeMs,
+                        )
+                    },
+                    alignmentInterceptMs =
+                        timeline.alignmentInterceptMs -
+                            timeline.alignmentScale * shiftMs.toDouble(),
+                ),
+            )
+        }
+
+        val shiftedBest = evaluation.best?.let { shifted(it) ?: return null }
+        val shiftedAttempts = ArrayList<TimelineRetimeMatch>(evaluation.attempts.size)
+        for (attempt in evaluation.attempts) {
+            shiftedAttempts += shifted(attempt) ?: return null
+        }
+
+        return CandidateEvaluation(
+            best = shiftedBest,
+            attempts = shiftedAttempts,
+        )
     }
 
     private fun referenceCueRatio(
@@ -1433,6 +1548,39 @@ internal object AutomaticSubtitleSync {
             directTimelineQualityScore(match) >= STRONG_CHECKPOINT_QUALITY &&
             result.targetCoverage >= STRONG_CHECKPOINT_TARGET_COVERAGE &&
             result.referenceCoverage >= STRONG_CHECKPOINT_REFERENCE_COVERAGE
+    }
+
+    private fun isAsymmetricReferenceCheckpointMatch(
+        match: TimelineRetimeMatch,
+        targetCueCount: Int,
+    ): Boolean {
+        if (targetCueCount <= 0) return false
+        val result = match.timeline
+        val referenceRatio = match.track.cues.size.toDouble() / targetCueCount.toDouble()
+
+        return result.confident &&
+            referenceRatio >= ASYMMETRIC_CHECKPOINT_MIN_REFERENCE_RATIO &&
+            directTimelineQualityScore(match) >= ASYMMETRIC_CHECKPOINT_QUALITY &&
+            result.targetCoverage >= ASYMMETRIC_CHECKPOINT_TARGET_COVERAGE &&
+            result.referenceCoverage >= ASYMMETRIC_CHECKPOINT_REFERENCE_COVERAGE &&
+            result.averageGroupCost <= ASYMMETRIC_CHECKPOINT_MAX_GROUP_COST &&
+            result.simpleGroupRatio >= ASYMMETRIC_CHECKPOINT_SIMPLE_RATIO &&
+            result.longestTargetSkipRun <= ASYMMETRIC_CHECKPOINT_MAX_TARGET_SKIP_RUN
+    }
+
+    private fun isFallbackBatchStopMatch(
+        match: TimelineRetimeMatch,
+        targetCueCount: Int,
+    ): Boolean {
+        if (isStrongCheckpointMatch(match)) return true
+        if (isAsymmetricReferenceCheckpointMatch(match, targetCueCount)) return true
+
+        val result = match.timeline
+        return result.confident &&
+            directTimelineQualityScore(match) >= FALLBACK_BATCH_STOP_QUALITY &&
+            result.targetCoverage >= FALLBACK_BATCH_STOP_TARGET_COVERAGE &&
+            result.referenceCoverage >= FALLBACK_BATCH_STOP_REFERENCE_COVERAGE &&
+            result.simpleGroupRatio >= FALLBACK_BATCH_STOP_SIMPLE_RATIO
     }
 
     private fun buildTimelineRetimeResult(
