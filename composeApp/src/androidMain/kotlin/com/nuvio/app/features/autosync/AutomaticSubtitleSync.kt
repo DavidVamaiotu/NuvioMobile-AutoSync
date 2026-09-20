@@ -40,6 +40,7 @@ internal object AutomaticSubtitleSync {
     private const val MAX_PARALLEL_ALTERNATIVE_DOWNLOADS = 6
     private const val MAX_PARALLEL_ALTERNATIVE_MATCHES = 2
     private const val MAX_PARALLEL_PREFLIGHT_MATCHES = 2
+    private const val HIGH_SCORE_PREFLIGHT_CHAMPION = 0.915
     private const val EXCEPTIONAL_MATCH_QUALITY = 0.95
     private const val EXCEPTIONAL_MATCH_TARGET_COVERAGE = 0.99
     private const val EXCEPTIONAL_MATCH_REFERENCE_COVERAGE = 0.97
@@ -507,6 +508,7 @@ internal object AutomaticSubtitleSync {
                 linkedMapOf<String, Deferred<CompletedPreflight>>().apply {
                     putAll(preflightJobs)
                 }
+            var bestPreflightScoreSeen = Double.NEGATIVE_INFINITY
 
             while (pendingPreflights.isNotEmpty()) {
                 val completed = select<CompletedPreflight> {
@@ -519,6 +521,14 @@ internal object AutomaticSubtitleSync {
                 val candidate = completed.candidate
                 val loaded = completed.loaded
                 val match = completed.match
+                val highScoreChampion =
+                    match != null &&
+                        match.score >= HIGH_SCORE_PREFLIGHT_CHAMPION &&
+                        match.segmentsPassed >= 3 &&
+                        match.score > bestPreflightScoreSeen
+                if (match != null && match.score > bestPreflightScoreSeen) {
+                    bestPreflightScoreSeen = match.score
+                }
 
                 if (loaded != null) {
                     loadedByUrl[candidate.url] = loaded
@@ -537,10 +547,19 @@ internal object AutomaticSubtitleSync {
                 if (
                     loaded != null &&
                     match != null &&
-                    AutoSyncDelayPreflight.isReallyGood(match)
+                    (
+                        AutoSyncDelayPreflight.isReallyGood(match) ||
+                            highScoreChampion
+                        )
                 ) {
                     AutoSyncDebugLog.info {
-                        "PREFLIGHT strong V2 delay evidence; validating immediately " +
+                        "PREFLIGHT ${
+                            if (AutoSyncDelayPreflight.isReallyGood(match)) {
+                                "strong V2 delay evidence"
+                            } else {
+                                "high-score champion"
+                            }
+                        }; validating immediately " +
                             "url=${candidate.url} reference=${match.referenceKey}"
                     }
 
