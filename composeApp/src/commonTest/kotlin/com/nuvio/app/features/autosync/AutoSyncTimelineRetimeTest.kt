@@ -4,6 +4,7 @@ import com.nuvio.app.features.player.SubtitleSyncCue
 import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -356,6 +357,28 @@ class AutoSyncTimelineRetimeTest {
         assertTrue(result == null || !result.confident)
     }
 
+    @Test
+    fun cancellationCheckpointInterruptsDpWithoutChangingMatcherApi() {
+        val reference = irregularTimeline(800)
+        val target = shift(reference, -2_500L)
+        var checkpoints = 0
+
+        assertFailsWith<TestCancellation> {
+            AutoSyncTimelineRetimer.retime(
+                reference = reference,
+                target = target,
+                coarseScale = 1.0,
+                coarseInterceptMs = 2_500.0,
+                cancellationCheck = {
+                    checkpoints++
+                    if (checkpoints >= 4) throw TestCancellation()
+                },
+            )
+        }
+        assertTrue(checkpoints >= 4)
+    }
+
+
     private fun shift(cues: List<SubtitleSyncCue>, deltaMs: Long) = cues.map { cue ->
         cue.copy(startTimeMs = cue.startTimeMs + deltaMs, endTimeMs = cue.endTimeMs + deltaMs)
     }
@@ -367,6 +390,8 @@ class AutoSyncTimelineRetimeTest {
             SubtitleSyncCue(start, start + 900L + ((index * 313L) % 1_700L), "irregular $index")
         }
     }
+
+    private class TestCancellation : RuntimeException()
 
     private fun repeatedCadenceTimeline(count: Int): List<SubtitleSyncCue> {
         val cadence = longArrayOf(1_900L, 3_100L, 2_400L, 4_200L, 2_100L, 3_700L, 2_800L)

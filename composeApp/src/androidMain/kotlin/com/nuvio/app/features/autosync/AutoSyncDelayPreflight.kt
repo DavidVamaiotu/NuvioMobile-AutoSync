@@ -34,13 +34,18 @@ internal object AutoSyncDelayPreflight {
         referenceTracks: List<ReferenceTrack>,
         target: List<SubtitleSyncCue>,
         referenceActivityCache: MutableMap<String, AutoSyncTimelineRetimer.PreparedActivity?>,
+        preparedTargetActivity: AutoSyncTimelineRetimer.PreparedActivity? = null,
+        cancellationCheck: (() -> Unit)? = null,
     ): Match? {
         val targetActivity =
-            AutoSyncTimelineRetimer.prepareUnitActivity(target) ?: return null
+            preparedTargetActivity
+                ?: AutoSyncTimelineRetimer.prepareUnitActivity(target)
+                ?: return null
 
         var best: Match? = null
 
         for (track in referenceTracks) {
+            cancellationCheck?.invoke()
             val preparedReference = synchronized(referenceActivityCache) {
                 if (referenceActivityCache.containsKey(track.key)) {
                     referenceActivityCache[track.key]
@@ -65,6 +70,7 @@ internal object AutoSyncDelayPreflight {
                     targetActivity = targetActivity,
                     targetSize = target.size,
                     allowAmbiguousMargin = relaxDelayMargin,
+                    cancellationCheck = cancellationCheck,
                 ) ?: continue
 
             val candidate = Match(

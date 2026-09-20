@@ -130,6 +130,7 @@ internal object AutoSyncTimelineRetimer {
         preparedReferenceActivity: PreparedActivity? = null,
         preparedTargetActivity: PreparedActivity? = null,
         precomputedDelayOnly: AutoSyncDelayOnlyAlignment? = null,
+        cancellationCheck: (() -> Unit)? = null,
     ): AutoSyncTimelineRetimeResult? {
         if (!discoverAlignment) {
             val result = retimeWithSeed(
@@ -138,6 +139,7 @@ internal object AutoSyncTimelineRetimer {
                 coarseScale = coarseScale,
                 coarseInterceptMs = coarseInterceptMs,
                 referenceEstimatedEndStartsMs = referenceEstimatedEndStartsMs,
+                cancellationCheck = cancellationCheck,
             ) ?: return null
             return result.copy(
                 alignmentSource = "provided",
@@ -174,6 +176,7 @@ internal object AutoSyncTimelineRetimer {
                 coarseScale = 1.0,
                 coarseInterceptMs = fastDelayOnly.offsetMs,
                 referenceEstimatedEndStartsMs = referenceEstimatedEndStartsMs,
+                cancellationCheck = cancellationCheck,
             )
             if (fastResult != null) {
                 val validatedFast = finalizeDiscoveredResult(
@@ -198,6 +201,7 @@ internal object AutoSyncTimelineRetimer {
             target = target,
             referenceActivity = referenceActivity,
             targetActivity = targetActivity,
+            cancellationCheck = cancellationCheck,
         ) ?: return null
 
         val delayOnly = if (abs(alignment.scale - 1.0) <= DELAY_ONLY_SCALE_TOLERANCE) {
@@ -208,6 +212,7 @@ internal object AutoSyncTimelineRetimer {
                 allowAmbiguousMargin = allowAmbiguousDelayOnlyMargin,
                 seed = alignment.delayOnlySeed,
                 allowStableSegmentMarginOverride = !allowAmbiguousDelayOnlyMargin,
+                cancellationCheck = cancellationCheck,
             )
         } else {
             null
@@ -224,6 +229,7 @@ internal object AutoSyncTimelineRetimer {
             coarseScale = candidateScale,
             coarseInterceptMs = candidateInterceptMs,
             referenceEstimatedEndStartsMs = referenceEstimatedEndStartsMs,
+            cancellationCheck = cancellationCheck,
         ) ?: return null
 
         return finalizeDiscoveredResult(
@@ -297,6 +303,7 @@ internal object AutoSyncTimelineRetimer {
         coarseScale: Double,
         coarseInterceptMs: Double,
         referenceEstimatedEndStartsMs: Set<Long>,
+        cancellationCheck: (() -> Unit)? = null,
     ): AutoSyncTimelineRetimeResult? {
         if (reference.size < MIN_CUES || target.size < MIN_CUES) return null
         if (!coarseScale.isFinite() || coarseScale !in 0.85..1.15) return null
@@ -322,6 +329,7 @@ internal object AutoSyncTimelineRetimer {
         rows[0][0] = Cell(cost = 0.0)
 
         for (targetIndex in 0..target.size) {
+            cancellationCheck?.invoke()
             val row = rows[targetIndex]
             if (row.isEmpty()) continue
 
@@ -536,6 +544,7 @@ internal object AutoSyncTimelineRetimer {
         targetActivity: PreparedActivity,
         targetSize: Int,
         allowAmbiguousMargin: Boolean = false,
+        cancellationCheck: (() -> Unit)? = null,
     ): AutoSyncDelayOnlyAlignment? =
         findDelayOnlyAlignmentPrepared(
             referenceActivity = referenceActivity,
@@ -543,6 +552,7 @@ internal object AutoSyncTimelineRetimer {
             targetSize = targetSize,
             allowAmbiguousMargin = allowAmbiguousMargin,
             seed = null,
+            cancellationCheck = cancellationCheck,
         )
 
     private fun findDelayOnlyAlignmentPrepared(
@@ -552,6 +562,7 @@ internal object AutoSyncTimelineRetimer {
         allowAmbiguousMargin: Boolean,
         seed: DelayOnlySearchSeed?,
         allowStableSegmentMarginOverride: Boolean = false,
+        cancellationCheck: (() -> Unit)? = null,
     ): AutoSyncDelayOnlyAlignment? {
         val referenceCoarse = referenceActivity.coarse
         val targetCoarse = targetActivity.coarse
@@ -560,6 +571,7 @@ internal object AutoSyncTimelineRetimer {
             val maxOffsetBins = (ACTIVITY_MAX_OFFSET_MS / ACTIVITY_COARSE_BIN_MS).toInt()
             val coarseCandidates = ArrayList<ActivityCandidate>(maxOffsetBins * 2 + 1)
             for (offsetBins in -maxOffsetBins..maxOffsetBins) {
+                if ((offsetBins + maxOffsetBins) % 64 == 0) cancellationCheck?.invoke()
                 val score =
                     scoreActivityOffset(referenceCoarse, targetCoarse, offsetBins) ?: continue
                 coarseCandidates += ActivityCandidate(
@@ -583,6 +595,7 @@ internal object AutoSyncTimelineRetimer {
             var fineBest: ActivityCandidate? = null
             var offsetMs = coarse.interceptMs - ACTIVITY_FINE_RADIUS_MS
             while (offsetMs <= coarse.interceptMs + ACTIVITY_FINE_RADIUS_MS) {
+                cancellationCheck?.invoke()
                 val offsetBins =
                     (offsetMs.toDouble() / ACTIVITY_FINE_BIN_MS.toDouble()).roundToInt()
                 val score = scoreActivityOffset(referenceFine, targetFine, offsetBins)
@@ -612,6 +625,7 @@ internal object AutoSyncTimelineRetimer {
         var availableSegments = 0
         var passedSegments = 0
         for (segment in 0..2) {
+            cancellationCheck?.invoke()
             if (allowAmbiguousMargin) {
                 val targetCoverage = targetActivityCoverageAtOffsetSegment(
                     reference = referenceFine,
@@ -786,6 +800,7 @@ internal object AutoSyncTimelineRetimer {
         target: List<SubtitleSyncCue>,
         referenceActivity: PreparedActivity,
         targetActivity: PreparedActivity,
+        cancellationCheck: (() -> Unit)? = null,
     ): ActivityAlignment? {
         if (reference.size < MIN_CUES || target.size < MIN_CUES) return null
 
@@ -795,12 +810,14 @@ internal object AutoSyncTimelineRetimer {
         val maxOffsetBins = (ACTIVITY_MAX_OFFSET_MS / ACTIVITY_COARSE_BIN_MS).toInt()
 
         for (scale in activityScaleCandidates(reference, target)) {
+            cancellationCheck?.invoke()
             val targetCoarse = if (scale == 1.0) {
                 targetActivity.coarse
             } else {
                 buildActivityTimeline(target, scale, ACTIVITY_COARSE_BIN_MS) ?: continue
             }
             for (offsetBins in -maxOffsetBins..maxOffsetBins) {
+                if ((offsetBins + maxOffsetBins) % 64 == 0) cancellationCheck?.invoke()
                 val score = scoreActivityOffset(referenceCoarse, targetCoarse, offsetBins)
                     ?: continue
                 val candidate = ActivityCandidate(
@@ -834,6 +851,7 @@ internal object AutoSyncTimelineRetimer {
         var fineBest: ActivityCandidate? = null
         var offsetMs = coarseBest.interceptMs - ACTIVITY_FINE_RADIUS_MS
         while (offsetMs <= coarseBest.interceptMs + ACTIVITY_FINE_RADIUS_MS) {
+            cancellationCheck?.invoke()
             val offsetBins = (offsetMs.toDouble() / ACTIVITY_FINE_BIN_MS.toDouble()).roundToInt()
             val score = scoreActivityOffset(referenceFine, targetFine, offsetBins)
             if (score != null) {

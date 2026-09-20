@@ -84,17 +84,17 @@ internal object AutomaticSubtitleSync {
     private const val HTTP_429_RETRY_DELAY_MS = 900L
     private const val SUBTITLE_DOWNLOAD_TIMEOUT_MS = 15_000L
     private const val MAX_SUBTITLE_RESPONSE_BYTES = 4 * 1024 * 1024
-    private const val MAX_PARSED_SUBTITLE_CACHE_ENTRIES = 32
+    private const val MAX_PARSED_SUBTITLE_CACHE_ENTRIES = 8
 
     private val parsedSubtitleCacheLock = Any()
     private val parsedSubtitleCache =
-        object : LinkedHashMap<ParsedSubtitleCacheKey, List<SubtitleSyncCue>>(
+        object : LinkedHashMap<ParsedSubtitleCacheKey, CachedParsedSubtitle>(
             MAX_PARSED_SUBTITLE_CACHE_ENTRIES,
             0.75f,
             true,
         ) {
             override fun removeEldestEntry(
-                eldest: MutableMap.MutableEntry<ParsedSubtitleCacheKey, List<SubtitleSyncCue>>?,
+                eldest: MutableMap.MutableEntry<ParsedSubtitleCacheKey, CachedParsedSubtitle>?,
             ): Boolean = size > MAX_PARSED_SUBTITLE_CACHE_ENTRIES
         }
 
@@ -172,8 +172,10 @@ internal object AutomaticSubtitleSync {
                     .distinctBy { it.url }
                     .toList()
 
-            broadCandidateOrder(prefetchCandidates).forEach { candidate ->
-                prefetchedAlternativeLoads[candidate.url] = async {
+            broadCandidateOrder(prefetchCandidates)
+                .take(MAX_PARALLEL_ALTERNATIVE_DOWNLOADS)
+                .forEach { candidate ->
+                    prefetchedAlternativeLoads[candidate.url] = async {
                     alternativeDownloadSemaphore.withPermit {
                         loadSelectedSubtitle(
                             url = candidate.url,
@@ -245,7 +247,7 @@ internal object AutomaticSubtitleSync {
             var alternatives = sameLanguageAlternatives(availableCandidates, language)
 
             suspend fun awaitSameLanguageAlternatives() {
-                if (alternativeSubtitlesProvider == null || alternatives.isNotEmpty()) return
+                if (alternativeSubtitlesProvider == null || alternatives.isNotEmpty() || selected != null) return
 
                 val waitStartedMs = SystemClock.elapsedRealtime()
                 while (alternatives.isEmpty()) {
@@ -320,6 +322,7 @@ internal object AutomaticSubtitleSync {
             }
 
             if (seedTarget.isNullOrEmpty()) {
+                prefetchedAlternativeLoads.values.forEach { it.cancel() }
                 selectedSubtitleDeferred.cancel()
                 AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
                 AutoSyncDebugLog.warn {
@@ -373,6 +376,7 @@ internal object AutomaticSubtitleSync {
             }
 
             if (referenceTracks.isEmpty()) {
+                prefetchedAlternativeLoads.values.forEach { it.cancel() }
                 selectedSubtitleDeferred.cancel()
                 AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
                 AutoSyncDebugLog.warn {
@@ -416,55 +420,58 @@ internal object AutomaticSubtitleSync {
             alternatives = (alternatives + selectedCandidateMetadata)
                 .distinctBy { it.url }
 
-            val alternativeLoads =
-                linkedMapOf<String, Deferred<LoadedSubtitle?>>().apply {
-                    putAll(prefetchedAlternativeLoads)
-                }
-            val loadedByUrl = mutableMapOf<String, LoadedSubtitle>()
-            val preflightByUrl = mutableMapOf<String, AutoSyncDelayPreflight.Match>()
-            val preflightV2Cache = mutableMapOf<String, CandidateEvaluation>()
-            val timingEvaluationCache = mutableListOf<CachedTimingEvaluation>()
+            val pipelineContext = currentCoroutineContext()
 
-            fun cachedTimingEvaluation(
-                target: List<SubtitleSyncCue>,
-            ): CandidateEvaluation? = synchronized(timingEvaluationCache) {
-                var reused: CandidateEvaluation? = null
-                for (cached in timingEvaluationCache) {
-                    reused = reuseShiftEquivalentEvaluation(
-                        evaluation = cached.evaluation,
-                        representativeTarget = cached.target,
-                        target = target,
-                    )
-                    if (reused != null) break
-                }
-                reused
+            val candidateByUrl = linkedMapOf<String, AutoSyncSubtitleCandidate>()
+            val candidateOrder = linkedMapOf<String, Int>()
+            var nextCandidateIndex = 0
+
+            fun registerCandidate(candidate: AutoSyncSubtitleCandidate) {
+                if (candidate.url.isBlank() || candidate.url in candidateByUrl) return
+                candidateByUrl[candidate.url] = candidate
+                candidateOrder[candidate.url] = nextCandidateIndex++
             }
 
-            fun cacheTimingEvaluation(
-                target: List<SubtitleSyncCue>,
-                evaluation: CandidateEvaluation,
-            ) {
-                synchronized(timingEvaluationCache) {
-                    if (
-                        timingEvaluationCache.none { cached ->
-                            constantTimelineShiftMs(cached.target, target) != null
-                        }
-                    ) {
-                        timingEvaluationCache += CachedTimingEvaluation(
-                            target = target.toList(),
-                            evaluation = evaluation,
-                        )
-                    }
+            alternatives.forEach(::registerCandidate)
+
+            fun refreshCandidatePool() {
+                if (alternativeSubtitlesProvider == null) return
+                availableCandidates = currentExternalCandidates()
+                language = selectedLanguage(availableCandidates)
+                val refreshed =
+                    sameLanguageAlternatives(availableCandidates, language) +
+                        selectedCandidateMetadata
+                refreshed.distinctBy { it.url }.forEach(::registerCandidate)
+            }
+
+            val loadedByUrl = mutableMapOf<String, LoadedSubtitle>()
+            val scheduledUrls = hashSetOf<String>()
+            val activeLoads = linkedMapOf<String, Deferred<LoadedSubtitle?>>()
+
+            prefetchedAlternativeLoads.forEach { (url, job) ->
+                if (url in candidateByUrl) {
+                    activeLoads[url] = job
+                    scheduledUrls += url
+                } else {
+                    job.cancel()
                 }
             }
 
             fun headersForCandidate(url: String): Map<String, String> =
                 if (url == selectedSubtitleUrl) selectedSubtitleHeaders else emptyMap()
 
-            fun scheduleAlternativeLoads() {
-                val unscheduled = alternatives.filter { it.url !in alternativeLoads }
-                broadCandidateOrder(unscheduled).forEach { candidate ->
-                    alternativeLoads[candidate.url] = async {
+            fun scheduleMoreLoads() {
+                refreshCandidatePool()
+                while (activeLoads.size < MAX_PARALLEL_ALTERNATIVE_DOWNLOADS) {
+                    val candidate = broadCandidateOrder(
+                        candidateByUrl.values.filter { candidate ->
+                            candidate.url !in scheduledUrls &&
+                                candidate.url !in loadedByUrl
+                        },
+                    ).firstOrNull() ?: break
+
+                    scheduledUrls += candidate.url
+                    activeLoads[candidate.url] = async {
                         if (candidate.url == selectedSubtitleUrl) {
                             selected ?: selectedSubtitleDeferred.await()
                         } else {
@@ -479,555 +486,328 @@ internal object AutomaticSubtitleSync {
                 }
             }
 
-            scheduleAlternativeLoads()
+            val timingFamilies = mutableListOf<CandidateTimingFamilyState>()
+            val queuedPairs = mutableListOf<PairHypothesis>()
+            val activePairJobs =
+                linkedMapOf<Int, Deferred<CompletedPairEvaluation>>()
+            var nextPairJobId = 0
+            var evaluatedPairs = 0
+            var peakPairWorkers = 0
+            var bestFamily: CandidateTimingFamilyState? = null
+            var bestMatch: TimelineRetimeMatch? = null
 
-            val preflightSemaphore = Semaphore(MAX_PARALLEL_PREFLIGHT_MATCHES)
-            val preflightJobs =
-                linkedMapOf<String, Deferred<CompletedPreflight>>()
+            val pairComparator =
+                compareBy<PairHypothesis> { it.schedulingScore }
+                    .thenBy { it.rankedReference.cheapAffinity }
+                    .thenBy { it.rankedReference.suitability }
+                    .thenBy { if (it.preflightHint != null) 1 else 0 }
+                    .thenBy { -it.family.representative.index }
+                    .thenBy { it.rankedReference.track.key }
 
-            fun schedulePreflightJobs() {
-                alternatives.forEach { candidate ->
-                    if (candidate.url !in preflightJobs) {
-                        preflightJobs[candidate.url] = async {
-                            val loaded = alternativeLoads[candidate.url]?.await()
-                            val match =
-                                if (loaded == null) {
-                                    null
-                                } else {
-                                    preflightSemaphore.withPermit {
-                                        withContext(Dispatchers.Default) {
-                                            AutoSyncDelayPreflight.bestMatch(
-                                                referenceTracks = referenceTracks,
-                                                target = loaded.cues,
-                                                referenceActivityCache = referenceActivityCache,
-                                            )
-                                        }
-                                    }
-                                }
-                            CompletedPreflight(
-                                candidate = candidate,
-                                loaded = loaded,
-                                match = match,
-                            )
-                        }
-                    }
-                }
-            }
-
-            schedulePreflightJobs()
-
-            AutoSyncDebugLog.section { "DELAY-ONLY PREFLIGHT" }
-            AutoSyncDebugLog.info {
-                "completion-driven V2 delay scan candidates=${alternatives.size} " +
-                    "downloads=$MAX_PARALLEL_ALTERNATIVE_DOWNLOADS " +
-                    "downloadOrder=front-back " +
-                    "preflightWorkers=$MAX_PARALLEL_PREFLIGHT_MATCHES"
-            }
-
-            val pendingPreflights =
-                linkedMapOf<String, Deferred<CompletedPreflight>>().apply {
-                    putAll(preflightJobs)
-                }
-            var bestPreflightScoreSeen = Double.NEGATIVE_INFINITY
-            var authoritativeValidationJob: Deferred<CompletedAuthoritativeValidation>? = null
-            var activeValidationRequest: AuthoritativeValidationRequest? = null
-            var queuedValidationRequest: AuthoritativeValidationRequest? = null
-
-            fun isBetterValidationRequest(
-                candidate: AuthoritativeValidationRequest,
-                current: AuthoritativeValidationRequest,
-            ): Boolean =
-                candidate.match.score > current.match.score ||
-                    (
-                        candidate.match.score == current.match.score &&
-                            candidate.match.margin > current.match.margin
-                        )
-
-            fun launchAuthoritativeValidation(request: AuthoritativeValidationRequest) {
-                activeValidationRequest = request
-                AutoSyncDebugLog.info {
-                    "PREFLIGHT async authoritative V2 start " +
-                        "url=${request.candidate.url} reference=${request.match.referenceKey} " +
-                        "score=${fmt(request.match.score)} margin=${fmt(request.match.margin)}"
-                }
-
-                authoritativeValidationJob = async {
-                    val cachedTiming = cachedTimingEvaluation(request.loaded.cues)
-                    val evaluation = cachedTiming ?: evaluateExternalCandidate(
-                        label = "PREFLIGHT",
-                        url = request.candidate.url,
-                        target = request.loaded.cues,
-                        referenceTracks = referenceTracks,
-                        referenceActivityCache = referenceActivityCache,
-                        preferredReferenceKey = request.match.referenceKey,
-                        preflightHint = request.match,
-                        onlyReferenceKey = request.match.referenceKey,
-                    )
-
-                    CompletedAuthoritativeValidation(
-                        request = request,
-                        evaluation = evaluation,
-                        reusedTiming = cachedTiming != null,
-                    )
-                }
-            }
-
-            fun queueOrLaunchAuthoritativeValidation(
-                request: AuthoritativeValidationRequest,
+            suspend fun admitLoadedCandidate(
+                candidate: AutoSyncSubtitleCandidate,
+                loaded: LoadedSubtitle,
             ) {
-                val active = activeValidationRequest
-                if (authoritativeValidationJob == null || active == null) {
-                    launchAuthoritativeValidation(request)
-                    return
-                }
+                loadedByUrl[candidate.url] = loaded
+                val index = candidateOrder[candidate.url] ?: return
+                val alternative = LoadedAlternative(
+                    index = index,
+                    candidate = candidate,
+                    loaded = loaded,
+                )
 
-                if (
+                val equivalent = timingFamilies.firstOrNull { family ->
                     constantTimelineShiftMs(
-                        active.loaded.cues,
-                        request.loaded.cues,
+                        family.representative.loaded.cues,
+                        loaded.cues,
                     ) != null
-                ) {
+                }
+                if (equivalent != null) {
+                    equivalent.members += alternative
                     AutoSyncDebugLog.info {
-                        "PREFLIGHT async validation already covers timing family " +
-                            "url=${request.candidate.url}"
+                        "GLOBAL scheduler reused exact shift-equivalent timing family " +
+                            "candidate=$index representative=${equivalent.representative.index}"
                     }
                     return
                 }
 
-                val queued = queuedValidationRequest
-                if (queued == null || isBetterValidationRequest(request, queued)) {
-                    queuedValidationRequest = request
-                    AutoSyncDebugLog.info {
-                        "PREFLIGHT queued next authoritative V2 candidate " +
-                            "url=${request.candidate.url} score=${fmt(request.match.score)}"
-                    }
+                val targetActivity = withContext(Dispatchers.Default) {
+                    AutoSyncTimelineRetimer.prepareUnitActivity(loaded.cues)
                 }
-            }
-
-            fun finishAuthoritativeValidation(
-                completed: CompletedAuthoritativeValidation,
-            ): AutoSyncResolvedTimeline? {
-                val request = completed.request
-                val candidate = request.candidate
-                val evaluation = completed.evaluation
-
-                if (completed.reusedTiming) {
-                    preflightV2Cache[candidate.url] = evaluation
-                    AutoSyncDebugLog.info {
-                        "PREFLIGHT reused session timing-family V2 validation url=${candidate.url}"
+                val preflight = if (targetActivity != null) {
+                    withContext(Dispatchers.Default) {
+                        AutoSyncDelayPreflight.bestMatch(
+                            referenceTracks = referenceTracks,
+                            target = loaded.cues,
+                            referenceActivityCache = referenceActivityCache,
+                            preparedTargetActivity = targetActivity,
+                            cancellationCheck = { pipelineContext.ensureActive() },
+                        )
                     }
+                } else {
+                    null
                 }
 
-                val best = evaluation.best
-                val authoritativeFastAccept =
-                    best != null &&
-                        best.timeline.confident &&
-                        best.timeline.alignmentSource == "delay-only-validated" &&
-                        (
-                            isExceptionalMatch(best) ||
-                                isStrongCheckpointMatch(best)
-                            )
+                val rankedReferences = withContext(Dispatchers.Default) {
+                    rankReferenceCandidates(
+                        target = loaded.cues,
+                        referenceTracks = referenceTracks,
+                        preferredReferenceKey = preflight?.referenceKey,
+                    )
+                }
 
-                if (authoritativeFastAccept) {
-                    alternativeLoads.values
-                        .filterNot { it.isCompleted }
-                        .forEach { it.cancel() }
-                    preflightJobs.values
-                        .filterNot { it.isCompleted }
-                        .forEach { it.cancel() }
-                    if (!selectedSubtitleDeferred.isCompleted) {
-                        selectedSubtitleDeferred.cancel()
-                    }
+                val family = CandidateTimingFamilyState(
+                    representative = alternative,
+                    members = mutableListOf(alternative),
+                    targetActivity = targetActivity,
+                    preflight = preflight,
+                    rankedReferences = rankedReferences,
+                )
+                timingFamilies += family
 
-                    AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
-                    AutoSyncDebugLog.info {
-                        "V2 accepted completion-driven delay candidate " +
-                            "url=${candidate.url} name=${candidate.name ?: "<none>"} " +
-                            "reference=${best!!.track.key} " +
-                            "quality=${fmt(directTimelineQualityScore(best))}"
-                    }
-
-                    return AutoSyncResolvedTimeline(
-                        subtitleUrl = candidate.url,
-                        subtitleHeaders = headersForCandidate(candidate.url),
-                        subtitleBody = request.loaded.rawBody,
-                        timeline = best!!.timeline,
+                rankedReferences.forEach { ranked ->
+                    val hint =
+                        preflight?.takeIf { it.referenceKey == ranked.track.key }
+                    queuedPairs += PairHypothesis(
+                        family = family,
+                        rankedReference = ranked,
+                        preflightHint = hint,
+                        schedulingScore = maxOf(
+                            ranked.cheapAffinity,
+                            hint?.score ?: Double.NEGATIVE_INFINITY,
+                        ),
                     )
                 }
 
                 AutoSyncDebugLog.info {
-                    "PREFLIGHT candidate was not strong enough after authoritative V2; " +
-                        "continuing completion-driven scan"
-                }
-                return null
-            }
-
-            while (
-                pendingPreflights.isNotEmpty() ||
-                authoritativeValidationJob != null
-            ) {
-                val event = select<Any> {
-                    pendingPreflights.forEach { (_, job) ->
-                        job.onAwait { it }
-                    }
-                    authoritativeValidationJob?.let { job ->
-                        job.onAwait { it }
-                    }
-                }
-
-                when (event) {
-                    is CompletedAuthoritativeValidation -> {
-                        authoritativeValidationJob = null
-                        activeValidationRequest = null
-
-                        val resolved = finishAuthoritativeValidation(event)
-                        if (resolved != null) {
-                            return@supervisorScope resolved
-                        }
-
-                        val queued = queuedValidationRequest
-                        queuedValidationRequest = null
-                        if (queued != null) {
-                            launchAuthoritativeValidation(queued)
-                        }
-                    }
-
-                    is CompletedPreflight -> {
-                        pendingPreflights.remove(event.candidate.url)
-
-                        val candidate = event.candidate
-                        val loaded = event.loaded
-                        val match = event.match
-                        val highScoreChampion =
-                            match != null &&
-                                match.score >= HIGH_SCORE_PREFLIGHT_CHAMPION &&
-                                match.segmentsPassed >= 3 &&
-                                match.score > bestPreflightScoreSeen
-                        if (match != null && match.score > bestPreflightScoreSeen) {
-                            bestPreflightScoreSeen = match.score
-                        }
-
-                        if (loaded != null) {
-                            loadedByUrl[candidate.url] = loaded
-                        }
-                        if (match != null) {
-                            preflightByUrl[candidate.url] = match
-                            AutoSyncDebugLog.info {
-                                "PREFLIGHT url=${candidate.url} reference=${match.referenceKey} " +
-                                    "offset=${"%.1f".format(match.offsetMs)}ms " +
-                                    "score=${fmt(match.score)} margin=${fmt(match.margin)} " +
-                                    "segments=${match.segmentsPassed} " +
-                                    "strong=${AutoSyncDelayPreflight.isReallyGood(match)}"
-                            }
-                        }
-
-                        if (
-                            loaded != null &&
-                            match != null &&
-                            (
-                                AutoSyncDelayPreflight.isReallyGood(match) ||
-                                    highScoreChampion
-                                )
-                        ) {
-                            AutoSyncDebugLog.info {
-                                "PREFLIGHT ${
-                                    if (AutoSyncDelayPreflight.isReallyGood(match)) {
-                                        "strong V2 delay evidence"
-                                    } else {
-                                        "high-score champion"
-                                    }
-                                }; scheduling authoritative validation " +
-                                    "url=${candidate.url} reference=${match.referenceKey}"
-                            }
-
-                            queueOrLaunchAuthoritativeValidation(
-                                AuthoritativeValidationRequest(
-                                    candidate = candidate,
-                                    loaded = loaded,
-                                    match = match,
-                                ),
-                            )
-                        }
-
-                        if (alternativeSubtitlesProvider != null) {
-                            availableCandidates = currentExternalCandidates()
-                            language = selectedLanguage(availableCandidates)
-                            val refreshed =
-                                sameLanguageAlternatives(availableCandidates, language)
-                            val knownUrls =
-                                alternatives.asSequence().map { it.url }.toHashSet()
-                            val newlyArrived = refreshed.filter { it.url !in knownUrls }
-
-                            if (newlyArrived.isNotEmpty()) {
-                                alternatives = alternatives + newlyArrived
-                                scheduleAlternativeLoads()
-                                schedulePreflightJobs()
-                                newlyArrived.forEach { newCandidate ->
-                                    preflightJobs[newCandidate.url]?.let { job ->
-                                        pendingPreflights[newCandidate.url] = job
-                                    }
-                                }
-                                AutoSyncDebugLog.info {
-                                    "preflight candidate refresh added=${newlyArrived.size} " +
-                                        "total=${alternatives.size}"
-                                }
-                            }
-                        }
-                    }
-
-                    else -> error("Unexpected AutoSync preflight event")
+                    "GLOBAL scheduler admitted candidate=$index cues=${loaded.cues.size} " +
+                        "family=${timingFamilies.lastIndex} references=${rankedReferences.size} " +
+                        "preflight=${preflight?.let { "${it.referenceKey}:${fmt(it.score)}" } ?: "<none>"}"
                 }
             }
 
-            // No excellent delay-only candidate survived V2 validation. Pass the preflight
-            // evidence forward: V2 now tries candidates in this order, and each candidate tries
-            // its preflight-winning embedded reference first.
-            alternatives = alternatives.sortedWith(
-                compareByDescending<AutoSyncSubtitleCandidate> {
-                    preflightByUrl[it.url]?.score ?: Double.NEGATIVE_INFINITY
-                }.thenByDescending {
-                    preflightByUrl[it.url]?.margin ?: Double.NEGATIVE_INFINITY
-                }.thenByDescending {
-                    preflightByUrl[it.url]?.segmentsPassed ?: 0
-                },
-            )
+            fun startPairJobs() {
+                while (
+                    activePairJobs.size < MAX_PARALLEL_ALTERNATIVE_MATCHES &&
+                    queuedPairs.isNotEmpty()
+                ) {
+                    val hypothesis = queuedPairs.maxWithOrNull(pairComparator) ?: break
+                    queuedPairs.remove(hypothesis)
 
-            AutoSyncDebugLog.section { "V2 CANDIDATE ORDER FROM PREFLIGHT" }
-            alternatives.forEachIndexed { index, candidate ->
-                val hint = preflightByUrl[candidate.url]
-                AutoSyncDebugLog.info {
-                    "[$index] url=${candidate.url} name=${candidate.name ?: "<none>"} " +
-                        if (hint == null) {
-                            "preflight=<none>"
-                        } else {
-                            "reference=${hint.referenceKey} offset=${hint.offsetMs}ms " +
-                                "score=${fmt(hint.score)} margin=${fmt(hint.margin)}"
-                        }
+                    val referenceKey = hypothesis.rankedReference.track.key
+                    if (!hypothesis.family.evaluatedReferenceKeys.add(referenceKey)) continue
+
+                    val jobId = nextPairJobId++
+                    activePairJobs[jobId] = async(Dispatchers.Default) {
+                        val representative = hypothesis.family.representative
+                        val evaluation = evaluateExternalCandidate(
+                            label =
+                                "PAIR[${representative.index}/$referenceKey]",
+                            url = representative.candidate.url,
+                            target = representative.loaded.cues,
+                            referenceTracks = referenceTracks,
+                            referenceActivityCache = referenceActivityCache,
+                            preferredReferenceKey = referenceKey,
+                            preflightHint = hypothesis.preflightHint,
+                            onlyReferenceKey = referenceKey,
+                            preparedTargetActivity = hypothesis.family.targetActivity,
+                        )
+                        CompletedPairEvaluation(
+                            hypothesis = hypothesis,
+                            evaluation = evaluation,
+                        )
+                    }
                 }
+                peakPairWorkers = maxOf(peakPairWorkers, activePairJobs.size)
             }
 
-            var bestAlternative: AutoSyncResolvedTimeline? = null
-            var bestAlternativeMatch: TimelineRetimeMatch? = null
-            var bestAlternativeIndex = -1
-            var bestAlternativeName: String? = null
-            var bestAlternativeCueCount = 0
-
-            var batchStartIndex = 0
-            var stopFallbackSearch = false
-
-            AutoSyncDebugLog.section { "FULL V2 FALLBACK" }
-
-            while (batchStartIndex < alternatives.size && !stopFallbackSearch) {
-                val batchEndExclusive = minOf(
-                    batchStartIndex + ALTERNATIVE_EXTERNAL_SUBTITLE_BATCH_SIZE,
-                    alternatives.size,
-                )
-
-                AutoSyncDebugLog.info {
-                    "V2 batch candidates=$batchStartIndex..${batchEndExclusive - 1}"
+            fun isBetterMatch(
+                candidate: TimelineRetimeMatch,
+                current: TimelineRetimeMatch?,
+            ): Boolean {
+                if (current == null) return true
+                if (candidate.timeline.confident != current.timeline.confident) {
+                    return candidate.timeline.confident
                 }
+                val candidateQuality = directTimelineQualityScore(candidate)
+                val currentQuality = directTimelineQualityScore(current)
+                if (candidateQuality != currentQuality) {
+                    return candidateQuality > currentQuality
+                }
+                return candidate.track.key < current.track.key
+            }
 
-                val loadedBatch = ArrayList<LoadedAlternative>(
-                    batchEndExclusive - batchStartIndex,
-                )
-                for (index in batchStartIndex until batchEndExclusive) {
-                    val candidate = alternatives[index]
-                    val loaded =
-                        loadedByUrl[candidate.url]
-                            ?: alternativeLoads[candidate.url]?.await()
-                            ?: continue
-                    loadedByUrl[candidate.url] = loaded
-
-                    loadedBatch += LoadedAlternative(
-                        index = index,
-                        candidate = candidate,
-                        loaded = loaded,
+            fun canStopForFamily(
+                family: CandidateTimingFamilyState,
+                match: TimelineRetimeMatch,
+            ): Boolean {
+                if (isExceptionalMatch(match)) return true
+                if (family.evaluatedReferenceKeys.size < REFERENCE_SEARCH_CHECKPOINT) {
+                    return false
+                }
+                return isStrongCheckpointMatch(match) ||
+                    isAsymmetricReferenceCheckpointMatch(
+                        match,
+                        targetCueCount = family.representative.loaded.cues.size,
                     )
-                }
+            }
 
-                // Exact constant-shift timing families are structurally identical for V2.
-                // Group only when every cue has the same relative start/end timing; no fuzzy reuse.
-                val timingGroups = mutableListOf<MutableList<LoadedAlternative>>()
-                for (alternative in loadedBatch) {
-                    val existing = timingGroups.firstOrNull { group ->
-                        constantTimelineShiftMs(
-                            group.first().loaded.cues,
-                            alternative.loaded.cues,
-                        ) != null
-                    }
-                    if (existing != null) {
-                        existing += alternative
-                    } else {
-                        timingGroups.add(mutableListOf(alternative))
-                    }
-                }
-                val duplicatesSaved = loadedBatch.size - timingGroups.size
-                if (duplicatesSaved > 0) {
-                    AutoSyncDebugLog.info {
-                        "fallback shift-equivalent dedup timelines=${timingGroups.size}/${loadedBatch.size} " +
-                            "duplicatesSaved=$duplicatesSaved"
-                    }
-                }
+            scheduleMoreLoads()
+            startPairJobs()
 
-                // Keep the existing two-worker bound for TV hardware. Candidate ordering is from
-                // preflight; the second worker is only speculative parallel work.
-                for (groupPair in timingGroups.chunked(MAX_PARALLEL_ALTERNATIVE_MATCHES)) {
-                    val evaluatedPair = groupPair.map { group ->
-                        async {
-                            val representative = group.first()
-                            val cachedByUrl = preflightV2Cache[representative.candidate.url]
-                            val cachedByTiming =
-                                if (cachedByUrl == null) {
-                                    cachedTimingEvaluation(representative.loaded.cues)
-                                } else {
-                                    null
-                                }
-                            val evaluation =
-                                cachedByUrl ?: cachedByTiming ?: evaluateExternalCandidate(
-                                    label = "CANDIDATE[${representative.index}]",
-                                    url = representative.candidate.url,
-                                    target = representative.loaded.cues,
-                                    referenceTracks = referenceTracks,
-                                    referenceActivityCache = referenceActivityCache,
-                                    preferredReferenceKey =
-                                        preflightByUrl[representative.candidate.url]?.referenceKey,
-                                    preflightHint =
-                                        preflightByUrl[representative.candidate.url],
-                                )
-                            if (cachedByUrl == null && cachedByTiming == null) {
-                                cacheTimingEvaluation(representative.loaded.cues, evaluation)
-                            } else if (cachedByTiming != null) {
-                                AutoSyncDebugLog.info {
-                                    "CANDIDATE[${representative.index}] reused session timing-family " +
-                                        "V2 validation"
-                                }
-                            }
-                            EvaluatedAlternativeTimingGroup(
-                                members = group,
-                                evaluation = evaluation,
-                            )
-                        }
-                    }.awaitAll()
+            AutoSyncDebugLog.section { "GLOBAL V2 PAIR SCHEDULER" }
+            AutoSyncDebugLog.info {
+                "downloads=$MAX_PARALLEL_ALTERNATIVE_DOWNLOADS " +
+                    "pairWorkers=$MAX_PARALLEL_ALTERNATIVE_MATCHES " +
+                    "hardSearchCap=none"
+            }
 
-                    for (evaluated in evaluatedPair.sortedBy { it.members.first().index }) {
-                        val representative = evaluated.members.first()
-
-                        for (alternative in evaluated.members.sortedBy { it.index }) {
-                            val memberEvaluation =
-                                if (alternative.index == representative.index) {
-                                    evaluated.evaluation
-                                } else {
-                                    reuseShiftEquivalentEvaluation(
-                                        evaluation = evaluated.evaluation,
-                                        representativeTarget = representative.loaded.cues,
-                                        target = alternative.loaded.cues,
-                                    ) ?: evaluateExternalCandidate(
-                                        label = "CANDIDATE[${alternative.index}]",
-                                        url = alternative.candidate.url,
-                                        target = alternative.loaded.cues,
-                                        referenceTracks = referenceTracks,
-                                        referenceActivityCache = referenceActivityCache,
-                                        preferredReferenceKey =
-                                            preflightByUrl[alternative.candidate.url]?.referenceKey,
-                                        preflightHint =
-                                            preflightByUrl[alternative.candidate.url],
-                                    )
-                                }
-                            val best = memberEvaluation.best
-
-                            if (alternative.index != representative.index) {
-                                val shiftMs = constantTimelineShiftMs(
-                                    representative.loaded.cues,
-                                    alternative.loaded.cues,
-                                ) ?: 0L
-                                AutoSyncDebugLog.info {
-                                    "CANDIDATE[${alternative.index}] reused exact shift-equivalent " +
-                                        "timing result from CANDIDATE[${representative.index}] " +
-                                        "shift=${shiftMs}ms"
-                                }
-                            }
-
-                            if (best == null || !best.timeline.confident) continue
-
-                            val previous = bestAlternativeMatch
-                            if (
-                                previous == null ||
-                                directTimelineQualityScore(best) >
-                                    directTimelineQualityScore(previous)
-                            ) {
-                                bestAlternativeMatch = best
-                                bestAlternative = AutoSyncResolvedTimeline(
-                                    subtitleUrl = alternative.candidate.url,
-                                    subtitleHeaders =
-                                        headersForCandidate(alternative.candidate.url),
-                                    subtitleBody = alternative.loaded.rawBody,
-                                    timeline = best.timeline,
-                                )
-                                bestAlternativeIndex = alternative.index
-                                bestAlternativeName = alternative.candidate.name
-                                bestAlternativeCueCount = alternative.loaded.cues.size
-                            }
-
-                            if (isExceptionalMatch(best)) {
-                                stopFallbackSearch = true
-                                break
-                            }
-                        }
-
-                        if (stopFallbackSearch) break
-                    }
+            var strongStop = false
+            try {
+                while (!strongStop) {
+                    startPairJobs()
+                    scheduleMoreLoads()
 
                     if (
-                        !stopFallbackSearch &&
-                        bestAlternativeMatch?.let(::isStrongCheckpointMatch) == true
+                        activeLoads.isEmpty() &&
+                        activePairJobs.isEmpty() &&
+                        queuedPairs.isEmpty()
                     ) {
-                        stopFallbackSearch = true
+                        refreshCandidatePool()
+                        scheduleMoreLoads()
+                        if (activeLoads.isEmpty()) break
                     }
 
-                    if (stopFallbackSearch) break
-                }
+                    val event = select<SchedulerEvent> {
+                        activeLoads.forEach { (url, job) ->
+                            job.onAwait { loaded ->
+                                SchedulerEvent.CandidateLoaded(url, loaded)
+                            }
+                        }
+                        activePairJobs.forEach { (jobId, job) ->
+                            job.onAwait { completed ->
+                                SchedulerEvent.PairEvaluated(jobId, completed)
+                            }
+                        }
+                    }
 
-                if (
-                    stopFallbackSearch ||
-                    (
-                        bestAlternativeMatch != null &&
-                            isFallbackBatchStopMatch(
-                                bestAlternativeMatch!!,
-                                targetCueCount = bestAlternativeCueCount,
-                            )
-                        )
-                ) {
-                    break
+                    when (event) {
+                        is SchedulerEvent.CandidateLoaded -> {
+                            activeLoads.remove(event.url)
+                            val candidate = candidateByUrl[event.url]
+                            scheduleMoreLoads()
+
+                            if (candidate != null && event.loaded != null) {
+                                admitLoadedCandidate(candidate, event.loaded)
+                            } else {
+                                AutoSyncDebugLog.warn {
+                                    "GLOBAL scheduler candidate load unavailable url=${event.url}"
+                                }
+                            }
+                        }
+
+                        is SchedulerEvent.PairEvaluated -> {
+                            activePairJobs.remove(event.jobId)
+                            evaluatedPairs++
+
+                            val family = event.completed.hypothesis.family
+                            val pairBest = event.completed.evaluation.best
+                            if (pairBest != null && isBetterMatch(pairBest, family.best)) {
+                                family.best = pairBest
+                            }
+
+                            val familyBest = family.best
+                            if (
+                                familyBest != null &&
+                                familyBest.timeline.confident &&
+                                isBetterMatch(familyBest, bestMatch)
+                            ) {
+                                bestMatch = familyBest
+                                bestFamily = family
+                            }
+
+                            if (
+                                familyBest != null &&
+                                familyBest.timeline.confident &&
+                                canStopForFamily(family, familyBest)
+                            ) {
+                                AutoSyncDebugLog.info {
+                                    "GLOBAL scheduler authoritative stop candidate=" +
+                                        "${family.representative.index} reference=${familyBest.track.key} " +
+                                        "quality=${fmt(directTimelineQualityScore(familyBest))} " +
+                                        "familyAttempts=${family.evaluatedReferenceKeys.size}"
+                                }
+                                strongStop = true
+                            }
+                        }
+                    }
                 }
-                batchStartIndex = batchEndExclusive
+            } finally {
+                activeLoads.values
+                    .filterNot { it.isCompleted }
+                    .forEach { it.cancel() }
+                activePairJobs.values
+                    .filterNot { it.isCompleted }
+                    .forEach { it.cancel() }
             }
 
-            alternativeLoads.values
-                .filterNot { it.isCompleted }
-                .forEach { it.cancel() }
+            AutoSyncDebugLog.info {
+                "GLOBAL scheduler summary families=${timingFamilies.size} " +
+                    "evaluatedPairs=$evaluatedPairs peakPairWorkers=$peakPairWorkers " +
+                    "loaded=${loadedByUrl.size}/${candidateByUrl.size}"
+            }
 
-            val chosenAlternative = bestAlternative
-            val chosenAlternativeMatch = bestAlternativeMatch
-            if (chosenAlternative != null && chosenAlternativeMatch != null) {
+            val winningFamily = bestFamily
+            val winningMatch = bestMatch
+            if (winningFamily == null || winningMatch == null || !winningMatch.timeline.confident) {
                 if (!selectedSubtitleDeferred.isCompleted) {
                     selectedSubtitleDeferred.cancel()
                 }
                 AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
-                AutoSyncDebugLog.info {
-                    "V2 selected preflight-ranked candidate index=$bestAlternativeIndex " +
-                        "url=${chosenAlternative.subtitleUrl} name=${bestAlternativeName ?: "<none>"} " +
-                        "cues=$bestAlternativeCueCount " +
-                        "alignment=${chosenAlternative.timeline.alignmentSource} " +
-                        "quality=${fmt(directTimelineQualityScore(chosenAlternativeMatch))}"
+                AutoSyncDebugLog.warn {
+                    "REJECT no confident match found; original subtitle timing should be kept"
                 }
-                return@supervisorScope chosenAlternative
+                return@supervisorScope null
+            }
+
+            val winningMember =
+                winningFamily.members.minByOrNull { it.index }
+                    ?: winningFamily.representative
+            val memberMatch =
+                if (winningMember === winningFamily.representative) {
+                    winningMatch
+                } else {
+                    reuseShiftEquivalentEvaluation(
+                        evaluation = CandidateEvaluation(
+                            best = winningMatch,
+                            attempts = listOf(winningMatch),
+                        ),
+                        representativeTarget =
+                            winningFamily.representative.loaded.cues,
+                        target = winningMember.loaded.cues,
+                    )?.best ?: winningMatch
+                }
+
+            if (!selectedSubtitleDeferred.isCompleted) {
+                selectedSubtitleDeferred.cancel()
             }
 
             AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
-            AutoSyncDebugLog.warn {
-                "REJECT no confident match found; original subtitle timing should be kept"
+            AutoSyncDebugLog.info {
+                "V2 global best-first candidate index=${winningMember.index} " +
+                    "url=${winningMember.candidate.url} " +
+                    "name=${winningMember.candidate.name ?: "<none>"} " +
+                    "reference=${memberMatch.track.key} " +
+                    "quality=${fmt(directTimelineQualityScore(memberMatch))} " +
+                    "alignment=${memberMatch.timeline.alignmentSource}"
             }
-            null
+
+            return@supervisorScope AutoSyncResolvedTimeline(
+                subtitleUrl = winningMember.candidate.url,
+                subtitleHeaders = headersForCandidate(winningMember.candidate.url),
+                subtitleBody = winningMember.loaded.rawBody,
+                timeline = memberMatch.timeline,
+            )
         }
     }
 
@@ -1040,42 +820,23 @@ internal object AutomaticSubtitleSync {
         preferredReferenceKey: String? = null,
         preflightHint: AutoSyncDelayPreflight.Match? = null,
         onlyReferenceKey: String? = null,
+        preparedTargetActivity: AutoSyncTimelineRetimer.PreparedActivity? = null,
     ): CandidateEvaluation = withContext(Dispatchers.Default) {
-        val targetActivity = AutoSyncTimelineRetimer.prepareUnitActivity(target)
+        val evaluationContext = currentCoroutineContext()
+        val targetActivity =
+            preparedTargetActivity ?: AutoSyncTimelineRetimer.prepareUnitActivity(target)
 
-        val representativeTracks =
+        val scopedReferences =
             if (onlyReferenceKey != null) {
-                referenceTracks.firstOrNull { it.key == onlyReferenceKey }
-                    ?.let(::listOf)
-                    .orEmpty()
+                referenceTracks.filter { it.key == onlyReferenceKey }
             } else {
-                groupEquivalentReferenceTimelines(referenceTracks)
-                    .mapNotNull { group ->
-                        group.members.minWithOrNull(
-                            compareBy<ReferenceTrack> { isSdhReferenceTrack(it) }
-                                .thenBy { it.key },
-                        )
-                    }
+                referenceTracks
             }
-
-        val representatives = representativeTracks
-            .map { track ->
-                RankedReferenceCandidate(
-                    track = track,
-                    cheapAffinity = cheapReferenceAffinity(track.cues, target),
-                    suitability = referenceSuitabilityScore(track, target),
-                )
-            }
-            .sortedWith(
-                // V1-style scheduling only: try the preflight-proven reference first, then the
-                // strongest cheap timing affinity. Authoritative V2 scoring/acceptance is unchanged.
-                compareByDescending<RankedReferenceCandidate> {
-                    if (it.track.key == preferredReferenceKey) 1 else 0
-                }.thenByDescending { it.cheapAffinity }
-                    .thenByDescending { it.suitability }
-                    .thenBy { isSdhReferenceTrack(it.track) }
-                    .thenBy { it.track.key },
-            )
+        val representatives = rankReferenceCandidates(
+            target = target,
+            referenceTracks = scopedReferences,
+            preferredReferenceKey = preferredReferenceKey,
+        )
 
         preflightHint?.let { hint ->
             AutoSyncDebugLog.info {
@@ -1121,6 +882,7 @@ internal object AutomaticSubtitleSync {
                     preflightHint
                         ?.takeIf { it.referenceKey == track.key }
                         ?.alignment,
+                cancellationCheck = { evaluationContext.ensureActive() },
             ) ?: continue
             val match = TimelineRetimeMatch(track, timeline)
             attempts += match
@@ -1279,6 +1041,34 @@ internal object AutomaticSubtitleSync {
         )
     }
 
+    private fun rankReferenceCandidates(
+        target: List<SubtitleSyncCue>,
+        referenceTracks: List<ReferenceTrack>,
+        preferredReferenceKey: String? = null,
+    ): List<RankedReferenceCandidate> =
+        groupEquivalentReferenceTimelines(referenceTracks)
+            .mapNotNull { group ->
+                group.members.minWithOrNull(
+                    compareBy<ReferenceTrack> { isSdhReferenceTrack(it) }
+                        .thenBy { it.key },
+                )
+            }
+            .map { track ->
+                RankedReferenceCandidate(
+                    track = track,
+                    cheapAffinity = cheapReferenceAffinity(track.cues, target),
+                    suitability = referenceSuitabilityScore(track, target),
+                )
+            }
+            .sortedWith(
+                compareByDescending<RankedReferenceCandidate> {
+                    if (it.track.key == preferredReferenceKey) 1 else 0
+                }.thenByDescending { it.cheapAffinity }
+                    .thenByDescending { it.suitability }
+                    .thenBy { isSdhReferenceTrack(it.track) }
+                    .thenBy { it.track.key },
+            )
+
     private fun referenceCueRatio(
         track: ReferenceTrack,
         target: List<SubtitleSyncCue>,
@@ -1423,13 +1213,13 @@ internal object AutomaticSubtitleSync {
         url: String,
         headers: Map<String, String>,
     ): LoadedSubtitle? {
-        val cacheKey = ParsedSubtitleCacheKey(url, stableHeaderHash(headers))
+        val cacheKey = ParsedSubtitleCacheKey(url, stableHeaderIdentity(headers))
         synchronized(parsedSubtitleCacheLock) {
             parsedSubtitleCache[cacheKey]
-        }?.let { cues ->
+        }?.let { cached ->
             return LoadedSubtitle(
-                cues = cues,
-                rawBody = null,
+                cues = cached.cues,
+                rawBody = cached.rawBody,
                 downloadMs = 0L,
                 parseMs = 0L,
                 cacheHit = true,
@@ -1471,7 +1261,10 @@ internal object AutomaticSubtitleSync {
 
         val immutable = cues.toList()
         synchronized(parsedSubtitleCacheLock) {
-            parsedSubtitleCache[cacheKey] = immutable
+            parsedSubtitleCache[cacheKey] = CachedParsedSubtitle(
+                cues = immutable,
+                rawBody = text,
+            )
         }
         return LoadedSubtitle(
             cues = immutable,
@@ -1822,6 +1615,7 @@ internal object AutomaticSubtitleSync {
         preparedReferenceActivity: AutoSyncTimelineRetimer.PreparedActivity?,
         preparedTargetActivity: AutoSyncTimelineRetimer.PreparedActivity?,
         delayOnlyHint: AutoSyncDelayOnlyAlignment? = null,
+        cancellationCheck: (() -> Unit)? = null,
     ): AutoSyncTimelineRetimeResult? {
         val overSegmentedReference =
             track.cues.size.toLong() * 2L >= target.size.toLong() * 3L
@@ -1847,23 +1641,23 @@ internal object AutomaticSubtitleSync {
             preparedReferenceActivity = preparedReferenceActivity,
             preparedTargetActivity = preparedTargetActivity,
             precomputedDelayOnly = delayOnlyHint,
+            cancellationCheck = cancellationCheck,
         )
     }
 
-    private fun stableHeaderHash(headers: Map<String, String>): Int {
-        var hash = 1
+    private fun stableHeaderIdentity(
+        headers: Map<String, String>,
+    ): List<Pair<String, String>> =
         headers.entries
             .sortedBy { it.key.lowercase() }
-            .forEach { (key, value) ->
-                hash = 31 * hash + key.lowercase().hashCode()
-                hash = 31 * hash + value.hashCode()
-            }
-        return hash
-    }
+            .map { (key, value) -> key.lowercase() to value }
 
     private fun fmt(value: Double): String = "%.4f".format(value)
 
-    private data class ParsedSubtitleCacheKey(val url: String, val headerHash: Int)
+    private data class ParsedSubtitleCacheKey(
+        val url: String,
+        val headers: List<Pair<String, String>>,
+    )
     private data class LoadedSubtitle(
         val cues: List<SubtitleSyncCue>,
         val rawBody: String?,
@@ -1895,34 +1689,45 @@ internal object AutomaticSubtitleSync {
         val best: TimelineRetimeMatch?,
         val attempts: List<TimelineRetimeMatch>,
     )
-    private data class CachedTimingEvaluation(
-        val target: List<SubtitleSyncCue>,
-        val evaluation: CandidateEvaluation,
+    private data class CachedParsedSubtitle(
+        val cues: List<SubtitleSyncCue>,
+        val rawBody: String,
     )
     private data class LoadedAlternative(
         val index: Int,
         val candidate: AutoSyncSubtitleCandidate,
         val loaded: LoadedSubtitle,
     )
-    private data class EvaluatedAlternativeTimingGroup(
-        val members: List<LoadedAlternative>,
+    private class CandidateTimingFamilyState(
+        val representative: LoadedAlternative,
+        val members: MutableList<LoadedAlternative>,
+        val targetActivity: AutoSyncTimelineRetimer.PreparedActivity?,
+        val preflight: AutoSyncDelayPreflight.Match?,
+        val rankedReferences: List<RankedReferenceCandidate>,
+        val evaluatedReferenceKeys: MutableSet<String> = hashSetOf(),
+        var best: TimelineRetimeMatch? = null,
+    )
+    private data class PairHypothesis(
+        val family: CandidateTimingFamilyState,
+        val rankedReference: RankedReferenceCandidate,
+        val preflightHint: AutoSyncDelayPreflight.Match?,
+        val schedulingScore: Double,
+    )
+    private data class CompletedPairEvaluation(
+        val hypothesis: PairHypothesis,
         val evaluation: CandidateEvaluation,
     )
-    private data class CompletedPreflight(
-        val candidate: AutoSyncSubtitleCandidate,
-        val loaded: LoadedSubtitle?,
-        val match: AutoSyncDelayPreflight.Match?,
-    )
-    private data class AuthoritativeValidationRequest(
-        val candidate: AutoSyncSubtitleCandidate,
-        val loaded: LoadedSubtitle,
-        val match: AutoSyncDelayPreflight.Match,
-    )
-    private data class CompletedAuthoritativeValidation(
-        val request: AuthoritativeValidationRequest,
-        val evaluation: CandidateEvaluation,
-        val reusedTiming: Boolean,
-    )
+    private sealed class SchedulerEvent {
+        data class CandidateLoaded(
+            val url: String,
+            val loaded: LoadedSubtitle?,
+        ) : SchedulerEvent()
+
+        data class PairEvaluated(
+            val jobId: Int,
+            val completed: CompletedPairEvaluation,
+        ) : SchedulerEvent()
+    }
 
     private data class TimelineRetimeMatch(
         val track: ReferenceTrack,
