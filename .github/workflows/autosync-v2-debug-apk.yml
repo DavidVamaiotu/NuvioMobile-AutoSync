@@ -60,6 +60,45 @@ jobs:
       - name: Build full debug APK
         run: ./gradlew :androidApp:assembleFullDebug --stacktrace
 
+      - name: Verify APK update identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="$(find androidApp/build/outputs/apk/full/debug -maxdepth 1 -type f -name '*.apk' | head -n 1)"
+          test -n "$APK"
+
+          BUILD_TOOLS_DIR="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          APKSIGNER="$BUILD_TOOLS_DIR/apksigner"
+          AAPT="$BUILD_TOOLS_DIR/aapt"
+
+          test -x "$APKSIGNER"
+          test -x "$AAPT"
+
+          KEY_SHA="$(
+            keytool -list -v               -keystore .github/keystores/autosync-debug.keystore               -storepass android               -alias androiddebugkey |
+            sed -n 's/^[[:space:]]*SHA256: //p' |
+            head -n 1 |
+            tr -d ':' |
+            tr '[:upper:]' '[:lower:]'
+          )"
+          APK_SHA="$(
+            "$APKSIGNER" verify --print-certs "$APK" |
+            sed -n 's/^Signer #1 certificate SHA-256 digest: //p' |
+            head -n 1 |
+            tr -d ':' |
+            tr '[:upper:]' '[:lower:]'
+          )"
+
+          echo "Expected signer SHA-256: $KEY_SHA"
+          echo "APK signer SHA-256:      $APK_SHA"
+          test -n "$KEY_SHA"
+          test "$APK_SHA" = "$KEY_SHA"
+
+          BADGING="$("$AAPT" dump badging "$APK" | head -n 1)"
+          echo "$BADGING"
+          echo "$BADGING" | grep -q "package: name='com.nuviodebug.com'"
+
       - name: Upload APK
         uses: actions/upload-artifact@v7
         with:
