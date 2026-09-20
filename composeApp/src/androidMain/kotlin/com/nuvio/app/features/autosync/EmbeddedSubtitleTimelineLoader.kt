@@ -345,13 +345,13 @@ internal object EmbeddedSubtitleTimelineLoader {
         }
 
         val subtitleCueCounts = subtitleTracks.joinToString(",") { track ->
-            "${track.number}:${parsedCues[track.number].orEmpty().size}"
+            "${track.number}:${parsedCues[track.number]?.cues.orEmpty().size}"
         }
         AutoSyncDebugLog.info {
             "MKV index subtitleCueCounts=$subtitleCueCounts"
         }
 
-        if (subtitleTracks.all { track -> parsedCues[track.number].orEmpty().isEmpty() }) {
+        if (subtitleTracks.all { track -> parsedCues[track.number]?.cues.orEmpty().isEmpty() }) {
             AutoSyncDebugLog.warn {
                 "MKV index no subtitle Cue entries; skipping Media3 wait"
             }
@@ -366,8 +366,8 @@ internal object EmbeddedSubtitleTimelineLoader {
         }
 
         val referenceTracks = subtitleTracks.mapNotNull { track ->
-            val cues = parsedCues[track.number]
-                .orEmpty()
+            val parsedTimeline = parsedCues[track.number] ?: return@mapNotNull null
+            val cues = parsedTimeline.cues
                 .sortedBy { it.startTimeMs }
                 .distinctBy { it.startTimeMs }
             if (cues.size < MIN_INDEXED_CUES) return@mapNotNull null
@@ -396,6 +396,7 @@ internal object EmbeddedSubtitleTimelineLoader {
                 selectionFlags = selectionFlags,
                 roleFlags = roleFlags,
                 generation = -1L,
+                estimatedEndStartsMs = parsedTimeline.estimatedEndStartsMs,
             )
         }
 
@@ -943,7 +944,7 @@ internal object EmbeddedSubtitleTimelineLoader {
         subtitleTracks: List<MatroskaSubtitleTrack>,
         timestampScaleNs: Long,
         stats: RangeStats,
-    ): Map<Int, List<SubtitleSyncCue>>? {
+    ): Map<Int, IndexedSubtitleTimeline>? {
         val fileLength = totalLength?.takeIf { it > 0L } ?: return null
         val start = max(0L, fileLength - TAIL_PROBE_BYTES)
         if (start == 0L) return null
@@ -973,7 +974,7 @@ internal object EmbeddedSubtitleTimelineLoader {
                 subtitleTracks = subtitleTracks,
                 timestampScaleNs = timestampScaleNs,
             )
-            if (parsed.values.any { cues -> cues.size >= MIN_INDEXED_CUES }) return parsed
+            if (parsed.values.any { timeline -> timeline.cues.size >= MIN_INDEXED_CUES }) return parsed
         }
         return null
     }
@@ -1118,7 +1119,7 @@ internal object EmbeddedSubtitleTimelineLoader {
         cuesElement: ByteArray,
         subtitleTracks: List<MatroskaSubtitleTrack>,
         timestampScaleNs: Long,
-    ): Map<Int, List<SubtitleSyncCue>> {
+    ): Map<Int, IndexedSubtitleTimeline> {
         val root = readElement(cuesElement, 0, cuesElement.size) ?: return emptyMap()
         if (root.id != ID_CUES) return emptyMap()
         val rootEnd = root.endWithin(cuesElement.size) ?: return emptyMap()
@@ -1172,9 +1173,11 @@ internal object EmbeddedSubtitleTimelineLoader {
             val sorted = pending
                 .sortedBy { it.startTimeMs }
                 .distinctBy { it.startTimeMs }
+            val estimatedEndStartsMs = HashSet<Long>()
 
-            sorted.mapIndexed { index, cue ->
+            val cues = sorted.mapIndexed { index, cue ->
                 val durationMs = cue.explicitDurationMs ?: run {
+                    estimatedEndStartsMs += cue.startTimeMs
                     val nextStartMs = sorted.getOrNull(index + 1)?.startTimeMs
                     if (nextStartMs != null && nextStartMs > cue.startTimeMs) {
                         (nextStartMs - cue.startTimeMs)
@@ -1190,6 +1193,11 @@ internal object EmbeddedSubtitleTimelineLoader {
                     text = "",
                 )
             }
+
+            IndexedSubtitleTimeline(
+                cues = cues,
+                estimatedEndStartsMs = estimatedEndStartsMs,
+            )
         }
     }
 
@@ -1618,6 +1626,11 @@ internal object EmbeddedSubtitleTimelineLoader {
     private data class PendingIndexedCue(
         val startTimeMs: Long,
         val explicitDurationMs: Long?,
+    )
+
+    private data class IndexedSubtitleTimeline(
+        val cues: List<SubtitleSyncCue>,
+        val estimatedEndStartsMs: Set<Long>,
     )
 }
 

@@ -516,7 +516,9 @@ internal object AutomaticSubtitleSync {
         val parseStarted = SystemClock.elapsedRealtime()
         val cues = try {
             withContext(Dispatchers.Default) {
-                PlayerSubtitleCueParser.parse(text = text, sourceUrl = url)
+                AutoSyncTimelineRetimer.normalizeExternalTimeline(
+                    PlayerSubtitleCueParser.parse(text = text, sourceUrl = url),
+                )
             }
         } catch (cancel: CancellationException) {
             throw cancel
@@ -865,6 +867,7 @@ internal object AutomaticSubtitleSync {
             coarseInterceptMs = 0.0,
             discoverAlignment = true,
             allowAmbiguousDelayOnlyMargin = relaxDelayMargin,
+            referenceEstimatedEndStartsMs = track.estimatedEndStartsMs,
         )
     }
 
@@ -928,6 +931,7 @@ internal data class ReferenceTrack(
     val selectionFlags: Int = 0,
     val roleFlags: Int = 0,
     val generation: Long = 0L,
+    val estimatedEndStartsMs: Set<Long> = emptySet(),
 )
 
 /** Thread-safe accumulation of the embedded text timing already passing through Media3. */

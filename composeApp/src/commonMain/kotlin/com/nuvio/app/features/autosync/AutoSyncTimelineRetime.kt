@@ -88,6 +88,25 @@ internal object AutoSyncTimelineRetimer {
         GroupShape(referenceCount = 2, targetCount = 2),
     )
 
+    internal fun normalizeExternalTimeline(
+        cues: List<SubtitleSyncCue>,
+    ): List<SubtitleSyncCue> {
+        if (cues.size < 2) return cues
+
+        val sorted = cues.sortedBy { it.startTimeMs }
+        val seen = HashSet<ExternalCueKey>()
+        val normalized = ArrayList<SubtitleSyncCue>(sorted.size)
+        for (cue in sorted) {
+            val key = ExternalCueKey(
+                startTimeMs = cue.startTimeMs,
+                endTimeMs = cue.endTimeMs,
+                text = cue.text,
+            )
+            if (seen.add(key)) normalized += cue
+        }
+        return normalized
+    }
+
     fun retime(
         reference: List<SubtitleSyncCue>,
         target: List<SubtitleSyncCue>,
@@ -95,10 +114,16 @@ internal object AutoSyncTimelineRetimer {
         coarseInterceptMs: Double,
         discoverAlignment: Boolean = false,
         allowAmbiguousDelayOnlyMargin: Boolean = false,
+        referenceEstimatedEndStartsMs: Set<Long> = emptySet(),
     ): AutoSyncTimelineRetimeResult? {
         if (!discoverAlignment) {
-            val result = retimeWithSeed(reference, target, coarseScale, coarseInterceptMs)
-                ?: return null
+            val result = retimeWithSeed(
+                reference = reference,
+                target = target,
+                coarseScale = coarseScale,
+                coarseInterceptMs = coarseInterceptMs,
+                referenceEstimatedEndStartsMs = referenceEstimatedEndStartsMs,
+            ) ?: return null
             return result.copy(
                 alignmentSource = "provided",
                 alignmentScale = coarseScale,
@@ -136,6 +161,7 @@ internal object AutoSyncTimelineRetimer {
             target = target,
             coarseScale = candidateScale,
             coarseInterceptMs = candidateInterceptMs,
+            referenceEstimatedEndStartsMs = referenceEstimatedEndStartsMs,
         ) ?: return null
 
         val coverageSegments = coverageSegmentsPassed(result, target.size)
@@ -182,6 +208,7 @@ internal object AutoSyncTimelineRetimer {
         target: List<SubtitleSyncCue>,
         coarseScale: Double,
         coarseInterceptMs: Double,
+        referenceEstimatedEndStartsMs: Set<Long>,
     ): AutoSyncTimelineRetimeResult? {
         if (reference.size < MIN_CUES || target.size < MIN_CUES) return null
         if (!coarseScale.isFinite() || coarseScale !in 0.85..1.15) return null
@@ -270,6 +297,7 @@ internal object AutoSyncTimelineRetimer {
                             targetCount = shape.targetCount,
                             coarseScale = coarseScale,
                             coarseInterceptMs = coarseInterceptMs,
+                            referenceEstimatedEndStartsMs = referenceEstimatedEndStartsMs,
                         )
                         if (!groupCost.isFinite() || groupCost > MAX_GROUP_COST) continue
 
@@ -922,6 +950,12 @@ internal object AutoSyncTimelineRetimer {
         return compatible.toDouble() / result.groups.size
     }
 
+    private data class ExternalCueKey(
+        val startTimeMs: Long,
+        val endTimeMs: Long,
+        val text: String,
+    )
+
     private data class ActivityTimeline(
         val bins: BooleanArray,
         val activeIndexes: IntArray,
@@ -978,6 +1012,7 @@ internal object AutoSyncTimelineRetimer {
         targetCount: Int,
         coarseScale: Double,
         coarseInterceptMs: Double,
+        referenceEstimatedEndStartsMs: Set<Long>,
     ): Double {
         val referenceStart = reference[referenceIndex].startTimeMs.toDouble()
         val referenceEnd = reference[referenceIndex + referenceCount - 1].endTimeMs.toDouble()
@@ -1001,11 +1036,25 @@ internal object AutoSyncTimelineRetimer {
         val endError = abs(referenceEnd - targetEnd) / START_END_TOLERANCE_MS
         val midpointError = abs(referenceMid - targetMid) / MIDPOINT_TOLERANCE_MS
         val durationError = abs(referenceDuration - targetDuration) / DURATION_TOLERANCE_MS
+        val referenceEndEstimated =
+            referenceEstimatedEndStartsMs.isNotEmpty() &&
+                (referenceIndex until referenceIndex + referenceCount).any { index ->
+                    reference[index].startTimeMs in referenceEstimatedEndStartsMs
+                }
 
-        return startError * 0.34 +
-            endError * 0.34 +
-            midpointError * 0.18 +
-            durationError * 0.14
+        return if (referenceEndEstimated) {
+            // MKV CueTime is authoritative even when CueDuration is absent. Keep the inferred
+            // end useful, but do not let it outweigh the real embedded start timestamp.
+            startError * 0.58 +
+                endError * 0.16 +
+                midpointError * 0.16 +
+                durationError * 0.10
+        } else {
+            startError * 0.34 +
+                endError * 0.34 +
+                midpointError * 0.18 +
+                durationError * 0.14
+        }
     }
 
     private fun backtrack(

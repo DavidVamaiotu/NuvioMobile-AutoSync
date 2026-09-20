@@ -132,6 +132,62 @@ class AutoSyncTimelineRetimeTest {
     }
 
     @Test
+    fun externalTimelineNormalizationSortsAndDeduplicatesOnlyExactDuplicates() {
+        val normalized = AutoSyncTimelineRetimer.normalizeExternalTimeline(
+            listOf(
+                SubtitleSyncCue(5_000L, 6_000L, "later"),
+                SubtitleSyncCue(1_000L, 2_000L, "first"),
+                SubtitleSyncCue(1_000L, 2_000L, "first"),
+                SubtitleSyncCue(1_000L, 2_000L, "different simultaneous text"),
+            ),
+        )
+
+        assertEquals(3, normalized.size)
+        assertEquals(listOf(1_000L, 1_000L, 5_000L), normalized.map { it.startTimeMs })
+        assertEquals(
+            listOf("first", "different simultaneous text", "later"),
+            normalized.map { it.text },
+        )
+    }
+
+    @Test
+    fun estimatedReferenceEndsAreDownweightedWithoutChangingNormalScoring() {
+        val target = (0 until 40).map { index ->
+            val start = 10_000L + index * 10_000L
+            SubtitleSyncCue(start, start + 900L, "target $index")
+        }
+        val reference = target.mapIndexed { index, cue ->
+            SubtitleSyncCue(
+                startTimeMs = cue.startTimeMs,
+                endTimeMs = cue.startTimeMs + 4_800L,
+                text = "reference $index",
+            )
+        }
+        val estimatedStarts = reference.mapTo(hashSetOf()) { it.startTimeMs }
+
+        val estimated = assertNotNull(
+            AutoSyncTimelineRetimer.retime(
+                reference = reference,
+                target = target,
+                coarseScale = 1.0,
+                coarseInterceptMs = 0.0,
+                referenceEstimatedEndStartsMs = estimatedStarts,
+            ),
+        )
+        val explicit = assertNotNull(
+            AutoSyncTimelineRetimer.retime(
+                reference = reference,
+                target = target,
+                coarseScale = 1.0,
+                coarseInterceptMs = 0.0,
+            ),
+        )
+
+        assertTrue(estimated.averageGroupCost < explicit.averageGroupCost)
+        assertTrue(estimated.confident)
+    }
+
+    @Test
     fun matchedGroupsPreserveExternalCueDurations() {
         val reference = irregularTimeline(80).map { cue ->
             cue.copy(endTimeMs = cue.startTimeMs + 4_800L)
