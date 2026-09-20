@@ -82,9 +82,11 @@ jobs:
             tr -d ':' |
             tr '[:upper:]' '[:lower:]'
           )"
+          APK_CERT_OUTPUT="$("$APKSIGNER" verify --print-certs "$APK" 2>&1)"
+          echo "$APK_CERT_OUTPUT"
           APK_SHA="$(
-            "$APKSIGNER" verify --print-certs "$APK" |
-            sed -n 's/^Signer #1 certificate SHA-256 digest: //p' |
+            printf '%s\n' "$APK_CERT_OUTPUT" |
+            sed -n 's/.*certificate SHA-256 digest: //p' |
             head -n 1 |
             tr -d ':' |
             tr '[:upper:]' '[:lower:]'
