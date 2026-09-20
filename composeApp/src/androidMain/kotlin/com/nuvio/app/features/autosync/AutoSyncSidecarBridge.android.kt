@@ -54,6 +54,7 @@ internal suspend fun replaceAutoSyncSidecarSubtitle(
     expectedCurrentUrl: String,
     url: String,
     headers: Map<String, String>,
+    rawBody: String? = null,
     useLibass: Boolean,
     timeline: AutoSyncTimelineRetimeResult,
 ): Boolean {
@@ -62,11 +63,14 @@ internal suspend fun replaceAutoSyncSidecarSubtitle(
     if (sidecar.activeSidecarSubtitleKey != expectedCurrentUrl) return false
 
     val retimed = try {
-        val rawBody = withContext(Dispatchers.IO) {
+        val body = rawBody ?: withContext(Dispatchers.IO) {
             httpGetTextWithHeaders(url = url, headers = headers)
         }
+        if (rawBody != null) {
+            Log.d(TAG, "replacement using AutoSync cached body url=$url")
+        }
         val parsed = withContext(Dispatchers.Default) {
-            parseSidecarTimedCuesRobust(rawBody, url).cues
+            parseSidecarTimedCuesRobust(body, url).cues
         }
         if (parsed.isEmpty()) {
             Log.w(TAG, "replacement parse empty url=$url; keeping $expectedCurrentUrl")

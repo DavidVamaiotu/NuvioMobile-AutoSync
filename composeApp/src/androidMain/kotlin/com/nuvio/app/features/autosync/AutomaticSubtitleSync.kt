@@ -652,6 +652,7 @@ internal object AutomaticSubtitleSync {
                     return AutoSyncResolvedTimeline(
                         subtitleUrl = candidate.url,
                         subtitleHeaders = headersForCandidate(candidate.url),
+                        subtitleBody = request.loaded.rawBody,
                         timeline = best!!.timeline,
                     )
                 }
@@ -961,6 +962,7 @@ internal object AutomaticSubtitleSync {
                                     subtitleUrl = alternative.candidate.url,
                                     subtitleHeaders =
                                         headersForCandidate(alternative.candidate.url),
+                                    subtitleBody = alternative.loaded.rawBody,
                                     timeline = best.timeline,
                                 )
                                 bestAlternativeIndex = alternative.index
@@ -1415,7 +1417,13 @@ internal object AutomaticSubtitleSync {
         synchronized(parsedSubtitleCacheLock) {
             parsedSubtitleCache[cacheKey]
         }?.let { cues ->
-            return LoadedSubtitle(cues, 0L, 0L, cacheHit = true)
+            return LoadedSubtitle(
+                cues = cues,
+                rawBody = null,
+                downloadMs = 0L,
+                parseMs = 0L,
+                cacheHit = true,
+            )
         }
 
         val downloadStarted = SystemClock.elapsedRealtime()
@@ -1455,7 +1463,13 @@ internal object AutomaticSubtitleSync {
         synchronized(parsedSubtitleCacheLock) {
             parsedSubtitleCache[cacheKey] = immutable
         }
-        return LoadedSubtitle(immutable, downloadMs, parseMs, cacheHit = false)
+        return LoadedSubtitle(
+            cues = immutable,
+            rawBody = text,
+            downloadMs = downloadMs,
+            parseMs = parseMs,
+            cacheHit = false,
+        )
     }
 
     private suspend fun downloadSubtitleTextWithSingle429Retry(
@@ -1842,6 +1856,7 @@ internal object AutomaticSubtitleSync {
     private data class ParsedSubtitleCacheKey(val url: String, val headerHash: Int)
     private data class LoadedSubtitle(
         val cues: List<SubtitleSyncCue>,
+        val rawBody: String?,
         val downloadMs: Long,
         val parseMs: Long,
         val cacheHit: Boolean,
@@ -1908,6 +1923,7 @@ internal object AutomaticSubtitleSync {
 internal data class AutoSyncResolvedTimeline(
     val subtitleUrl: String,
     val subtitleHeaders: Map<String, String>,
+    val subtitleBody: String?,
     val timeline: AutoSyncTimelineRetimeResult,
 )
 

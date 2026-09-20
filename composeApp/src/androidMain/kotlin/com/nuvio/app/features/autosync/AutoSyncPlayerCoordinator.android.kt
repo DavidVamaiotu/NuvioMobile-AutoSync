@@ -153,6 +153,7 @@ internal class AutoSyncPlayerCoordinator(
                     expectedCurrentUrl = url,
                     url = chosenUrl,
                     headers = resolved.subtitleHeaders,
+                    rawBody = resolved.subtitleBody,
                     useLibass = useLibass,
                     timeline = timeline,
                 )
