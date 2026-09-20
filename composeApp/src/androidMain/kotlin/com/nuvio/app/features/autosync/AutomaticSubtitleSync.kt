@@ -490,6 +490,7 @@ internal object AutomaticSubtitleSync {
             val queuedPairs = mutableListOf<PairHypothesis>()
             val activePairJobs =
                 linkedMapOf<Int, Deferred<CompletedPairEvaluation>>()
+            val activePairPriorities = mutableMapOf<Int, Double>()
             var nextPairJobId = 0
             var evaluatedPairs = 0
             var peakPairWorkers = 0
@@ -595,9 +596,10 @@ internal object AutomaticSubtitleSync {
                     queuedPairs.remove(hypothesis)
 
                     val referenceKey = hypothesis.rankedReference.track.key
-                    if (!hypothesis.family.evaluatedReferenceKeys.add(referenceKey)) continue
+                    if (!hypothesis.family.startedReferenceKeys.add(referenceKey)) continue
 
                     val jobId = nextPairJobId++
+                    activePairPriorities[jobId] = hypothesis.schedulingScore
                     activePairJobs[jobId] = async(Dispatchers.Default) {
                         val representative = hypothesis.family.representative
                         val evaluation = evaluateExternalCandidate(
@@ -642,7 +644,7 @@ internal object AutomaticSubtitleSync {
                 match: TimelineRetimeMatch,
             ): Boolean {
                 if (isExceptionalMatch(match)) return true
-                if (family.evaluatedReferenceKeys.size < REFERENCE_SEARCH_CHECKPOINT) {
+                if (family.completedUsableAttempts < REFERENCE_SEARCH_CHECKPOINT) {
                     return false
                 }
                 return isStrongCheckpointMatch(match) ||
@@ -650,6 +652,59 @@ internal object AutomaticSubtitleSync {
                         match,
                         targetCueCount = family.representative.loaded.cues.size,
                     )
+            }
+
+            fun hasEqualOrHigherPriorityOutstanding(
+                family: CandidateTimingFamilyState,
+            ): Boolean {
+                val threshold = family.bestSchedulingScore
+                if (!threshold.isFinite()) return true
+                return queuedPairs.any { it.schedulingScore >= threshold } ||
+                    activePairPriorities.values.any { it >= threshold }
+            }
+
+            fun recordCompletedPair(
+                completed: CompletedPairEvaluation,
+            ) {
+                evaluatedPairs++
+
+                val family = completed.hypothesis.family
+                if (completed.evaluation.attempts.isNotEmpty()) {
+                    family.completedUsableAttempts++
+                }
+
+                val pairBest = completed.evaluation.best
+                if (pairBest != null && isBetterMatch(pairBest, family.best)) {
+                    family.best = pairBest
+                    family.bestSchedulingScore = completed.hypothesis.schedulingScore
+                }
+
+                val familyBest = family.best
+                if (
+                    familyBest != null &&
+                    familyBest.timeline.confident &&
+                    isBetterMatch(familyBest, bestMatch)
+                ) {
+                    bestMatch = familyBest
+                    bestFamily = family
+                }
+            }
+
+            fun findStopFamily(): CandidateTimingFamilyState? {
+                val exceptional = timingFamilies.firstOrNull { family ->
+                    family.best?.let(::isExceptionalMatch) == true
+                }
+                if (exceptional != null) return exceptional
+
+                return timingFamilies
+                    .asSequence()
+                    .filter { family ->
+                        val match = family.best ?: return@filter false
+                        match.timeline.confident &&
+                            canStopForFamily(family, match) &&
+                            !hasEqualOrHigherPriorityOutstanding(family)
+                    }
+                    .maxByOrNull { it.bestSchedulingScore }
             }
 
             scheduleMoreLoads()
@@ -708,34 +763,30 @@ internal object AutomaticSubtitleSync {
 
                         is SchedulerEvent.PairEvaluated -> {
                             activePairJobs.remove(event.jobId)
-                            evaluatedPairs++
+                            activePairPriorities.remove(event.jobId)
+                            recordCompletedPair(event.completed)
 
-                            val family = event.completed.hypothesis.family
-                            val pairBest = event.completed.evaluation.best
-                            if (pairBest != null && isBetterMatch(pairBest, family.best)) {
-                                family.best = pairBest
+                            // If another matcher finished while downloads were being admitted,
+                            // consume it now before making a terminal decision. This prevents a
+                            // completed authoritative result from being silently ignored.
+                            val alreadyCompleted = activePairJobs
+                                .filterValues { it.isCompleted }
+                                .keys
+                                .toList()
+                            for (jobId in alreadyCompleted) {
+                                val job = activePairJobs.remove(jobId) ?: continue
+                                activePairPriorities.remove(jobId)
+                                recordCompletedPair(job.await())
                             }
 
-                            val familyBest = family.best
-                            if (
-                                familyBest != null &&
-                                familyBest.timeline.confident &&
-                                isBetterMatch(familyBest, bestMatch)
-                            ) {
-                                bestMatch = familyBest
-                                bestFamily = family
-                            }
-
-                            if (
-                                familyBest != null &&
-                                familyBest.timeline.confident &&
-                                canStopForFamily(family, familyBest)
-                            ) {
+                            val stopFamily = findStopFamily()
+                            val stopMatch = stopFamily?.best
+                            if (stopFamily != null && stopMatch != null) {
                                 AutoSyncDebugLog.info {
                                     "GLOBAL scheduler authoritative stop candidate=" +
-                                        "${family.representative.index} reference=${familyBest.track.key} " +
-                                        "quality=${fmt(directTimelineQualityScore(familyBest))} " +
-                                        "familyAttempts=${family.evaluatedReferenceKeys.size}"
+                                        "${stopFamily.representative.index} reference=${stopMatch.track.key} " +
+                                        "quality=${fmt(directTimelineQualityScore(stopMatch))} " +
+                                        "familyAttempts=${stopFamily.completedUsableAttempts}"
                                 }
                                 strongStop = true
                             }
@@ -1704,8 +1755,10 @@ internal object AutomaticSubtitleSync {
         val targetActivity: AutoSyncTimelineRetimer.PreparedActivity?,
         val preflight: AutoSyncDelayPreflight.Match?,
         val rankedReferences: List<RankedReferenceCandidate>,
-        val evaluatedReferenceKeys: MutableSet<String> = hashSetOf(),
+        val startedReferenceKeys: MutableSet<String> = hashSetOf(),
+        var completedUsableAttempts: Int = 0,
         var best: TimelineRetimeMatch? = null,
+        var bestSchedulingScore: Double = Double.NEGATIVE_INFINITY,
     )
     private data class PairHypothesis(
         val family: CandidateTimingFamilyState,
