@@ -207,6 +207,7 @@ internal object AutoSyncTimelineRetimer {
                 targetSize = target.size,
                 allowAmbiguousMargin = allowAmbiguousDelayOnlyMargin,
                 seed = alignment.delayOnlySeed,
+                allowStableSegmentMarginOverride = !allowAmbiguousDelayOnlyMargin,
             )
         } else {
             null
@@ -234,7 +235,9 @@ internal object AutoSyncTimelineRetimer {
             candidateActivityScore = candidateActivityScore,
             candidateActivityMargin = candidateActivityMargin,
             delayOnly = delayOnly != null,
-            allowAmbiguousDelayOnlyMargin = allowAmbiguousDelayOnlyMargin,
+            allowAmbiguousDelayOnlyMargin =
+                allowAmbiguousDelayOnlyMargin ||
+                    (delayOnly?.stableSegmentMarginOverride == true),
         )
     }
 
@@ -548,6 +551,7 @@ internal object AutoSyncTimelineRetimer {
         targetSize: Int,
         allowAmbiguousMargin: Boolean,
         seed: DelayOnlySearchSeed?,
+        allowStableSegmentMarginOverride: Boolean = false,
     ): AutoSyncDelayOnlyAlignment? {
         val referenceCoarse = referenceActivity.coarse
         val targetCoarse = targetActivity.coarse
@@ -569,7 +573,9 @@ internal object AutoSyncTimelineRetimer {
 
         val coarse = coarseSeed.coarse
         val margin = coarseSeed.margin
-        if (!allowAmbiguousMargin && margin < DELAY_ONLY_MIN_MARGIN) return null
+        val marginAccepted =
+            allowAmbiguousMargin || margin >= DELAY_ONLY_MIN_MARGIN
+        if (!marginAccepted && !allowStableSegmentMarginOverride) return null
 
         val referenceFine = referenceActivity.fine
         val targetFine = targetActivity.fine
@@ -654,6 +660,10 @@ internal object AutoSyncTimelineRetimer {
             score = best.score,
             margin = margin,
             segmentsPassed = passedSegments,
+            stableSegmentMarginOverride =
+                !marginAccepted &&
+                    allowStableSegmentMarginOverride &&
+                    !allowAmbiguousMargin,
         )
     }
 
@@ -1418,6 +1428,7 @@ internal data class AutoSyncDelayOnlyAlignment(
     val score: Double,
     val margin: Double,
     val segmentsPassed: Int,
+    val stableSegmentMarginOverride: Boolean = false,
 )
 
 internal data class AutoSyncTimelineRetimeResult(
