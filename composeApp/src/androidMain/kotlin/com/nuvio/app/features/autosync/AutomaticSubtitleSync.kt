@@ -259,9 +259,19 @@ internal object AutomaticSubtitleSync {
                     .distinctBy { it.url }
                     .toList()
 
-            broadCandidateOrder(prefetchCandidates)
-                .take(MAX_PARALLEL_ALTERNATIVE_DOWNLOADS)
-                .forEach { candidate ->
+            val orderedPrefetchCandidates = broadCandidateOrder(prefetchCandidates)
+            var nextPrefetchIndex = 0
+
+            fun fillPrefetchSlots() {
+                var activeCount =
+                    prefetchedAlternativeLoads.values.count { !it.isCompleted }
+
+                while (
+                    !indexedTimelineDeferred.isCompleted &&
+                    activeCount < MAX_PARALLEL_ALTERNATIVE_DOWNLOADS &&
+                    nextPrefetchIndex < orderedPrefetchCandidates.size
+                ) {
+                    val candidate = orderedPrefetchCandidates[nextPrefetchIndex++]
                     prefetchedAlternativeLoads[candidate.url] = async {
                         loadSelectedSubtitle(
                             url = candidate.url,
@@ -270,7 +280,37 @@ internal object AutomaticSubtitleSync {
                             parseSemaphore = alternativeParseSemaphore,
                         )
                     }
+                    activeCount++
                 }
+            }
+
+            fillPrefetchSlots()
+            while (
+                !indexedTimelineDeferred.isCompleted &&
+                nextPrefetchIndex < orderedPrefetchCandidates.size
+            ) {
+                val activePrefetches =
+                    prefetchedAlternativeLoads.values.filterNot { it.isCompleted }
+                if (activePrefetches.isEmpty()) {
+                    fillPrefetchSlots()
+                    continue
+                }
+
+                select<Unit> {
+                    indexedTimelineDeferred.onAwait { }
+                    activePrefetches.forEach { job ->
+                        job.onAwait { }
+                    }
+                }
+                fillPrefetchSlots()
+            }
+
+            AutoSyncDebugLog.info {
+                val completed = prefetchedAlternativeLoads.values.count { it.isCompleted }
+                "PRE_INDEX_PREFETCH started=${prefetchedAlternativeLoads.size} " +
+                    "completed=$completed " +
+                    "active=${prefetchedAlternativeLoads.size - completed}"
+            }
 
             val indexedTimeline = indexedTimelineDeferred.await()
             var selectedResolved = selectedSubtitleDeferred.isCompleted
