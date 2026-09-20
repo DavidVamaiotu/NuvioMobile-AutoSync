@@ -29,7 +29,7 @@ import kotlin.math.abs
 internal object AutomaticSubtitleSync {
     private const val MIN_SELECTED_CUES = 1
     private const val MAX_LOGGED_CUE_SAMPLES = 20
-    private const val MAX_ALTERNATIVE_EXTERNAL_SUBTITLES = 4
+    private const val ALTERNATIVE_EXTERNAL_SUBTITLE_BATCH_SIZE = 4
     private const val EXCEPTIONAL_MATCH_QUALITY = 0.95
     private const val EXCEPTIONAL_MATCH_TARGET_COVERAGE = 0.99
     private const val EXCEPTIONAL_MATCH_REFERENCE_COVERAGE = 0.97
@@ -165,7 +165,6 @@ internal object AutomaticSubtitleSync {
                             )
                     }
                     .distinctBy { it.url }
-                    .take(MAX_ALTERNATIVE_EXTERNAL_SUBTITLES)
                     .toList()
 
             var availableCandidates = currentExternalCandidates()
@@ -335,7 +334,8 @@ internal object AutomaticSubtitleSync {
                 AutoSyncDebugLog.section { "EXTERNAL SUBTITLE FALLBACK" }
                 AutoSyncDebugLog.info {
                     "selected subtitle did not produce a confident result; " +
-                        "trying up to ${alternatives.size} latest same-language alternatives"
+                        "trying ${alternatives.size} same-language alternatives in batches of " +
+                        "$ALTERNATIVE_EXTERNAL_SUBTITLE_BATCH_SIZE"
                 }
             }
 
@@ -345,45 +345,84 @@ internal object AutomaticSubtitleSync {
             var bestAlternativeName: String? = null
             var bestAlternativeCueCount = 0
 
-            for ((index, candidate) in alternatives.withIndex()) {
-                val loaded = loadSelectedSubtitle(
-                    url = candidate.url,
-                    headers = emptyMap(),
-                ) ?: continue
+            var batchStartIndex = 0
+            var stopFallbackSearch = false
 
-                logLoadedExternalSubtitle(
-                    label = "ALTERNATIVE[$index]",
-                    url = candidate.url,
-                    loaded = loaded,
-                    sampleLimit = 3,
+            while (batchStartIndex < alternatives.size && !stopFallbackSearch) {
+                val batchEndExclusive = minOf(
+                    batchStartIndex + ALTERNATIVE_EXTERNAL_SUBTITLE_BATCH_SIZE,
+                    alternatives.size,
                 )
 
-                val evaluation = evaluateExternalCandidate(
-                    label = "ALTERNATIVE[$index]",
-                    url = candidate.url,
-                    target = loaded.cues,
-                    referenceTracks = referenceTracks,
-                )
-                val best = evaluation.best ?: continue
-                if (!best.timeline.confident) continue
-
-                val previous = bestAlternativeMatch
-                if (
-                    previous == null ||
-                    directTimelineQualityScore(best) > directTimelineQualityScore(previous)
-                ) {
-                    bestAlternativeMatch = best
-                    bestAlternative = AutoSyncResolvedTimeline(
-                        subtitleUrl = candidate.url,
-                        subtitleHeaders = emptyMap(),
-                        timeline = best.timeline,
-                    )
-                    bestAlternativeIndex = index
-                    bestAlternativeName = candidate.name
-                    bestAlternativeCueCount = loaded.cues.size
+                AutoSyncDebugLog.info {
+                    "fallback batch candidates=$batchStartIndex..${batchEndExclusive - 1}"
                 }
 
-                if (isExceptionalMatch(best)) break
+                for (index in batchStartIndex until batchEndExclusive) {
+                    val candidate = alternatives[index]
+                    val loaded = loadSelectedSubtitle(
+                        url = candidate.url,
+                        headers = emptyMap(),
+                    ) ?: continue
+
+                    logLoadedExternalSubtitle(
+                        label = "ALTERNATIVE[$index]",
+                        url = candidate.url,
+                        loaded = loaded,
+                        sampleLimit = 3,
+                    )
+
+                    val evaluation = evaluateExternalCandidate(
+                        label = "ALTERNATIVE[$index]",
+                        url = candidate.url,
+                        target = loaded.cues,
+                        referenceTracks = referenceTracks,
+                    )
+                    val best = evaluation.best ?: continue
+                    if (!best.timeline.confident) continue
+
+                    val previous = bestAlternativeMatch
+                    if (
+                        previous == null ||
+                        directTimelineQualityScore(best) > directTimelineQualityScore(previous)
+                    ) {
+                        bestAlternativeMatch = best
+                        bestAlternative = AutoSyncResolvedTimeline(
+                            subtitleUrl = candidate.url,
+                            subtitleHeaders = emptyMap(),
+                            timeline = best.timeline,
+                        )
+                        bestAlternativeIndex = index
+                        bestAlternativeName = candidate.name
+                        bestAlternativeCueCount = loaded.cues.size
+                    }
+
+                    if (isExceptionalMatch(best)) {
+                        stopFallbackSearch = true
+                        break
+                    }
+                }
+
+                // A confident result in this batch is enough. We still compare all candidates
+                // inside the batch and keep the best one, preserving the existing behavior.
+                if (bestAlternative != null || stopFallbackSearch) break
+
+                batchStartIndex = batchEndExclusive
+
+                // Add-on results are progressive. Re-read the existing provider after every
+                // failed batch so candidates that arrived while matching are included too.
+                if (alternativeSubtitlesProvider != null) {
+                    availableCandidates = currentExternalCandidates()
+                    language = selectedLanguage(availableCandidates)
+                    alternatives = sameLanguageAlternatives(availableCandidates, language)
+                }
+
+                if (batchStartIndex < alternatives.size) {
+                    AutoSyncDebugLog.info {
+                        "fallback batch produced no confident match; trying next " +
+                            "up to $ALTERNATIVE_EXTERNAL_SUBTITLE_BATCH_SIZE candidates"
+                    }
+                }
             }
 
             // Give the user's selected subtitle one final priority check if it completed
