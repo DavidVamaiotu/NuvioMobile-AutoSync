@@ -548,13 +548,15 @@ internal object AutomaticSubtitleSync {
 
             fun scheduleMoreLoads() {
                 refreshCandidatePool()
-                while (activeLoads.size < MAX_PARALLEL_ALTERNATIVE_DOWNLOADS) {
-                    val candidate = broadCandidateOrder(
-                        candidateByUrl.values.filter { candidate ->
-                            candidate.url !in scheduledUrls &&
-                                candidate.url !in loadedByUrl
-                        },
-                    ).firstOrNull() ?: break
+                val candidatesToSchedule = broadCandidateOrder(
+                    candidateByUrl.values.filter { candidate ->
+                        candidate.url !in scheduledUrls &&
+                            candidate.url !in loadedByUrl
+                    },
+                )
+
+                for (candidate in candidatesToSchedule) {
+                    if (activeLoads.size >= MAX_PARALLEL_ALTERNATIVE_DOWNLOADS) break
 
                     scheduledUrls += candidate.url
                     activeLoads[candidate.url] = async {
