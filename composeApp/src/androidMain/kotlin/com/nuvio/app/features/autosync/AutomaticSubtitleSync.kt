@@ -1059,10 +1059,12 @@ internal object AutomaticSubtitleSync {
                 )
             }
             .sortedWith(
+                // V1-style scheduling only: try the preflight-proven reference first, then the
+                // strongest cheap timing affinity. Authoritative V2 scoring/acceptance is unchanged.
                 compareByDescending<RankedReferenceCandidate> {
                     if (it.track.key == preferredReferenceKey) 1 else 0
-                }.thenByDescending { it.suitability }
-                    .thenByDescending { it.cheapAffinity }
+                }.thenByDescending { it.cheapAffinity }
+                    .thenByDescending { it.suitability }
                     .thenBy { isSdhReferenceTrack(it.track) }
                     .thenBy { it.track.key },
             )
