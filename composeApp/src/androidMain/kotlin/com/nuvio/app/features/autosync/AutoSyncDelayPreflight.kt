@@ -12,8 +12,6 @@ import com.nuvio.app.features.player.SubtitleSyncCue
 internal object AutoSyncDelayPreflight {
     // Scheduling threshold only. It never authorizes a subtitle by itself; authoritative V2
     // still has to pass its existing strong/exceptional gates before an early return.
-    private const val REALLY_GOOD_SCORE = 0.90
-    private const val REALLY_GOOD_MARGIN = 0.04
 
     internal data class Match(
         val referenceKey: String,
@@ -24,11 +22,6 @@ internal object AutoSyncDelayPreflight {
         val margin: Double get() = alignment.margin
         val segmentsPassed: Int get() = alignment.segmentsPassed
     }
-
-    internal fun isReallyGood(match: Match): Boolean =
-        match.score >= REALLY_GOOD_SCORE &&
-            match.margin >= REALLY_GOOD_MARGIN &&
-            match.segmentsPassed >= 3
 
     internal data class Evidence(
         val search: AutoSyncTimelineRetimer.DelayOnlySearchEvidence,

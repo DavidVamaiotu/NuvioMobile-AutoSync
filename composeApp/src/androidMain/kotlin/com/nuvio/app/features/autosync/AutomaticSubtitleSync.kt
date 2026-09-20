@@ -35,12 +35,9 @@ import kotlin.math.roundToLong
 internal object AutomaticSubtitleSync {
     private const val MIN_SELECTED_CUES = 1
     private const val MAX_LOGGED_CUE_SAMPLES = 20
-    private const val ALTERNATIVE_EXTERNAL_SUBTITLE_BATCH_SIZE = 2
     private const val MAX_PARALLEL_ALTERNATIVE_DOWNLOADS = 6
     private const val MAX_PARALLEL_ALTERNATIVE_PARSES = 2
     private const val MAX_PARALLEL_ALTERNATIVE_MATCHES = 2
-    private const val MAX_PARALLEL_PREFLIGHT_MATCHES = 2
-    private const val HIGH_SCORE_PREFLIGHT_CHAMPION = 0.915
     private const val EXCEPTIONAL_MATCH_QUALITY = 0.95
     private const val EXCEPTIONAL_MATCH_TARGET_COVERAGE = 0.99
     private const val EXCEPTIONAL_MATCH_REFERENCE_COVERAGE = 0.97
