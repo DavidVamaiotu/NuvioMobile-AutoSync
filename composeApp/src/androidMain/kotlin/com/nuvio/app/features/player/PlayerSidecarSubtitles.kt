@@ -17,7 +17,9 @@ import androidx.media3.extractor.text.SubtitleParser
 import androidx.media3.ui.SubtitleView
 import com.nuvio.app.R
 import com.nuvio.app.features.addons.httpGetTextWithHeaders
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -38,6 +40,7 @@ internal class SidecarSubtitleController(
     private val getSubtitleDelayMs: () -> Int = { 0 },
 ) {
     private var sidecarSubtitleJob: Job? = null
+    private var sidecarRawBodyDeferred: CompletableDeferred<String?>? = null
     var activeSidecarSubtitleKey: String? = null
         private set
     var sidecarTimedCues: List<CuesWithTiming> = emptyList()
@@ -46,6 +49,9 @@ internal class SidecarSubtitleController(
     private var exoSubtitleViewRef: WeakReference<SubtitleView>? = null
 
     fun isSidecarActive(): Boolean = activeSidecarSubtitleKey != null
+
+    internal fun rawBodyDeferredFor(url: String): Deferred<String?>? =
+        sidecarRawBodyDeferred?.takeIf { activeSidecarSubtitleKey == url }
 
     /**
      * Commits already-prepared cues only if the expected subtitle is still active.
@@ -102,6 +108,8 @@ internal class SidecarSubtitleController(
     fun stopSidecarAddonSubtitle(clearView: Boolean = true) {
         sidecarSubtitleJob?.cancel()
         sidecarSubtitleJob = null
+        sidecarRawBodyDeferred?.complete(null)
+        sidecarRawBodyDeferred = null
         activeSidecarSubtitleKey = null
         sidecarTimedCues = emptyList()
         lastSidecarCueSignature = null
@@ -117,6 +125,7 @@ internal class SidecarSubtitleController(
         url: String,
         headers: Map<String, String> = emptyMap(),
         useLibass: Boolean = false,
+        rawBodyLoader: (suspend () -> String?)? = null,
     ): Boolean {
         if (!canAttachAddonSubtitleViaSidecar(url, useLibass)) return false
 
@@ -124,6 +133,9 @@ internal class SidecarSubtitleController(
         val urlMimeHint = PlayerSubtitleUtils.mimeTypeFromUrl(url)
 
         sidecarSubtitleJob?.cancel()
+        sidecarRawBodyDeferred?.complete(null)
+        val rawBodyDeferred = CompletableDeferred<String?>()
+        sidecarRawBodyDeferred = rawBodyDeferred
         activeSidecarSubtitleKey = subtitleKey
         lastSidecarCueSignature = null
         sidecarTimedCues = emptyList()
@@ -134,8 +146,16 @@ internal class SidecarSubtitleController(
 
         sidecarSubtitleJob = scope.launch {
             try {
-                val rawBody = withContext(Dispatchers.IO) {
-                    httpGetTextWithHeaders(url = url, headers = headers)
+                val rawBody = if (rawBodyLoader != null) {
+                    rawBodyLoader()
+                } else {
+                    withContext(Dispatchers.IO) {
+                        httpGetTextWithHeaders(url = url, headers = headers)
+                    }
+                }
+                rawBodyDeferred.complete(rawBody)
+                if (rawBody == null) {
+                    throw IllegalStateException("Subtitle body unavailable")
                 }
                 if (activeSidecarSubtitleKey != subtitleKey) return@launch
 
@@ -170,8 +190,10 @@ internal class SidecarSubtitleController(
                     delay(SIDECAR_RENDER_INTERVAL_MS)
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
+                rawBodyDeferred.complete(null)
                 throw e
             } catch (e: Exception) {
+                rawBodyDeferred.complete(null)
                 if (activeSidecarSubtitleKey != subtitleKey) return@launch
                 Log.w(
                     SIDECAR_TAG,

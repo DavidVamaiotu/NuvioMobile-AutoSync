@@ -165,6 +165,7 @@ internal object AutomaticSubtitleSync {
         sourceKey: String,
         selectedSubtitleUrl: String,
         selectedSubtitleHeaders: Map<String, String>,
+        selectedSubtitleBodyDeferred: Deferred<String?>? = null,
         preferredLanguage: String?,
         alternativeSubtitles: List<AutoSyncSubtitleCandidate> = emptyList(),
         alternativeSubtitlesProvider: (() -> List<AutoSyncSubtitleCandidate>)? = null,
@@ -206,10 +207,33 @@ internal object AutomaticSubtitleSync {
                 )
             }
             val selectedSubtitleDeferred = async {
-                loadSelectedSubtitle(
-                    url = selectedSubtitleUrl,
-                    headers = selectedSubtitleHeaders,
-                )
+                val sharedBody = if (selectedSubtitleBodyDeferred != null) {
+                    try {
+                        selectedSubtitleBodyDeferred.await()
+                    } catch (cancel: CancellationException) {
+                        // If only the shared acquisition was cancelled, treat it as unavailable.
+                        // If this matcher coroutine itself is cancelled, keep cancellation prompt.
+                        currentCoroutineContext().ensureActive()
+                        null
+                    }
+                } else {
+                    null
+                }
+
+                if (selectedSubtitleBodyDeferred != null) {
+                    sharedBody?.let { body ->
+                        loadSelectedSubtitle(
+                            url = selectedSubtitleUrl,
+                            headers = selectedSubtitleHeaders,
+                            rawBodyOverride = body,
+                        )
+                    }
+                } else {
+                    loadSelectedSubtitle(
+                        url = selectedSubtitleUrl,
+                        headers = selectedSubtitleHeaders,
+                    )
+                }
             }
 
             // V1 scheduling efficiency: overlap same-language candidate downloads with the
@@ -1454,6 +1478,7 @@ internal object AutomaticSubtitleSync {
     private suspend fun loadSelectedSubtitle(
         url: String,
         headers: Map<String, String>,
+        rawBodyOverride: String? = null,
     ): LoadedSubtitle? {
         val traceStartedAtMs = SystemClock.elapsedRealtime()
         beginSubtitleLoadTrace(url)
@@ -1461,31 +1486,39 @@ internal object AutomaticSubtitleSync {
 
         try {
             val cacheKey = ParsedSubtitleCacheKey(url, stableHeaderIdentity(headers))
-            synchronized(parsedSubtitleCacheLock) {
-                parsedSubtitleCache[cacheKey]
-            }?.let { cached ->
-                markSubtitleLoadPhase(url, "COMPLETE")
-                return LoadedSubtitle(
-                    cues = cached.cues,
-                    rawBody = cached.rawBody,
-                    downloadMs = 0L,
-                    parseMs = 0L,
-                    cacheHit = true,
-                )
+            if (rawBodyOverride == null) {
+                synchronized(parsedSubtitleCacheLock) {
+                    parsedSubtitleCache[cacheKey]
+                }?.let { cached ->
+                    markSubtitleLoadPhase(url, "COMPLETE")
+                    return LoadedSubtitle(
+                        cues = cached.cues,
+                        rawBody = cached.rawBody,
+                        downloadMs = 0L,
+                        parseMs = 0L,
+                        cacheHit = true,
+                    )
+                }
             }
 
-            markSubtitleLoadPhase(url, "DOWNLOAD")
+            markSubtitleLoadPhase(url, if (rawBodyOverride == null) "DOWNLOAD" else "SHARED_BODY")
             val downloadStarted = SystemClock.elapsedRealtime()
-            val text = try {
-                downloadSubtitleTextWithSingle429Retry(url, headers)
-            } catch (cancel: CancellationException) {
-                throw cancel
-            } catch (error: Exception) {
-                traceOutcome = "unavailable"
-                AutoSyncDebugLog.error(error) { "selected subtitle download failed" }
-                return null
+            val text = if (rawBodyOverride != null) {
+                rawBodyOverride
+            } else {
+                try {
+                    downloadSubtitleTextWithSingle429Retry(url, headers)
+                } catch (cancel: CancellationException) {
+                    throw cancel
+                } catch (error: Exception) {
+                    traceOutcome = "unavailable"
+                    AutoSyncDebugLog.error(error) { "selected subtitle download failed" }
+                    return null
+                }
             }
-            val downloadMs = SystemClock.elapsedRealtime() - downloadStarted
+            val downloadMs =
+                if (rawBodyOverride != null) 0L
+                else SystemClock.elapsedRealtime() - downloadStarted
 
             markSubtitleLoadPhase(url, "PARSE")
             val parseStarted = SystemClock.elapsedRealtime()
@@ -1520,11 +1553,15 @@ internal object AutomaticSubtitleSync {
 
             markSubtitleLoadPhase(url, "CACHE")
             val immutable = cues.toList()
-            synchronized(parsedSubtitleCacheLock) {
-                parsedSubtitleCache[cacheKey] = CachedParsedSubtitle(
-                    cues = immutable,
-                    rawBody = text,
-                )
+            // A body supplied by the active sidecar is selection-owned and exact. Do not let a
+            // URL/header-only cache substitute bytes from a mutable same-URL resource later.
+            if (rawBodyOverride == null) {
+                synchronized(parsedSubtitleCacheLock) {
+                    parsedSubtitleCache[cacheKey] = CachedParsedSubtitle(
+                        cues = immutable,
+                        rawBody = text,
+                    )
+                }
             }
             markSubtitleLoadPhase(url, "COMPLETE")
             return LoadedSubtitle(
@@ -1545,6 +1582,15 @@ internal object AutomaticSubtitleSync {
             )
         }
     }
+
+    internal suspend fun downloadSubtitleBody(
+        url: String,
+        headers: Map<String, String>,
+    ): String =
+        downloadSubtitleTextWithSingle429Retry(
+            url = url,
+            headers = headers,
+        )
 
     private suspend fun downloadSubtitleTextWithSingle429Retry(
         url: String,

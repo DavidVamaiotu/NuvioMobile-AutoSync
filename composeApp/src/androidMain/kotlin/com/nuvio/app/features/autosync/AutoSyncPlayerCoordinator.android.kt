@@ -80,7 +80,19 @@ internal class AutoSyncPlayerCoordinator(
             return
         }
 
-        if (!sidecar.startSidecarAddonSubtitle(url, subtitleHeaders, useLibass)) {
+        if (
+            !sidecar.startSidecarAddonSubtitle(
+                url = url,
+                headers = subtitleHeaders,
+                useLibass = useLibass,
+                rawBodyLoader = {
+                    AutomaticSubtitleSync.downloadSubtitleBody(
+                        url = url,
+                        headers = subtitleHeaders,
+                    )
+                },
+            )
+        ) {
             if (attachSubtitleOnReject) fallbackAttach(url)
             Toast.makeText(
                 context,
@@ -89,6 +101,8 @@ internal class AutoSyncPlayerCoordinator(
             ).show()
             return
         }
+
+        val selectedSubtitleBodyDeferred = sidecar.rawBodyDeferredFor(url)
 
         onMimeTypeSelected(PlayerSubtitleUtils.mimeTypeFromUrl(url))
         player.trackSelectionParameters = player.trackSelectionParameters
@@ -102,6 +116,7 @@ internal class AutoSyncPlayerCoordinator(
                 sourceHeaders = sourceHeaders,
                 selectedSubtitleUrl = url,
                 selectedSubtitleHeaders = subtitleHeaders,
+                selectedSubtitleBodyDeferred = selectedSubtitleBodyDeferred,
                 preferredLanguage = getPreferredLanguage(),
                 alternativeSubtitles = candidates,
                 alternativeSubtitlesProvider = { candidates },
@@ -134,9 +149,12 @@ internal class AutoSyncPlayerCoordinator(
             } else if (
                 sidecar.activeSidecarSubtitleKey == null &&
                 sidecar.startSidecarAddonSubtitle(
-                    chosenUrl,
-                    resolved.subtitleHeaders,
-                    useLibass,
+                    url = chosenUrl,
+                    headers = resolved.subtitleHeaders,
+                    useLibass = useLibass,
+                    rawBodyLoader = resolved.subtitleBody?.let { body ->
+                        suspend { body }
+                    },
                 )
             ) {
                 AutoSyncDebugLog.info {
