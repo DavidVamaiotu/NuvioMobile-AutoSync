@@ -54,7 +54,11 @@ jobs:
           PROPS
 
       - name: Run AutoSync V2 host tests
-        run: ./gradlew :composeApp:testAndroidHostTest -Pnuvio.android.distribution=full --tests "com.nuvio.app.features.autosync.AutoSyncTimelineRetimeTest" --stacktrace
+        run: |
+          ./gradlew :composeApp:testAndroidHostTest -Pnuvio.android.distribution=full \
+            --tests "com.nuvio.app.features.autosync.AutoSyncTimelineRetimeTest" \
+            --tests "com.nuvio.app.features.autosync.AutoSyncNetworkCancellationTest" \
+            --stacktrace
 
       - name: Build full debug APK
         run: ./gradlew :androidApp:assembleFullDebug --stacktrace

@@ -1053,10 +1053,13 @@ internal object AutoSyncTimelineRetimer {
         }
 
         val best = fineBest ?: coarseBest
-        val unitSeed = precomputedUnitEvidence?.seed
-            ?: buildDelayOnlySearchSeed(unitScaleCandidates)?.let { seed ->
-                if (coarseBest.scale == 1.0) seed.copy(fine = fineBest) else seed
-            }
+        val unitSeed = precomputedUnitEvidence?.seed?.let { seed ->
+            // Preserve the original branch exactly: a fine unit-scale seed was carried forward
+            // only when unit scale itself won the global coarse search.
+            if (coarseBest.scale == 1.0) seed else seed.copy(fine = null)
+        } ?: buildDelayOnlySearchSeed(unitScaleCandidates)?.let { seed ->
+            if (coarseBest.scale == 1.0) seed.copy(fine = fineBest) else seed
+        }
 
         return ActivityAlignment(
             scale = best.scale,

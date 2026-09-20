@@ -358,6 +358,103 @@ class AutoSyncTimelineRetimeTest {
     }
 
     @Test
+    fun precomputedDelayEvidencePreservesConstantOffsetAuthoritativeResult() {
+        val reference = irregularTimeline(220)
+        val target = shift(reference, -12_750L)
+        val referenceActivity = assertNotNull(
+            AutoSyncTimelineRetimer.prepareUnitActivity(reference),
+        )
+        val targetActivity = assertNotNull(
+            AutoSyncTimelineRetimer.prepareUnitActivity(target),
+        )
+        val evidence = assertNotNull(
+            AutoSyncTimelineRetimer.prepareDelayOnlySearchEvidence(
+                referenceActivity = referenceActivity,
+                targetActivity = targetActivity,
+            ),
+        )
+
+        val baseline = assertNotNull(
+            AutoSyncTimelineRetimer.retime(
+                reference = reference,
+                target = target,
+                coarseScale = 1.0,
+                coarseInterceptMs = 0.0,
+                discoverAlignment = true,
+                preparedReferenceActivity = referenceActivity,
+                preparedTargetActivity = targetActivity,
+            ),
+        )
+        val reused = assertNotNull(
+            AutoSyncTimelineRetimer.retime(
+                reference = reference,
+                target = target,
+                coarseScale = 1.0,
+                coarseInterceptMs = 0.0,
+                discoverAlignment = true,
+                preparedReferenceActivity = referenceActivity,
+                preparedTargetActivity = targetActivity,
+                precomputedDelayOnlyEvidence = evidence,
+                allowPrecomputedDelayFastPath = false,
+            ),
+        )
+
+        assertEquals(baseline, reused)
+    }
+
+    @Test
+    fun precomputedDelayEvidencePreservesFpsDriftAuthoritativeResult() {
+        val reference = irregularTimeline(260)
+        val scale = 25.0 / 23.976
+        val target = reference.map { cue ->
+            SubtitleSyncCue(
+                (cue.startTimeMs / scale).toLong(),
+                (cue.endTimeMs / scale).toLong(),
+                cue.text,
+            )
+        }
+        val referenceActivity = assertNotNull(
+            AutoSyncTimelineRetimer.prepareUnitActivity(reference),
+        )
+        val targetActivity = assertNotNull(
+            AutoSyncTimelineRetimer.prepareUnitActivity(target),
+        )
+        val evidence = assertNotNull(
+            AutoSyncTimelineRetimer.prepareDelayOnlySearchEvidence(
+                referenceActivity = referenceActivity,
+                targetActivity = targetActivity,
+            ),
+        )
+
+        val baseline = assertNotNull(
+            AutoSyncTimelineRetimer.retime(
+                reference = reference,
+                target = target,
+                coarseScale = 1.0,
+                coarseInterceptMs = 0.0,
+                discoverAlignment = true,
+                preparedReferenceActivity = referenceActivity,
+                preparedTargetActivity = targetActivity,
+            ),
+        )
+        val reused = assertNotNull(
+            AutoSyncTimelineRetimer.retime(
+                reference = reference,
+                target = target,
+                coarseScale = 1.0,
+                coarseInterceptMs = 0.0,
+                discoverAlignment = true,
+                preparedReferenceActivity = referenceActivity,
+                preparedTargetActivity = targetActivity,
+                precomputedDelayOnlyEvidence = evidence,
+                allowPrecomputedDelayFastPath = false,
+            ),
+        )
+
+        assertEquals(baseline, reused)
+    }
+
+    @Test
     fun cancellationCheckpointInterruptsDpWithoutChangingMatcherApi() {
         val reference = irregularTimeline(800)
         val target = shift(reference, -2_500L)
