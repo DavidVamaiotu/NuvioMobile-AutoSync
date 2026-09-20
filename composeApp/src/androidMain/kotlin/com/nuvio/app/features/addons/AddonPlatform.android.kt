@@ -6,8 +6,8 @@ import com.nuvio.app.core.diagnostics.SentryNetworkBreadcrumbInterceptor
 import com.nuvio.app.core.network.IPv4FirstDns
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import nuvio.composeapp.generated.resources.Res
@@ -15,9 +15,6 @@ import nuvio.composeapp.generated.resources.network_empty_response_body
 import nuvio.composeapp.generated.resources.network_request_failed_http
 import org.jetbrains.compose.resources.getString
 import okhttp3.Cache
-import okhttp3.Call
-import okhttp3.Callback
-import okhttp3.Response
 import okhttp3.ResponseBody
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -301,58 +298,29 @@ actual suspend fun httpRequestRaw(
         }
 
         val call = client.newCall(request)
-        suspendCancellableCoroutine { continuation ->
-            continuation.invokeOnCancellation {
+        val cancelHandle = coroutineContext[Job]?.invokeOnCompletion { cause ->
+            if (cause is CancellationException) {
                 call.cancel()
             }
-            call.enqueue(
-                object : Callback {
-                    override fun onFailure(call: Call, error: IOException) {
-                        if (!continuation.isActive) return
-                        if (call.isCanceled()) {
-                            continuation.resumeWith(
-                                Result.failure(
-                                    CancellationException("Cancelled HTTP request", error),
-                                ),
-                            )
-                        } else {
-                            continuation.resumeWith(Result.failure(error))
-                        }
-                    }
-
-                    override fun onResponse(call: Call, response: Response) {
-                        if (!continuation.isActive) {
-                            response.close()
-                            return
-                        }
-
-                        try {
-                            val result = response.use {
-                                RawHttpResponse(
-                                    status = it.code,
-                                    statusText = it.message,
-                                    url = it.request.url.toString(),
-                                    body = readResponseBodyLimited(
-                                        it.body,
-                                        maxResponseBodyBytes,
-                                    ),
-                                    headers = it.headers.toMultimap().mapValues { (_, values) ->
-                                        values.joinToString(",")
-                                    }.mapKeys { (name, _) ->
-                                        name.lowercase()
-                                    },
-                                )
-                            }
-                            if (continuation.isActive) {
-                                continuation.resumeWith(Result.success(result))
-                            }
-                        } catch (error: Throwable) {
-                            if (continuation.isActive) {
-                                continuation.resumeWith(Result.failure(error))
-                            }
-                        }
-                    }
-                },
-            )
+        }
+        try {
+            call.execute().use { response ->
+                RawHttpResponse(
+                    status = response.code,
+                    statusText = response.message,
+                    url = response.request.url.toString(),
+                    body = readResponseBodyLimited(response.body, maxResponseBodyBytes),
+                    headers = response.headers.toMultimap().mapValues { (_, values) ->
+                        values.joinToString(",")
+                    }.mapKeys { (name, _) ->
+                        name.lowercase()
+                    },
+                )
+            }
+        } catch (error: IOException) {
+            if (call.isCanceled()) throw CancellationException("Cancelled HTTP request", error)
+            throw error
+        } finally {
+            cancelHandle?.dispose()
         }
     }

@@ -2,7 +2,6 @@ package com.nuvio.app.features.autosync
 
 import android.os.SystemClock
 import androidx.media3.common.C
-import com.nuvio.app.features.addons.httpRequestRaw
 import com.nuvio.app.features.player.AutoSyncSubtitleCandidate
 import com.nuvio.app.features.player.PlayerSubtitleCueParser
 import com.nuvio.app.features.player.SubtitleLanguageMatching
@@ -1530,12 +1529,9 @@ internal object AutomaticSubtitleSync {
         headers: Map<String, String>,
     ): com.nuvio.app.features.addons.RawHttpResponse =
         withTimeoutOrNull(SUBTITLE_DOWNLOAD_TIMEOUT_MS) {
-            httpRequestRaw(
-                method = "GET",
+            AutoSyncSubtitleHttp.get(
                 url = url,
                 headers = mapOf("Accept" to "*/*") + headers,
-                body = "",
-                followRedirects = true,
                 maxResponseBodyBytes = MAX_SUBTITLE_RESPONSE_BYTES,
             )
         } ?: error("subtitle request timed out after ${SUBTITLE_DOWNLOAD_TIMEOUT_MS}ms")
