@@ -585,7 +585,20 @@ internal object AutomaticSubtitleSync {
             var bestMatch: TimelineRetimeMatch? = null
 
             val pairComparator =
-                compareBy<PairHypothesis> { it.schedulingScore }
+                compareBy<PairHypothesis> {
+                    // A family with exactly one usable attempt needs one more usable reference
+                    // before the existing nonexceptional checkpoint can authorize stopping.
+                    // Prioritize only that bounded continuation; never drop or cap other work.
+                    if (
+                        it.family.completedUsableAttempts in
+                            1 until REFERENCE_SEARCH_CHECKPOINT
+                    ) {
+                        1
+                    } else {
+                        0
+                    }
+                }
+                    .thenBy { it.schedulingScore }
                     .thenBy { it.rankedReference.cheapAffinity }
                     .thenBy { it.rankedReference.suitability }
                     .thenBy { if (it.preflightHint != null) 1 else 0 }
@@ -703,16 +716,14 @@ internal object AutomaticSubtitleSync {
                     activePairPriorities[jobId] = hypothesis.schedulingScore
                     activePairJobs[jobId] = async(Dispatchers.Default) {
                         val representative = hypothesis.family.representative
-                        val evaluation = evaluateExternalCandidate(
+                        val evaluation = evaluatePair(
                             label =
                                 "PAIR[${representative.index}/$referenceKey]",
                             url = representative.candidate.url,
                             target = representative.loaded.cues,
-                            referenceTracks = referenceTracks,
+                            rankedReference = hypothesis.rankedReference,
                             referenceActivityCache = referenceActivityCache,
-                            preferredReferenceKey = referenceKey,
                             preflightHint = hypothesis.preflightHint,
-                            onlyReferenceKey = referenceKey,
                             preparedTargetActivity = hypothesis.family.targetActivity,
                         )
                         CompletedPairEvaluation(
@@ -770,14 +781,13 @@ internal object AutomaticSubtitleSync {
                 evaluatedPairs++
 
                 val family = completed.hypothesis.family
-                if (completed.evaluation.attempts.isNotEmpty()) {
+                val pairMatch = completed.evaluation.match
+                if (pairMatch != null) {
                     family.completedUsableAttempts++
-                }
-
-                val pairBest = completed.evaluation.best
-                if (pairBest != null && isBetterMatch(pairBest, family.best)) {
-                    family.best = pairBest
-                    family.bestSchedulingScore = completed.hypothesis.schedulingScore
+                    if (isBetterMatch(pairMatch, family.best)) {
+                        family.best = pairMatch
+                        family.bestSchedulingScore = completed.hypothesis.schedulingScore
+                    }
                 }
 
                 val familyBest = family.best
@@ -788,6 +798,19 @@ internal object AutomaticSubtitleSync {
                 ) {
                     bestMatch = familyBest
                     bestFamily = family
+                }
+            }
+
+            suspend fun drainCompletedPairs() {
+                val completedIds = activePairJobs
+                    .filterValues { it.isCompleted }
+                    .keys
+                    .toList()
+
+                for (jobId in completedIds) {
+                    val job = activePairJobs.remove(jobId) ?: continue
+                    activePairPriorities.remove(jobId)
+                    recordCompletedPair(job.await())
                 }
             }
 
@@ -818,11 +841,41 @@ internal object AutomaticSubtitleSync {
                     "hardSearchCap=none"
             }
 
+            fun authoritativeStopFamily(): CandidateTimingFamilyState? =
+                findStopFamily()
+
+            fun logAuthoritativeStop(family: CandidateTimingFamilyState) {
+                val match = family.best ?: return
+                AutoSyncDebugLog.info {
+                    "GLOBAL scheduler authoritative stop candidate=" +
+                        "${family.representative.index} reference=${match.track.key} " +
+                        "quality=${fmt(directTimelineQualityScore(match))} " +
+                        "familyAttempts=${family.completedUsableAttempts}"
+                }
+            }
+
             var strongStop = false
             try {
                 while (!strongStop) {
+                    // Pair workers may finish while candidate preparation is running. Always
+                    // consume those results before launching or admitting more speculative work.
+                    drainCompletedPairs()
+                    authoritativeStopFamily()?.let { family ->
+                        logAuthoritativeStop(family)
+                        strongStop = true
+                    }
+                    if (strongStop) break
+
                     startPairJobs()
                     scheduleMoreLoads()
+
+                    // Starting/refilling is cheap, but a worker may already have completed.
+                    drainCompletedPairs()
+                    authoritativeStopFamily()?.let { family ->
+                        logAuthoritativeStop(family)
+                        strongStop = true
+                    }
+                    if (strongStop) break
 
                     if (
                         activeLoads.isEmpty() &&
@@ -853,6 +906,15 @@ internal object AutomaticSubtitleSync {
                             val candidate = candidateByUrl[event.url]
                             scheduleMoreLoads()
 
+                            // Do not let synchronous activity/preflight/ranking preparation hide
+                            // a matcher result that already completed.
+                            drainCompletedPairs()
+                            authoritativeStopFamily()?.let { family ->
+                                logAuthoritativeStop(family)
+                                strongStop = true
+                            }
+                            if (strongStop) continue
+
                             if (candidate != null && event.loaded != null) {
                                 admitLoadedCandidate(candidate, event.loaded)
                             } else {
@@ -860,40 +922,24 @@ internal object AutomaticSubtitleSync {
                                     "GLOBAL scheduler candidate load unavailable url=${event.url}"
                                 }
                             }
+
+                            drainCompletedPairs()
                         }
 
                         is SchedulerEvent.PairEvaluated -> {
                             activePairJobs.remove(event.jobId)
                             activePairPriorities.remove(event.jobId)
                             recordCompletedPair(event.completed)
-
-                            // If another matcher finished while downloads were being admitted,
-                            // consume it now before making a terminal decision. This prevents a
-                            // completed authoritative result from being silently ignored.
-                            val alreadyCompleted = activePairJobs
-                                .filterValues { it.isCompleted }
-                                .keys
-                                .toList()
-                            for (jobId in alreadyCompleted) {
-                                val job = activePairJobs.remove(jobId) ?: continue
-                                activePairPriorities.remove(jobId)
-                                recordCompletedPair(job.await())
-                            }
-
-                            val stopFamily = findStopFamily()
-                            val stopMatch = stopFamily?.best
-                            if (stopFamily != null && stopMatch != null) {
-                                AutoSyncDebugLog.info {
-                                    "GLOBAL scheduler authoritative stop candidate=" +
-                                        "${stopFamily.representative.index} reference=${stopMatch.track.key} " +
-                                        "quality=${fmt(directTimelineQualityScore(stopMatch))} " +
-                                        "familyAttempts=${stopFamily.completedUsableAttempts}"
-                                }
-                                strongStop = true
-                            }
+                            drainCompletedPairs()
                         }
                     }
+
+                    authoritativeStopFamily()?.let { family ->
+                        logAuthoritativeStop(family)
+                        strongStop = true
+                    }
                 }
+            }
             } finally {
                 val pendingLoads =
                     activeLoads.filterValues { !it.isCompleted }
@@ -946,15 +992,12 @@ internal object AutomaticSubtitleSync {
                 if (winningMember === winningFamily.representative) {
                     winningMatch
                 } else {
-                    reuseShiftEquivalentEvaluation(
-                        evaluation = CandidateEvaluation(
-                            best = winningMatch,
-                            attempts = listOf(winningMatch),
-                        ),
+                    reuseShiftEquivalentMatch(
+                        match = winningMatch,
                         representativeTarget =
                             winningFamily.representative.loaded.cues,
                         target = winningMember.loaded.cues,
-                    )?.best ?: winningMatch
+                    ) ?: winningMatch
                 }
 
             if (!selectedSubtitleDeferred.isCompleted) {
@@ -991,32 +1034,19 @@ internal object AutomaticSubtitleSync {
         return result
     }
 
-    private suspend fun evaluateExternalCandidate(
+    private suspend fun evaluatePair(
         label: String,
         url: String,
         target: List<SubtitleSyncCue>,
-        referenceTracks: List<ReferenceTrack>,
+        rankedReference: RankedReferenceCandidate,
         referenceActivityCache: MutableMap<String, AutoSyncTimelineRetimer.PreparedActivity?>,
-        preferredReferenceKey: String? = null,
         preflightHint: AutoSyncDelayPreflight.Match? = null,
-        onlyReferenceKey: String? = null,
         preparedTargetActivity: AutoSyncTimelineRetimer.PreparedActivity? = null,
-    ): CandidateEvaluation = withContext(Dispatchers.Default) {
+    ): PairEvaluation = withContext(Dispatchers.Default) {
         val evaluationContext = currentCoroutineContext()
         val targetActivity =
             preparedTargetActivity ?: AutoSyncTimelineRetimer.prepareUnitActivity(target)
-
-        val scopedReferences =
-            if (onlyReferenceKey != null) {
-                referenceTracks.filter { it.key == onlyReferenceKey }
-            } else {
-                referenceTracks
-            }
-        val representatives = rankReferenceCandidates(
-            target = target,
-            referenceTracks = scopedReferences,
-            preferredReferenceKey = preferredReferenceKey,
-        )
+        val track = rankedReference.track
 
         preflightHint?.let { hint ->
             AutoSyncDebugLog.info {
@@ -1027,140 +1057,90 @@ internal object AutomaticSubtitleSync {
         }
 
         AutoSyncDebugLog.section { "$label EMBEDDED REFERENCE ORDER" }
-        representatives.forEachIndexed { index, ranked ->
-            val track = ranked.track
-            AutoSyncDebugLog.info {
-                "[$index] reference=${track.key} label=${track.label ?: "<none>"} " +
-                    "sdh=${isSdhReferenceTrack(track)} cues=${track.cues.size} " +
-                    "cueRatio=${fmt(referenceCueRatio(track, target))} " +
-                    "suitability=${fmt(ranked.suitability)} " +
-                    "cheapAffinity=${fmt(ranked.cheapAffinity)}"
+        AutoSyncDebugLog.info {
+            "[0] reference=${track.key} label=${track.label ?: "<none>"} " +
+                "sdh=${isSdhReferenceTrack(track)} cues=${track.cues.size} " +
+                "cueRatio=${fmt(referenceCueRatio(track, target))} " +
+                "suitability=${fmt(rankedReference.suitability)} " +
+                "cheapAffinity=${fmt(rankedReference.cheapAffinity)}"
+        }
+
+        val preparedReference = synchronized(referenceActivityCache) {
+            if (referenceActivityCache.containsKey(track.key)) {
+                referenceActivityCache[track.key]
+            } else {
+                val prepared = AutoSyncTimelineRetimer.prepareUnitActivity(track.cues)
+                referenceActivityCache[track.key] = prepared
+                prepared
             }
         }
 
-        val attempts = ArrayList<TimelineRetimeMatch>(representatives.size)
-        var bestConfident: TimelineRetimeMatch? = null
-
-        for (ranked in representatives) {
-            val track = ranked.track
-            val preparedReference = synchronized(referenceActivityCache) {
-                if (referenceActivityCache.containsKey(track.key)) {
-                    referenceActivityCache[track.key]
-                } else {
-                    val prepared = AutoSyncTimelineRetimer.prepareUnitActivity(track.cues)
-                    referenceActivityCache[track.key] = prepared
-                    prepared
-                }
-            }
-
-            val pairStarted = SystemClock.elapsedRealtime()
-            val timeline = buildTimelineRetimeResult(
-                track = track,
-                target = target,
-                preparedReferenceActivity = preparedReference,
-                preparedTargetActivity = targetActivity,
-                delayOnlyHint =
-                    preflightHint
-                        ?.takeIf { it.referenceKey == track.key }
-                        ?.alignment,
-                cancellationCheck = { evaluationContext.ensureActive() },
-                timingObserver =
-                    if (AutoSyncDebugLog.ENABLED) {
-                        { timing ->
-                            AutoSyncDebugLog.info {
-                                "$label MATCH_TIMING reference=${track.key} path=${timing.path} " +
-                                    "prepare=${timing.prepareActivityMs}ms " +
-                                    "delay=${timing.delayValidationMs}ms " +
-                                    "activity=${timing.activitySearchMs}ms " +
-                                    "dp=${timing.dpMs}ms validate=${timing.validationMs}ms " +
-                                    "total=${timing.totalMs}ms"
-                            }
-                        }
-                    } else {
-                        null
-                    },
-            )
-            val pairTotalMs = SystemClock.elapsedRealtime() - pairStarted
-            if (timeline == null) {
+        val pairStarted = SystemClock.elapsedRealtime()
+        val timeline = buildTimelineRetimeResult(
+            track = track,
+            target = target,
+            preparedReferenceActivity = preparedReference,
+            preparedTargetActivity = targetActivity,
+            delayOnlyHint =
+                preflightHint
+                    ?.takeIf { it.referenceKey == track.key }
+                    ?.alignment,
+            cancellationCheck = { evaluationContext.ensureActive() },
+            timingObserver =
                 if (AutoSyncDebugLog.ENABLED) {
-                    AutoSyncDebugLog.info {
-                        "$label MATCH_TIMING reference=${track.key} result=none total=${pairTotalMs}ms"
+                    { timing ->
+                        AutoSyncDebugLog.info {
+                            "$label MATCH_TIMING reference=${track.key} path=${timing.path} " +
+                                "prepare=${timing.prepareActivityMs}ms " +
+                                "delay=${timing.delayValidationMs}ms " +
+                                "activity=${timing.activitySearchMs}ms " +
+                                "dp=${timing.dpMs}ms validate=${timing.validationMs}ms " +
+                                "total=${timing.totalMs}ms"
+                        }
                     }
-                }
-                continue
-            }
-            val match = TimelineRetimeMatch(track, timeline)
-            attempts += match
-
-            AutoSyncDebugLog.info {
-                "$label reference=${track.key} quality=${fmt(directTimelineQualityScore(match))} " +
-                    "decision=${if (timeline.confident) "ACCEPT" else "REJECT"} " +
-                    "alignment=${timeline.alignmentSource} scale=${"%.6f".format(timeline.alignmentScale)} " +
-                    "intercept=${"%.1f".format(timeline.alignmentInterceptMs)}ms " +
-                    "activityScore=${fmt(timeline.activityScore)} activityMargin=${fmt(timeline.activityMargin)} " +
-                    "targetCoverage=${fmt(timeline.targetCoverage)} referenceCoverage=${fmt(timeline.referenceCoverage)} " +
-                    "avgGroupCost=${fmt(timeline.averageGroupCost)} simpleRatio=${fmt(timeline.simpleGroupRatio)}"
-            }
-
-            if (timeline.confident) {
-                val previous = bestConfident
-                if (
-                    previous == null ||
-                    directTimelineQualityScore(match) > directTimelineQualityScore(previous)
-                ) {
-                    bestConfident = match
-                }
-
-                if (isExceptionalMatch(match)) {
-                    AutoSyncDebugLog.info {
-                        "$label exceptional reference accepted early reference=${track.key} " +
-                            "quality=${fmt(directTimelineQualityScore(match))}"
-                    }
-                    return@withContext CandidateEvaluation(best = match, attempts = attempts)
+                } else {
+                    null
+                },
+        )
+        val pairTotalMs = SystemClock.elapsedRealtime() - pairStarted
+        if (timeline == null) {
+            if (AutoSyncDebugLog.ENABLED) {
+                AutoSyncDebugLog.info {
+                    "$label MATCH_TIMING reference=${track.key} result=none total=${pairTotalMs}ms"
                 }
             }
-
-            if (attempts.size >= REFERENCE_SEARCH_CHECKPOINT) {
-                val checkpointBest = bestConfident
-                if (
-                    checkpointBest != null &&
-                    (
-                        isStrongCheckpointMatch(checkpointBest) ||
-                            isAsymmetricReferenceCheckpointMatch(
-                                checkpointBest,
-                                targetCueCount = target.size,
-                            )
-                        )
-                ) {
-                    AutoSyncDebugLog.info {
-                        "$label reference search stopped after ${attempts.size} usable candidates " +
-                            "best=${checkpointBest.track.key} " +
-                            "quality=${fmt(directTimelineQualityScore(checkpointBest))}"
-                    }
-                    break
-                }
-            }
+            AutoSyncDebugLog.section { "$label RESULT" }
+            AutoSyncDebugLog.warn { "no usable whole-timeline alignment url=$url reference=${track.key}" }
+            return@withContext PairEvaluation(match = null)
         }
 
-        val best = attempts.maxWithOrNull(
-            compareBy<TimelineRetimeMatch> { if (it.timeline.confident) 1 else 0 }
-                .thenBy(::directTimelineQualityScore),
-        )
+        val match = TimelineRetimeMatch(track, timeline)
+        AutoSyncDebugLog.info {
+            "$label reference=${track.key} quality=${fmt(directTimelineQualityScore(match))} " +
+                "decision=${if (timeline.confident) "ACCEPT" else "REJECT"} " +
+                "alignment=${timeline.alignmentSource} scale=${"%.6f".format(timeline.alignmentScale)} " +
+                "intercept=${"%.1f".format(timeline.alignmentInterceptMs)}ms " +
+                "activityScore=${fmt(timeline.activityScore)} activityMargin=${fmt(timeline.activityMargin)} " +
+                "targetCoverage=${fmt(timeline.targetCoverage)} referenceCoverage=${fmt(timeline.referenceCoverage)} " +
+                "avgGroupCost=${fmt(timeline.averageGroupCost)} simpleRatio=${fmt(timeline.simpleGroupRatio)}"
+        }
+
+        if (timeline.confident && isExceptionalMatch(match)) {
+            AutoSyncDebugLog.info {
+                "$label exceptional reference accepted early reference=${track.key} " +
+                    "quality=${fmt(directTimelineQualityScore(match))}"
+            }
+        }
 
         AutoSyncDebugLog.section { "$label RESULT" }
-        if (best == null) {
-            AutoSyncDebugLog.warn { "no usable whole-timeline alignment url=$url" }
-        } else {
-            val timeline = best.timeline
-            AutoSyncDebugLog.info {
-                "url=$url reference=${best.track.key} groups=${timeline.groups.size} " +
-                    "quality=${fmt(directTimelineQualityScore(best))} " +
-                    "alignment=${timeline.alignmentSource} scale=${"%.6f".format(timeline.alignmentScale)} " +
-                    "decision=${if (timeline.confident) "ACCEPT" else "REJECT"}"
-            }
+        AutoSyncDebugLog.info {
+            "url=$url reference=${track.key} groups=${timeline.groups.size} " +
+                "quality=${fmt(directTimelineQualityScore(match))} " +
+                "alignment=${timeline.alignmentSource} scale=${"%.6f".format(timeline.alignmentScale)} " +
+                "decision=${if (timeline.confident) "ACCEPT" else "REJECT"}"
         }
 
-        CandidateEvaluation(best = best, attempts = attempts)
+        PairEvaluation(match = match)
     }
 
     private fun logLoadedExternalSubtitle(
@@ -1206,43 +1186,29 @@ internal object AutomaticSubtitleSync {
         return shiftMs
     }
 
-    private fun reuseShiftEquivalentEvaluation(
-        evaluation: CandidateEvaluation,
+    private fun reuseShiftEquivalentMatch(
+        match: TimelineRetimeMatch,
         representativeTarget: List<SubtitleSyncCue>,
         target: List<SubtitleSyncCue>,
-    ): CandidateEvaluation? {
+    ): TimelineRetimeMatch? {
         val shiftMs = constantTimelineShiftMs(representativeTarget, target)
             ?: return null
+        val timeline = match.timeline
+        if (timeline.cues.size != target.size) return null
 
-        fun shifted(match: TimelineRetimeMatch): TimelineRetimeMatch? {
-            val timeline = match.timeline
-            if (timeline.cues.size != target.size) return null
-
-            return match.copy(
-                timeline = timeline.copy(
-                    cues = timeline.cues.mapIndexed { index, cue ->
-                        val targetCue = target[index]
-                        cue.copy(
-                            originalStartTimeMs = targetCue.startTimeMs,
-                            originalEndTimeMs = targetCue.endTimeMs,
-                        )
-                    },
-                    alignmentInterceptMs =
-                        timeline.alignmentInterceptMs -
-                            timeline.alignmentScale * shiftMs.toDouble(),
-                ),
-            )
-        }
-
-        val shiftedBest = evaluation.best?.let { shifted(it) ?: return null }
-        val shiftedAttempts = ArrayList<TimelineRetimeMatch>(evaluation.attempts.size)
-        for (attempt in evaluation.attempts) {
-            shiftedAttempts += shifted(attempt) ?: return null
-        }
-
-        return CandidateEvaluation(
-            best = shiftedBest,
-            attempts = shiftedAttempts,
+        return match.copy(
+            timeline = timeline.copy(
+                cues = timeline.cues.mapIndexed { index, cue ->
+                    val targetCue = target[index]
+                    cue.copy(
+                        originalStartTimeMs = targetCue.startTimeMs,
+                        originalEndTimeMs = targetCue.endTimeMs,
+                    )
+                },
+                alignmentInterceptMs =
+                    timeline.alignmentInterceptMs -
+                        timeline.alignmentScale * shiftMs.toDouble(),
+            ),
         )
     }
 
@@ -1924,9 +1890,8 @@ internal object AutomaticSubtitleSync {
         val cheapAffinity: Double,
         val suitability: Double,
     )
-    private data class CandidateEvaluation(
-        val best: TimelineRetimeMatch?,
-        val attempts: List<TimelineRetimeMatch>,
+    private data class PairEvaluation(
+        val match: TimelineRetimeMatch?,
     )
     private data class CachedParsedSubtitle(
         val cues: List<SubtitleSyncCue>,
@@ -1956,7 +1921,7 @@ internal object AutomaticSubtitleSync {
     )
     private data class CompletedPairEvaluation(
         val hypothesis: PairHypothesis,
-        val evaluation: CandidateEvaluation,
+        val evaluation: PairEvaluation,
     )
     private sealed class SchedulerEvent {
         data class CandidateLoaded(
