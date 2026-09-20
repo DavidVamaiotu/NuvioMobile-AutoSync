@@ -988,7 +988,6 @@ internal object AutomaticSubtitleSync {
                         strongStop = true
                     }
                 }
-            }
             } finally {
                 val pendingLoads =
                     activeLoads.filterValues { !it.isCompleted }
