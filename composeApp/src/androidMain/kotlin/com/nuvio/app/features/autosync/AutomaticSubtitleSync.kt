@@ -113,7 +113,12 @@ internal object AutomaticSubtitleSync {
             subtitleUrl = selectedSubtitleUrl,
         )
 
-        return supervisorScope {
+        var cleanupStartedAtMs: Long? = null
+        var cleanupCanceledLoads = 0
+        var cleanupCanceledPairs = 0
+        var cleanupSelectedPending = false
+
+        val result = supervisorScope {
             fun broadCandidateOrder(
                 candidates: List<AutoSyncSubtitleCandidate>,
             ): List<AutoSyncSubtitleCandidate> {
@@ -808,12 +813,20 @@ internal object AutomaticSubtitleSync {
                     }
                 }
             } finally {
-                activeLoads.values
-                    .filterNot { it.isCompleted }
-                    .forEach { it.cancel() }
-                activePairJobs.values
-                    .filterNot { it.isCompleted }
-                    .forEach { it.cancel() }
+                val pendingLoads =
+                    activeLoads.values.filterNot { it.isCompleted }
+                val pendingPairs =
+                    activePairJobs.values.filterNot { it.isCompleted }
+
+                if (strongStop) {
+                    cleanupStartedAtMs = SystemClock.elapsedRealtime()
+                    cleanupCanceledLoads = pendingLoads.size
+                    cleanupCanceledPairs = pendingPairs.size
+                    cleanupSelectedPending = !selectedSubtitleDeferred.isCompleted
+                }
+
+                pendingLoads.forEach { it.cancel() }
+                pendingPairs.forEach { it.cancel() }
             }
 
             AutoSyncDebugLog.info {
@@ -874,6 +887,16 @@ internal object AutomaticSubtitleSync {
                 timeline = memberMatch.timeline,
             )
         }
+
+        cleanupStartedAtMs?.let { startedAtMs ->
+            AutoSyncDebugLog.info {
+                "CLEANUP_TIMING canceledLoads=$cleanupCanceledLoads " +
+                    "canceledPairs=$cleanupCanceledPairs " +
+                    "selectedPending=$cleanupSelectedPending " +
+                    "waited=${SystemClock.elapsedRealtime() - startedAtMs}ms"
+            }
+        }
+        return result
     }
 
     private suspend fun evaluateExternalCandidate(
@@ -1330,9 +1353,14 @@ internal object AutomaticSubtitleSync {
         val parseStarted = SystemClock.elapsedRealtime()
         val cues = try {
             withContext(Dispatchers.Default) {
-                AutoSyncTimelineRetimer.normalizeExternalTimeline(
-                    PlayerSubtitleCueParser.parse(text = text, sourceUrl = url),
+                val parseContext = currentCoroutineContext()
+                val parsed = PlayerSubtitleCueParser.parse(
+                    text = text,
+                    sourceUrl = url,
+                    cancellationCheck = { parseContext.ensureActive() },
                 )
+                parseContext.ensureActive()
+                AutoSyncTimelineRetimer.normalizeExternalTimeline(parsed)
             }
         } catch (cancel: CancellationException) {
             throw cancel
