@@ -380,13 +380,20 @@ internal object AutoSyncTimelineRetimer {
         )
         centers[target.size] = lowerBoundReference(reference, predictedEnd)
 
-        val rows = Array(target.size + 1) { HashMap<Int, Cell>() }
-        rows[0][0] = Cell(cost = 0.0)
+        val rows = BandedDpRows(
+            targetSize = target.size,
+            referenceSize = reference.size,
+            centers = centers,
+        )
+        // Preserve the legacy HashMap final-row iteration/tie behavior exactly while moving
+        // the expensive full DP matrix to compact primitive storage.
+        val finalRowCosts = HashMap<Int, Double>()
+        rows.setStart()
 
         for (targetIndex in 0..target.size) {
             cancellationCheck?.invoke()
-            val row = rows[targetIndex]
-            if (row.isEmpty()) continue
+            var referenceIndex = rows.minReachableReferenceIndex(targetIndex)
+            if (referenceIndex < 0) continue
 
             val rowMax = rowMaxReferenceIndex(
                 targetIndex = targetIndex,
@@ -395,16 +402,19 @@ internal object AutoSyncTimelineRetimer {
                 center = centers[targetIndex],
             )
 
-            var referenceIndex = row.keys.minOrNull() ?: continue
             while (referenceIndex <= rowMax) {
-                val cell = row[referenceIndex]
-                if (cell != null) {
+                val cellIndex = rows.indexOf(targetIndex, referenceIndex)
+                if (cellIndex >= 0 && rows.isReachable(cellIndex)) {
+                    val cellCost = rows.costs[cellIndex]
+
                     if (referenceIndex < reference.size && referenceIndex + 1 <= rowMax) {
                         relax(
                             rows = rows,
+                            finalRowCosts = finalRowCosts,
+                            finalTargetIndex = target.size,
                             toTargetIndex = targetIndex,
                             toReferenceIndex = referenceIndex + 1,
-                            candidateCost = cell.cost + SKIP_REFERENCE_COST,
+                            candidateCost = cellCost + SKIP_REFERENCE_COST,
                             previousReferenceIndex = referenceIndex,
                             previousTargetIndex = targetIndex,
                             referenceCount = 1,
@@ -418,9 +428,11 @@ internal object AutoSyncTimelineRetimer {
                     ) {
                         relax(
                             rows = rows,
+                            finalRowCosts = finalRowCosts,
+                            finalTargetIndex = target.size,
                             toTargetIndex = targetIndex + 1,
                             toReferenceIndex = referenceIndex,
-                            candidateCost = cell.cost + SKIP_TARGET_COST,
+                            candidateCost = cellCost + SKIP_TARGET_COST,
                             previousReferenceIndex = referenceIndex,
                             previousTargetIndex = targetIndex,
                             referenceCount = 0,
@@ -450,9 +462,11 @@ internal object AutoSyncTimelineRetimer {
 
                         relax(
                             rows = rows,
+                            finalRowCosts = finalRowCosts,
+                            finalTargetIndex = target.size,
                             toTargetIndex = nextTargetIndex,
                             toReferenceIndex = nextReferenceIndex,
-                            candidateCost = cell.cost + groupCost +
+                            candidateCost = cellCost + groupCost +
                                 GROUP_COMPLEXITY_COST *
                                 (shape.referenceCount + shape.targetCount - 2),
                             previousReferenceIndex = referenceIndex,
@@ -468,9 +482,9 @@ internal object AutoSyncTimelineRetimer {
             }
         }
 
-        val finalEntry = rows[target.size]
+        val finalEntry = finalRowCosts
             .entries
-            .minByOrNull { it.value.cost }
+            .minByOrNull { it.value }
             ?: return null
 
         val steps = backtrack(
@@ -1333,7 +1347,7 @@ internal object AutoSyncTimelineRetimer {
     }
 
     private fun backtrack(
-        rows: Array<HashMap<Int, Cell>>,
+        rows: BandedDpRows,
         finalReferenceIndex: Int,
         finalTargetIndex: Int,
     ): List<BacktrackStep>? {
@@ -1341,22 +1355,28 @@ internal object AutoSyncTimelineRetimer {
         var referenceIndex = finalReferenceIndex
         var targetIndex = finalTargetIndex
         var guard = 0
-        val guardLimit = rows.size * 8 + finalReferenceIndex * 2 + 32
+        val guardLimit = rows.rowCount * 8 + finalReferenceIndex * 2 + 32
 
         while (referenceIndex != 0 || targetIndex != 0) {
             if (++guard > guardLimit) return null
-            val cell = rows.getOrNull(targetIndex)?.get(referenceIndex) ?: return null
-            if (cell.step == Step.START) return null
+            val cellIndex = rows.indexOf(targetIndex, referenceIndex)
+            if (cellIndex < 0 || !rows.isReachable(cellIndex)) return null
+
+            val step = decodeStep(rows.stepCodes[cellIndex]) ?: return null
+            if (step == Step.START) return null
+
+            val previousReferenceIndex = rows.previousReferenceIndices[cellIndex]
+            val previousTargetIndex = rows.previousTargetIndices[cellIndex]
             reversed += BacktrackStep(
-                step = cell.step,
-                previousReferenceIndex = cell.previousReferenceIndex,
-                previousTargetIndex = cell.previousTargetIndex,
-                referenceCount = cell.referenceCount,
-                targetCount = cell.targetCount,
-                localGroupCost = cell.localGroupCost,
+                step = step,
+                previousReferenceIndex = previousReferenceIndex,
+                previousTargetIndex = previousTargetIndex,
+                referenceCount = rows.referenceCounts[cellIndex].toInt(),
+                targetCount = rows.targetCounts[cellIndex].toInt(),
+                localGroupCost = rows.localGroupCosts[cellIndex],
             )
-            referenceIndex = cell.previousReferenceIndex
-            targetIndex = cell.previousTargetIndex
+            referenceIndex = previousReferenceIndex
+            targetIndex = previousTargetIndex
         }
 
         reversed.reverse()
@@ -1364,7 +1384,9 @@ internal object AutoSyncTimelineRetimer {
     }
 
     private fun relax(
-        rows: Array<HashMap<Int, Cell>>,
+        rows: BandedDpRows,
+        finalRowCosts: HashMap<Int, Double>,
+        finalTargetIndex: Int,
         toTargetIndex: Int,
         toReferenceIndex: Int,
         candidateCost: Double,
@@ -1375,9 +1397,15 @@ internal object AutoSyncTimelineRetimer {
         step: Step,
         localGroupCost: Double = 0.0,
     ) {
-        val current = rows[toTargetIndex][toReferenceIndex]
-        if (current == null || candidateCost + 1e-9 < current.cost) {
-            rows[toTargetIndex][toReferenceIndex] = Cell(
+        val cellIndex = rows.indexOf(toTargetIndex, toReferenceIndex)
+        if (cellIndex < 0) return
+
+        val currentCost = rows.costs[cellIndex]
+        if (!rows.isReachable(cellIndex) || candidateCost + 1e-9 < currentCost) {
+            rows.write(
+                cellIndex = cellIndex,
+                targetIndex = toTargetIndex,
+                referenceIndex = toReferenceIndex,
                 cost = candidateCost,
                 previousReferenceIndex = previousReferenceIndex,
                 previousTargetIndex = previousTargetIndex,
@@ -1386,6 +1414,9 @@ internal object AutoSyncTimelineRetimer {
                 step = step,
                 localGroupCost = localGroupCost,
             )
+            if (toTargetIndex == finalTargetIndex) {
+                finalRowCosts[toReferenceIndex] = candidateCost
+            }
         }
     }
 
@@ -1454,6 +1485,12 @@ internal object AutoSyncTimelineRetimer {
         val targetCount: Int,
     )
 
+    private const val DP_STEP_UNREACHABLE: Byte = 0
+    private const val DP_STEP_START: Byte = 1
+    private const val DP_STEP_GROUP: Byte = 2
+    private const val DP_STEP_SKIP_REFERENCE: Byte = 3
+    private const val DP_STEP_SKIP_TARGET: Byte = 4
+
     private enum class Step {
         START,
         GROUP,
@@ -1461,15 +1498,119 @@ internal object AutoSyncTimelineRetimer {
         SKIP_TARGET,
     }
 
-    private data class Cell(
-        val cost: Double,
-        val previousReferenceIndex: Int = -1,
-        val previousTargetIndex: Int = -1,
-        val referenceCount: Int = 0,
-        val targetCount: Int = 0,
-        val step: Step = Step.START,
-        val localGroupCost: Double = 0.0,
-    )
+    private class BandedDpRows(
+        targetSize: Int,
+        referenceSize: Int,
+        centers: IntArray,
+    ) {
+        val rowCount = targetSize + 1
+        private val rowStarts = IntArray(rowCount)
+        private val rowEnds = IntArray(rowCount)
+        private val rowOffsets = IntArray(rowCount + 1)
+        private val minReachableReferenceIndices = IntArray(rowCount) { Int.MAX_VALUE }
+
+        val costs: DoubleArray
+        val previousReferenceIndices: IntArray
+        val previousTargetIndices: IntArray
+        val referenceCounts: ByteArray
+        val targetCounts: ByteArray
+        val stepCodes: ByteArray
+        val localGroupCosts: DoubleArray
+
+        init {
+            var totalCells = 0
+            for (targetIndex in 0..targetSize) {
+                val start =
+                    if (targetIndex == 0) {
+                        0
+                    } else {
+                        max(0, centers[targetIndex] - BAND_RADIUS_CUES)
+                    }
+                val end =
+                    min(referenceSize, centers[targetIndex] + BAND_RADIUS_CUES)
+
+                rowStarts[targetIndex] = start
+                rowEnds[targetIndex] = end
+                rowOffsets[targetIndex] = totalCells
+                totalCells += end - start + 1
+            }
+            rowOffsets[rowCount] = totalCells
+
+            costs = DoubleArray(totalCells) { Double.POSITIVE_INFINITY }
+            previousReferenceIndices = IntArray(totalCells) { -1 }
+            previousTargetIndices = IntArray(totalCells) { -1 }
+            referenceCounts = ByteArray(totalCells)
+            targetCounts = ByteArray(totalCells)
+            stepCodes = ByteArray(totalCells)
+            localGroupCosts = DoubleArray(totalCells)
+        }
+
+        fun setStart() {
+            val cellIndex = indexOf(0, 0)
+            check(cellIndex >= 0)
+            costs[cellIndex] = 0.0
+            stepCodes[cellIndex] = encodeStep(Step.START)
+            minReachableReferenceIndices[0] = 0
+        }
+
+        fun indexOf(targetIndex: Int, referenceIndex: Int): Int {
+            if (targetIndex !in 0 until rowCount) return -1
+            val start = rowStarts[targetIndex]
+            val end = rowEnds[targetIndex]
+            if (referenceIndex < start || referenceIndex > end) return -1
+            return rowOffsets[targetIndex] + referenceIndex - start
+        }
+
+        fun minReachableReferenceIndex(targetIndex: Int): Int {
+            if (targetIndex !in 0 until rowCount) return -1
+            val value = minReachableReferenceIndices[targetIndex]
+            return if (value == Int.MAX_VALUE) -1 else value
+        }
+
+        fun isReachable(cellIndex: Int): Boolean =
+            stepCodes[cellIndex] != DP_STEP_UNREACHABLE
+
+        fun write(
+            cellIndex: Int,
+            targetIndex: Int,
+            referenceIndex: Int,
+            cost: Double,
+            previousReferenceIndex: Int,
+            previousTargetIndex: Int,
+            referenceCount: Int,
+            targetCount: Int,
+            step: Step,
+            localGroupCost: Double,
+        ) {
+            costs[cellIndex] = cost
+            previousReferenceIndices[cellIndex] = previousReferenceIndex
+            previousTargetIndices[cellIndex] = previousTargetIndex
+            referenceCounts[cellIndex] = referenceCount.toByte()
+            targetCounts[cellIndex] = targetCount.toByte()
+            stepCodes[cellIndex] = encodeStep(step)
+            localGroupCosts[cellIndex] = localGroupCost
+            if (referenceIndex < minReachableReferenceIndices[targetIndex]) {
+                minReachableReferenceIndices[targetIndex] = referenceIndex
+            }
+        }
+    }
+
+    private fun encodeStep(step: Step): Byte =
+        when (step) {
+            Step.START -> DP_STEP_START
+            Step.GROUP -> DP_STEP_GROUP
+            Step.SKIP_REFERENCE -> DP_STEP_SKIP_REFERENCE
+            Step.SKIP_TARGET -> DP_STEP_SKIP_TARGET
+        }
+
+    private fun decodeStep(code: Byte): Step? =
+        when (code) {
+            DP_STEP_START -> Step.START
+            DP_STEP_GROUP -> Step.GROUP
+            DP_STEP_SKIP_REFERENCE -> Step.SKIP_REFERENCE
+            DP_STEP_SKIP_TARGET -> Step.SKIP_TARGET
+            else -> null
+        }
 
     private data class BacktrackStep(
         val step: Step,
