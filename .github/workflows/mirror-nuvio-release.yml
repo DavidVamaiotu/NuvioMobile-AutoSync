@@ -62,7 +62,7 @@ jobs:
 
           RELEASE_SUFFIX="${{ inputs.release_suffix }}"
           if [[ -z "$RELEASE_SUFFIX" ]]; then
-            RELEASE_SUFFIX="autosync.3"
+            RELEASE_SUFFIX="autosync.1"
           fi
           AUTOSYNC_TAG="${UPSTREAM_TAG}-${RELEASE_SUFFIX}"
 
