@@ -2,6 +2,17 @@ name: AutoSync Release
 
 on:
   workflow_dispatch:
+    inputs:
+      release_suffix:
+        description: Suffix appended to the official Nuvio tag
+        required: false
+        type: string
+        default: autosync
+      sync_official_release:
+        description: Merge the official release before building
+        required: true
+        type: boolean
+        default: true
   schedule:
     - cron: "2-57/5 * * * *"
 
@@ -43,7 +54,11 @@ jobs:
             exit 1
           fi
 
-          AUTOSYNC_TAG="${UPSTREAM_TAG}-autosync"
+          RELEASE_SUFFIX="${{ inputs.release_suffix }}"
+          if [[ -z "$RELEASE_SUFFIX" ]]; then
+            RELEASE_SUFFIX="autosync"
+          fi
+          AUTOSYNC_TAG="${UPSTREAM_TAG}-${RELEASE_SUFFIX}"
 
           echo "upstream_tag=$UPSTREAM_TAG" >> "$GITHUB_OUTPUT"
           echo "autosync_tag=$AUTOSYNC_TAG" >> "$GITHUB_OUTPUT"
@@ -82,7 +97,7 @@ jobs:
             "refs/tags/$UPSTREAM_TAG:refs/tags/nuvio-$UPSTREAM_TAG"
 
       - name: Merge official release
-        if: steps.version.outputs.already_exists == 'false'
+        if: steps.version.outputs.already_exists == 'false' && (github.event_name != 'workflow_dispatch' || inputs.sync_official_release)
         env:
           UPSTREAM_TAG: ${{ steps.version.outputs.upstream_tag }}
         run: |
