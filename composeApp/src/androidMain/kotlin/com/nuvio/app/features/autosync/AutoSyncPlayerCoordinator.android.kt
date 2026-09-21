@@ -56,7 +56,6 @@ internal class AutoSyncPlayerCoordinator(
 
     fun start(
         url: String,
-        attachSubtitleOnReject: Boolean,
         candidateScope: AutoSyncCandidateScope,
         fallbackAttach: (String) -> Unit,
     ) {
@@ -66,7 +65,6 @@ internal class AutoSyncPlayerCoordinator(
         when (
             decideAutoSyncStart(
                 enabled = AutoSyncPreferencesRepository.preferredSubtitleAutoSyncOnStart.value,
-                attachSubtitleOnReject = attachSubtitleOnReject,
             )
         ) {
             AutoSyncStartAction.RUN -> Unit
@@ -74,7 +72,6 @@ internal class AutoSyncPlayerCoordinator(
                 fallbackAttach(url)
                 return
             }
-            AutoSyncStartAction.NO_OP -> return
         }
 
         Toast.makeText(
@@ -86,7 +83,7 @@ internal class AutoSyncPlayerCoordinator(
         val useLibass = getUseLibass()
         val subtitleHeaders = getSubtitleHeaders(url)
         if (!sidecar.canAttachAddonSubtitleViaSidecar(url, useLibass)) {
-            if (attachSubtitleOnReject) fallbackAttach(url)
+            fallbackAttach(url)
             Toast.makeText(
                 context,
                 "Auto Sync V2 failed: unsupported subtitle renderer",
@@ -108,7 +105,7 @@ internal class AutoSyncPlayerCoordinator(
                 },
             )
         ) {
-            if (attachSubtitleOnReject) fallbackAttach(url)
+            fallbackAttach(url)
             Toast.makeText(
                 context,
                 "Auto Sync V2 failed: subtitle could not be loaded",
@@ -122,7 +119,6 @@ internal class AutoSyncPlayerCoordinator(
         fun restoreOriginalSubtitleIfSidecarFailed() {
             if (
                 shouldRestoreOriginalSubtitle(
-                    attachSubtitleOnReject = attachSubtitleOnReject,
                     activeSidecarSubtitleKey = sidecar.activeSidecarSubtitleKey,
                 )
             ) {
