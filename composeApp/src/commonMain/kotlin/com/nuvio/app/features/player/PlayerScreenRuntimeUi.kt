@@ -509,7 +509,7 @@ private fun PlayerScreenRuntime.RenderPlayerModals(displayedPositionMs: Long) {
             subtitleAutoSyncState = SubtitleAutoSyncUiState()
             setSubtitleDelay(0)
             persistAddonSubtitlePreference(addon)
-            playerController?.setSubtitleUriWithAutoSync(addon.url)
+            playerController?.setSubtitleUriWithSelectedAutoSync(addon.url)
         },
         onFetchAddonSubtitles = { fetchAddonSubtitlesForActiveItem() },
         onSubtitleStyleChanged = PlayerSettingsRepository::setSubtitleStyle,
