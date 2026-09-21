@@ -571,13 +571,25 @@ internal object AutomaticSubtitleSync {
                         }
                     }
                 }
-                referenceTracks = orderReferenceProfiles(
-                    profiles.filter { profile ->
-                        profile.fullDialogue &&
-                            profile.cueCount >= MIN_FULL_DIALOGUE_CUES &&
-                            profile.spanMs >= MIN_INDEXED_REFERENCE_SPAN_MS
-                    },
-                ).map { it.track.copy(cues = it.track.cues.toList()) }
+                val hasNonForcedIndexedTrack =
+                    profiles.any { profile -> !isForcedReferenceTrack(profile.track) }
+                val eligibleProfiles = profiles.filter { profile ->
+                    profile.fullDialogueCandidate &&
+                        profile.cueCount >= MIN_FULL_DIALOGUE_CUES &&
+                        profile.spanMs >= MIN_INDEXED_REFERENCE_SPAN_MS
+                }
+                val selectedProfiles = if (hasNonForcedIndexedTrack) {
+                    eligibleProfiles.filter { profile -> profile.fullDialogue }
+                } else {
+                    eligibleProfiles.filter { profile -> isForcedReferenceTrack(profile.track) }
+                }
+                if (!hasNonForcedIndexedTrack && selectedProfiles.isNotEmpty()) {
+                    AutoSyncDebugLog.info {
+                        "using forced-only indexed reference fallback tracks=${selectedProfiles.size}"
+                    }
+                }
+                referenceTracks = orderReferenceProfiles(selectedProfiles)
+                    .map { it.track.copy(cues = it.track.cues.toList()) }
             } else {
                 AutoSyncDebugLog.info {
                     "indexed timeline unavailable; checking Media3 for a near-complete embedded timeline"
@@ -1732,6 +1744,8 @@ internal object AutomaticSubtitleSync {
         val targetSpan = referenceSpanMs(target).coerceAtLeast(1L)
         val started = SystemClock.elapsedRealtime()
         var lastSignature = ""
+        var sawNonForcedTrack = false
+        var forcedFallback: List<ReferenceProfile> = emptyList()
 
         while (true) {
             currentCoroutineContext().ensureActive()
@@ -1740,13 +1754,24 @@ internal object AutomaticSubtitleSync {
                 .map { track -> track.copy(cues = deduplicateReferenceCues(track.cues)) }
 
             val profiles = prepared.map(::buildReferenceProfile)
+            if (profiles.any { profile -> !isForcedReferenceTrack(profile.track) }) {
+                sawNonForcedTrack = true
+            }
+            val eligibleProfiles = profiles.filter { profile ->
+                profile.fullDialogueCandidate &&
+                    profile.cueCount >= MIN_LIVE_REFERENCE_CUES &&
+                    profile.spanMs.toDouble() / targetSpan.toDouble() >= MIN_LIVE_REFERENCE_SPAN_RATIO
+            }
             val ready = orderReferenceProfiles(
-                profiles.filter { profile ->
-                    profile.fullDialogue &&
-                        profile.cueCount >= MIN_LIVE_REFERENCE_CUES &&
-                        profile.spanMs.toDouble() / targetSpan.toDouble() >= MIN_LIVE_REFERENCE_SPAN_RATIO
-                },
+                eligibleProfiles.filter { profile -> profile.fullDialogue },
             )
+            forcedFallback = if (sawNonForcedTrack) {
+                emptyList()
+            } else {
+                orderReferenceProfiles(
+                    eligibleProfiles.filter { profile -> isForcedReferenceTrack(profile.track) },
+                )
+            }
 
             val signature = prepared.joinToString("|") { track ->
                 "${track.key}:g${track.generation}:${track.cues.size}:" +
@@ -1757,6 +1782,7 @@ internal object AutomaticSubtitleSync {
                 AutoSyncDebugLog.section { "LIVE MEDIA3 REFERENCE" }
                 AutoSyncDebugLog.info {
                     "tracks=${prepared.size} nearComplete=${ready.size} " +
+                        "forcedFallback=${forcedFallback.size} " +
                         "waited=${SystemClock.elapsedRealtime() - started}ms"
                 }
             }
@@ -1768,6 +1794,13 @@ internal object AutomaticSubtitleSync {
             val elapsedMs = SystemClock.elapsedRealtime() - started
             if (elapsedMs >= waitMs) break
             delay(minOf(LIVE_REFERENCE_POLL_MS, waitMs - elapsedMs))
+        }
+
+        if (!sawNonForcedTrack && forcedFallback.isNotEmpty()) {
+            AutoSyncDebugLog.info {
+                "using forced-only Media3 reference fallback tracks=${forcedFallback.size}"
+            }
+            return forcedFallback.map { it.track.copy(cues = it.track.cues.toList()) }
         }
 
         if (waitMs == 0L) {
@@ -1840,14 +1873,15 @@ internal object AutomaticSubtitleSync {
         val dialogueRatio =
             if (textCueCount == 0) 0.5 else dialogueCueCount.toDouble() / textCueCount
 
-        val fullDialogue =
+        val fullDialogueCandidate =
             cueCount >= MIN_FULL_DIALOGUE_CUES &&
                 spanMs >= MIN_FULL_DIALOGUE_CLASSIFICATION_SPAN_MS &&
-                !isForcedReferenceTrack(track) &&
                 !isCommentaryReferenceTrack(track) &&
                 !isDescriptiveReferenceTrack(track) &&
                 density >= MIN_FULL_DIALOGUE_DENSITY_PER_MINUTE &&
                 (textCueCount < 4 || dialogueRatio >= MIN_FULL_DIALOGUE_TEXT_RATIO)
+        val fullDialogue =
+            fullDialogueCandidate && !isForcedReferenceTrack(track)
 
         val dialogueRoleBonus =
             if ((track.roleFlags and C.ROLE_FLAG_TRANSCRIBES_DIALOG) != 0) 8.0 else 0.0
@@ -1867,6 +1901,7 @@ internal object AutomaticSubtitleSync {
             cueCount = cueCount,
             spanMs = spanMs,
             densityPerMinute = density,
+            fullDialogueCandidate = fullDialogueCandidate,
             fullDialogue = fullDialogue,
             rankingScore = rankingScore,
         )
@@ -2100,6 +2135,7 @@ internal object AutomaticSubtitleSync {
         val cueCount: Int,
         val spanMs: Long,
         val densityPerMinute: Double,
+        val fullDialogueCandidate: Boolean,
         val fullDialogue: Boolean,
         val rankingScore: Double,
     )
