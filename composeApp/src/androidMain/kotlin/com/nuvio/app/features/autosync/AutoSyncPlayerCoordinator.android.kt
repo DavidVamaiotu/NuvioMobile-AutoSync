@@ -7,7 +7,6 @@ import android.util.Log
 import android.widget.Toast
 import androidx.media3.common.C
 import androidx.media3.exoplayer.ExoPlayer
-import com.nuvio.app.features.player.AutoSyncSubtitleCandidate
 import com.nuvio.app.features.player.PlayerSubtitleUtils
 import com.nuvio.app.features.player.SidecarSubtitleController
 import kotlinx.coroutines.CoroutineScope
