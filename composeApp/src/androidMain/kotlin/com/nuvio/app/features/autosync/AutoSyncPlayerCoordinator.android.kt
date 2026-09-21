@@ -111,6 +111,12 @@ internal class AutoSyncPlayerCoordinator(
 
         val selectedSubtitleBodyDeferred = sidecar.rawBodyDeferredFor(url)
 
+        fun restoreOriginalSubtitleIfSidecarFailed() {
+            if (attachSubtitleOnReject && sidecar.activeSidecarSubtitleKey == null) {
+                fallbackAttach(url)
+            }
+        }
+
         onMimeTypeSelected(PlayerSubtitleUtils.mimeTypeFromUrl(url))
         player.trackSelectionParameters = player.trackSelectionParameters
             .buildUpon()
@@ -138,6 +144,7 @@ internal class AutoSyncPlayerCoordinator(
             }
 
             if (resolved == null) {
+                restoreOriginalSubtitleIfSidecarFailed()
                 if (AutoSyncDebugLog.ENABLED) {
                     AutoSyncDebugLog.finishAndCopy(
                         context = context,
@@ -192,6 +199,7 @@ internal class AutoSyncPlayerCoordinator(
             }
 
             if (!applied) {
+                restoreOriginalSubtitleIfSidecarFailed()
                 if (AutoSyncDebugLog.ENABLED) {
                     AutoSyncDebugLog.finishAndCopy(
                         context = context,
