@@ -58,11 +58,6 @@ internal fun PlayerScreenRuntime.BindAutoSyncRuntimeEffects() {
     }
 }
 
-internal fun PlayerScreenRuntime.runSelectedAddonAutoSync() {
-    selectedAddonSubtitle?.let { subtitle ->
-        playerController?.runSubtitleAutoSync(subtitle.url)
-    }
-}
 
 internal fun PlayerScreenRuntime.maybeAutoSyncRestoredSubtitleAtStart(url: String): Boolean {
     val controller = playerController ?: return false
