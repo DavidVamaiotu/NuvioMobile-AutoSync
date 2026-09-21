@@ -303,7 +303,15 @@ internal object EmbeddedSubtitleTimelineLoader {
                 "MKV index reject reason=no-subtitle-tracks tracksPosition=$tracksPosition " +
                     "requests=${stats.requests} bytes=${stats.bytesDownloaded}"
             }
-            return null
+            return IndexedEmbeddedTimeline(
+                tracks = emptyList(),
+                source = "matroska-no-subtitle-tracks",
+                bytesDownloaded = stats.bytesDownloaded,
+                rangeRequests = stats.requests,
+                loadMs = (System.nanoTime() - startedAtNs) / 1_000_000L,
+                skipLiveFallbackWait = true,
+                noSubtitleTracks = true,
+            )
         }
 
         AutoSyncDebugLog.info {
@@ -512,7 +520,15 @@ internal object EmbeddedSubtitleTimelineLoader {
             AutoSyncDebugLog.warn {
                 "MP4 index reject reason=no-text-tracks-in-moov"
             }
-            return null
+            return IndexedEmbeddedTimeline(
+                tracks = emptyList(),
+                source = "mp4-no-text-tracks",
+                bytesDownloaded = stats.bytesDownloaded,
+                rangeRequests = stats.requests,
+                loadMs = (System.nanoTime() - startedAtNs) / 1_000_000L,
+                skipLiveFallbackWait = true,
+                noSubtitleTracks = true,
+            )
         }
 
         val sampleTables = try {
@@ -1722,4 +1738,5 @@ internal data class IndexedEmbeddedTimeline(
     val rangeRequests: Int,
     val loadMs: Long,
     val skipLiveFallbackWait: Boolean = false,
+    val noSubtitleTracks: Boolean = false,
 )
