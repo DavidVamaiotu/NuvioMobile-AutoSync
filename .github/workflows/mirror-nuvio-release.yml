@@ -93,24 +93,65 @@ jobs:
           git remote remove upstream 2>/dev/null || true
           git remote add upstream https://github.com/NuvioMedia/NuvioMobile.git
 
+          git fetch upstream cmp-rewrite
           git fetch upstream \
             "refs/tags/$UPSTREAM_TAG:refs/tags/nuvio-$UPSTREAM_TAG"
 
-      - name: Merge official release
+      - name: Sync exact official release
         if: steps.version.outputs.already_exists == 'false' && (github.event_name != 'workflow_dispatch' || inputs.sync_official_release)
         env:
           UPSTREAM_TAG: ${{ steps.version.outputs.upstream_tag }}
         run: |
-          # Apply the official release as source changes only.
-          git merge --squash "refs/tags/nuvio-$UPSTREAM_TAG"
+          set -euo pipefail
 
-          # Keep this fork's own GitHub Actions workflows.
-          git restore --source=HEAD --staged --worktree -- .github/workflows
+          BASE_FILE=".github/nuvio-upstream-base"
+          RELEASE_COMMIT="$(git rev-parse "refs/tags/nuvio-$UPSTREAM_TAG^{commit}")"
 
-          if git diff --cached --quiet; then
-            echo "No release source changes to commit."
+          if [[ ! -f "$BASE_FILE" ]]; then
+            echo "Missing $BASE_FILE; refusing to guess the last synced upstream commit." >&2
+            exit 1
+          fi
+
+          UPSTREAM_BASE="$(tr -d '[:space:]' < "$BASE_FILE")"
+
+          if [[ -z "$UPSTREAM_BASE" ]]; then
+            echo "$BASE_FILE is empty." >&2
+            exit 1
+          fi
+
+          if ! git cat-file -e "$UPSTREAM_BASE^{commit}" 2>/dev/null; then
+            echo "Recorded upstream base $UPSTREAM_BASE is not available locally." >&2
+            exit 1
+          fi
+
+          if [[ "$UPSTREAM_BASE" == "$RELEASE_COMMIT" ]]; then
+            echo "Release $UPSTREAM_TAG is already synced."
+          elif git merge-base --is-ancestor "$RELEASE_COMMIT" "$UPSTREAM_BASE"; then
+            echo "Current AutoSync branch already contains $UPSTREAM_TAG via newer upstream state $UPSTREAM_BASE."
+          elif git merge-base --is-ancestor "$UPSTREAM_BASE" "$RELEASE_COMMIT"; then
+            echo "Applying release delta $UPSTREAM_BASE..$RELEASE_COMMIT"
+
+            git diff --binary --full-index "$UPSTREAM_BASE" "$RELEASE_COMMIT" -- \
+              . ':(exclude).github/workflows/**' > /tmp/nuvio-release.patch
+
+            if [[ -s /tmp/nuvio-release.patch ]]; then
+              git apply --3way --index /tmp/nuvio-release.patch
+            else
+              echo "Release delta only changed excluded fork-owned workflow files."
+            fi
+
+            printf '%s\n' "$RELEASE_COMMIT" > "$BASE_FILE"
+            git add "$BASE_FILE"
+
+            if git diff --cached --quiet; then
+              echo "No release source changes to commit."
+            else
+              git commit -m "Sync Nuvio $UPSTREAM_TAG"
+            fi
           else
-            git commit -m "Sync Nuvio $UPSTREAM_TAG"
+            echo "Recorded upstream base $UPSTREAM_BASE and release $RELEASE_COMMIT have diverged." >&2
+            echo "Refusing an unsafe automatic release sync." >&2
+            exit 1
           fi
 
       - name: Read exact Nuvio version code
