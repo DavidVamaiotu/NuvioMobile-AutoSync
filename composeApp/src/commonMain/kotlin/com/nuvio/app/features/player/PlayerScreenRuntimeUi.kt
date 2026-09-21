@@ -518,7 +518,6 @@ private fun PlayerScreenRuntime.RenderPlayerModals(displayedPositionMs: Long) {
         onAutoSyncCapture = { captureSubtitleAutoSyncTime() },
         onAutoSyncCueSelected = { cue -> applySubtitleAutoSyncCue(cue) },
         onAutoSyncReload = { loadSubtitleAutoSyncCues(force = true) },
-        onAutomaticAutoSync = { runSelectedAddonAutoSync() },
         onSubtitleModalDismissed = { showSubtitleModal = false },
         showVideoSettingsModal = showVideoSettingsModal,
         playerSettings = playerSettingsUiState,
