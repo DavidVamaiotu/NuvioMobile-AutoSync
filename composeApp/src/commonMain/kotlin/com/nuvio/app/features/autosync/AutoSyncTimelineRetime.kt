@@ -17,7 +17,9 @@ import kotlin.time.TimeSource
  * near an embedded subtitle timeline. This aligner then walks both ordered cue sequences and
  * resolves local 1:1 / 1:2 / 2:1 / 1:3 / 3:1 / 2:2 groupings plus skips. Matched add-on groups
  * are locally anchored to embedded starts while preserving the add-on cue durations; unmatched
- * add-on cues retain the coarse affine timing.
+ * add-on cues retain the coarse affine timing. For validated delay-only matches, this DP remains
+ * the structural safety gate while final playback keeps the external timeline intact and applies
+ * only the single validated offset.
  *
  * This file is deliberately commonMain and player-independent so the algorithm can be unit-tested
  * without Android, Media3, networking, or playback state.
@@ -237,7 +239,10 @@ internal object AutoSyncTimelineRetimer {
                 validationMs += elapsedMs(fastValidationMark)
                 if (validatedFast.confident) {
                     reportTimings("fast-delay")
-                    return validatedFast
+                    return validatedFast.withValidatedDelayOnlyCues(
+                        target = target,
+                        alignment = fastDelayOnly,
+                    )
                 }
             }
         }
@@ -303,7 +308,14 @@ internal object AutoSyncTimelineRetimer {
         )
         validationMs += elapsedMs(validationMark)
         reportTimings(if (delayOnly != null) "delay-only" else "activity")
-        return finalized
+        return if (finalized.confident && delayOnly != null) {
+            finalized.withValidatedDelayOnlyCues(
+                target = target,
+                alignment = delayOnly,
+            )
+        } else {
+            finalized
+        }
     }
 
     private fun finalizeDiscoveredResult(
@@ -844,21 +856,39 @@ internal object AutoSyncTimelineRetimer {
         )
     }
 
+    private fun buildUniformDelayCues(
+        target: List<SubtitleSyncCue>,
+        offsetMs: Long,
+    ): List<AutoSyncRetimedCue> = target.map { cue ->
+        val start = (cue.startTimeMs + offsetMs).coerceAtLeast(0L)
+        val end = (cue.endTimeMs + offsetMs).coerceAtLeast(start + 1L)
+        AutoSyncRetimedCue(
+            originalStartTimeMs = cue.startTimeMs,
+            originalEndTimeMs = cue.endTimeMs,
+            startTimeMs = start,
+            endTimeMs = end,
+        )
+    }
+
+    private fun AutoSyncTimelineRetimeResult.withValidatedDelayOnlyCues(
+        target: List<SubtitleSyncCue>,
+        alignment: AutoSyncDelayOnlyAlignment,
+    ): AutoSyncTimelineRetimeResult =
+        copy(
+            cues = buildUniformDelayCues(
+                target = target,
+                offsetMs = alignment.offsetMs.roundToLong(),
+            ),
+        )
+
     internal fun buildDelayOnlyTimeline(
         target: List<SubtitleSyncCue>,
         alignment: AutoSyncDelayOnlyAlignment,
     ): AutoSyncTimelineRetimeResult {
-        val offsetMs = alignment.offsetMs.roundToLong()
-        val retimed = target.map { cue ->
-            val start = (cue.startTimeMs + offsetMs).coerceAtLeast(0L)
-            val end = (cue.endTimeMs + offsetMs).coerceAtLeast(start + 1L)
-            AutoSyncRetimedCue(
-                originalStartTimeMs = cue.startTimeMs,
-                originalEndTimeMs = cue.endTimeMs,
-                startTimeMs = start,
-                endTimeMs = end,
-            )
-        }
+        val retimed = buildUniformDelayCues(
+            target = target,
+            offsetMs = alignment.offsetMs.roundToLong(),
+        )
 
         return AutoSyncTimelineRetimeResult(
             cues = retimed,

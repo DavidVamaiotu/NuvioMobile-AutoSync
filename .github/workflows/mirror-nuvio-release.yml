@@ -61,9 +61,38 @@ jobs:
           fi
 
           RELEASE_SUFFIX="${{ inputs.release_suffix }}"
-          if [[ -z "$RELEASE_SUFFIX" ]]; then
-            RELEASE_SUFFIX="autosync.1"
+
+          # A workflow-file push is an explicit fork release trigger. Pick the
+          # next revision for the current upstream tag so the new fork code is
+          # actually published without changing scheduled mirror behavior.
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            PREFIX="${UPSTREAM_TAG}-autosync."
+            BASE_TAG="${UPSTREAM_TAG}-autosync"
+            MAX_REVISION=0
+            BASE_EXISTS=false
+
+            while IFS= read -r TAG; do
+              if [[ "$TAG" == "$BASE_TAG" ]]; then
+                BASE_EXISTS=true
+              elif [[ "$TAG" == "$PREFIX"* ]]; then
+                REVISION="${TAG#"$PREFIX"}"
+                if [[ "$REVISION" =~ ^[0-9]+$ ]] && (( REVISION > MAX_REVISION )); then
+                  MAX_REVISION="$REVISION"
+                fi
+              fi
+            done < <(
+              gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100"                 --jq '.[].tag_name'
+            )
+
+            if [[ "$BASE_EXISTS" == "true" || "$MAX_REVISION" -gt 0 ]]; then
+              RELEASE_SUFFIX="autosync.$(( MAX_REVISION + 1 ))"
+            else
+              RELEASE_SUFFIX="autosync"
+            fi
+          elif [[ -z "$RELEASE_SUFFIX" ]]; then
+            RELEASE_SUFFIX="autosync"
           fi
+
           AUTOSYNC_TAG="${UPSTREAM_TAG}-${RELEASE_SUFFIX}"
 
           echo "upstream_tag=$UPSTREAM_TAG" >> "$GITHUB_OUTPUT"
