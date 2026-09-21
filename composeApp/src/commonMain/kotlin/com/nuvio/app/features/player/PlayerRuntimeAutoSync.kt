@@ -61,8 +61,9 @@ internal fun PlayerScreenRuntime.BindAutoSyncRuntimeEffects() {
 
 internal fun PlayerScreenRuntime.maybeAutoSyncRestoredSubtitleAtStart(url: String): Boolean {
     val controller = playerController ?: return false
-    val videoKey = activeVideoId?.takeIf { it.isNotBlank() } ?: activeSourceUrl
-    if (!AutoSyncPreferencesRepository.claimStartupRun(hashCode(), videoKey)) return false
+    if (!AutoSyncPreferencesRepository.claimStartupRun(hashCode(), activePlaybackIdentity)) {
+        return false
+    }
     controller.setSubtitleUriWithAutoSync(url)
     return true
 }
@@ -82,8 +83,9 @@ internal fun PlayerScreenRuntime.maybeAutoSyncPreferredSubtitleAtStart(
     }
 
     val controller = playerController ?: return false
-    val videoKey = activeVideoId?.takeIf { it.isNotBlank() } ?: activeSourceUrl
-    if (!AutoSyncPreferencesRepository.claimStartupRun(hashCode(), videoKey)) return false
+    if (!AutoSyncPreferencesRepository.claimStartupRun(hashCode(), activePlaybackIdentity)) {
+        return false
+    }
     controller.setSubtitleUriWithAutoSync(subtitle.url)
     return true
 }
