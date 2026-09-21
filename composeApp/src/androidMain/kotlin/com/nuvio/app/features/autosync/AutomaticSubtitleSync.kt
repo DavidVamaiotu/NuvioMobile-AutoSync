@@ -1270,19 +1270,21 @@ internal object AutomaticSubtitleSync {
                 return@supervisorScope null
             }
 
+            val resolvedWinningFamily = winningFamily
+            val resolvedWinningMatch = winningMatch
             val winningMember =
-                winningFamily.members.minByOrNull { it.index }
-                    ?: winningFamily.representative
+                resolvedWinningFamily.members.minByOrNull { it.index }
+                    ?: resolvedWinningFamily.representative
             val memberMatch =
-                if (winningMember === winningFamily.representative) {
-                    winningMatch
+                if (winningMember === resolvedWinningFamily.representative) {
+                    resolvedWinningMatch
                 } else {
                     reuseShiftEquivalentMatch(
-                        match = winningMatch,
+                        match = resolvedWinningMatch,
                         representativeTarget =
-                            winningFamily.representative.loaded.cues,
+                            resolvedWinningFamily.representative.loaded.cues,
                         target = winningMember.loaded.cues,
-                    ) ?: winningMatch
+                    ) ?: resolvedWinningMatch
                 }
 
             if (!selectedResolved) {
