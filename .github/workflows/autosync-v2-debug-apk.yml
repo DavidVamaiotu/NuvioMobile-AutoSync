@@ -55,6 +55,7 @@ jobs:
           ./gradlew :composeApp:testAndroidHostTest -Pnuvio.android.distribution=full \
             --tests "com.nuvio.app.features.autosync.AutoSyncTimelineRetimeTest" \
             --tests "com.nuvio.app.features.autosync.AutoSyncNetworkCancellationTest" \
+            --tests "com.nuvio.app.features.autosync.AutoSyncIntegrationPolicyTest" \
             --stacktrace
 
       - name: Build full debug APK
