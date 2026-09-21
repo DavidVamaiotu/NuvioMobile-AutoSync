@@ -2,11 +2,6 @@ name: Sync Nuvio Upstream
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - subtitle-autosync
-    paths:
-      - .github/workflows/sync-upstream.yml
   schedule:
     - cron: "17 */6 * * *"
 
