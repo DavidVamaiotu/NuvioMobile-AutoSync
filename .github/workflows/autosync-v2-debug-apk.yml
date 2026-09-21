@@ -1,0 +1,111 @@
+name: Build AutoSync V2 Debug APK
+
+on:
+  push:
+    branches:
+      - autosync-v2-timeline
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build AutoSync V2 full debug APK
+    runs-on: ubuntu-latest
+
+    env:
+      NUVIO_SUPABASE_URL: ${{ secrets.NUVIO_SUPABASE_URL }}
+      NUVIO_SUPABASE_ANON_KEY: ${{ secrets.NUVIO_SUPABASE_ANON_KEY }}
+      NUVIO_SUPABASE_FALLBACK_URL: ${{ secrets.NUVIO_SUPABASE_FALLBACK_URL }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Verify stable AutoSync debug signing key
+        run: |
+          keytool -list \
+            -keystore .github/keystores/autosync-debug.keystore \
+            -storepass android \
+            -alias androiddebugkey >/dev/null
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Create local properties
+        run: |
+          cat > local.properties <<'PROPS'
+          SIMKL_CLIENT_ID=a0b848cdb58e2e743c8efbce94edc7ca5124cc66f6f793bb91ee1f0470948096
+          SIMKL_REDIRECT_URI=nuvio://auth/simkl
+          SIMKL_APP_NAME=nuvio
+          INTRODB_API_URL=https://api.introdb.app/
+          IMDB_RATINGS_API_BASE_URL=https://seriesgraph.com/
+          IMDB_TAPFRAME_API_BASE_URL=https://imdb.tapframe.space/
+          PROPS
+
+      - name: Run AutoSync V2 host tests
+        run: |
+          ./gradlew :composeApp:testAndroidHostTest -Pnuvio.android.distribution=full \
+            --tests "com.nuvio.app.features.autosync.AutoSyncTimelineRetimeTest" \
+            --tests "com.nuvio.app.features.autosync.AutoSyncNetworkCancellationTest" \
+            --tests "com.nuvio.app.features.autosync.AutoSyncIntegrationPolicyTest" \
+            --stacktrace
+
+      - name: Build full debug APK
+        run: ./gradlew :androidApp:assembleFullDebug --stacktrace
+
+      - name: Verify APK update identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="$(find androidApp/build/outputs/apk/full/debug -maxdepth 1 -type f -name '*.apk' | head -n 1)"
+          test -n "$APK"
+
+          BUILD_TOOLS_DIR="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          APKSIGNER="$BUILD_TOOLS_DIR/apksigner"
+          AAPT="$BUILD_TOOLS_DIR/aapt"
+
+          test -x "$APKSIGNER"
+          test -x "$AAPT"
+
+          KEY_SHA="$(
+            keytool -list -v               -keystore .github/keystores/autosync-debug.keystore               -storepass android               -alias androiddebugkey |
+            sed -n 's/^[[:space:]]*SHA256: //p' |
+            head -n 1 |
+            tr -d ':' |
+            tr '[:upper:]' '[:lower:]'
+          )"
+          APK_CERT_OUTPUT="$("$APKSIGNER" verify --print-certs "$APK" 2>&1)"
+          echo "$APK_CERT_OUTPUT"
+          APK_SHA="$(
+            printf '%s\n' "$APK_CERT_OUTPUT" |
+            sed -n 's/.*certificate SHA-256 digest: //p' |
+            head -n 1 |
+            tr -d ':' |
+            tr '[:upper:]' '[:lower:]'
+          )"
+
+          echo "Expected signer SHA-256: $KEY_SHA"
+          echo "APK signer SHA-256:      $APK_SHA"
+          test -n "$KEY_SHA"
+          test "$APK_SHA" = "$KEY_SHA"
+
+          BADGING="$("$AAPT" dump badging "$APK" | head -n 1)"
+          echo "$BADGING"
+          echo "$BADGING" | grep -q "package: name='com.nuviodebug.com'"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: NuvioMobile-AutoSync-V2-debug
+          path: androidApp/build/outputs/apk/full/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7

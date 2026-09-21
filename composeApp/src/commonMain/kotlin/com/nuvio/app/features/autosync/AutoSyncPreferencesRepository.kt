@@ -16,25 +16,34 @@ internal object AutoSyncPreferencesRepository {
     val preferredSubtitleAutoSyncOnStart: StateFlow<Boolean> =
         _preferredSubtitleAutoSyncOnStart.asStateFlow()
 
+    private val _aggressiveMode = MutableStateFlow(true)
+    val aggressiveMode: StateFlow<Boolean> = _aggressiveMode.asStateFlow()
+
     private val _debugLogsEnabled = MutableStateFlow(false)
     val debugLogsEnabled: StateFlow<Boolean> = _debugLogsEnabled.asStateFlow()
 
     private var loadedProfileId: Int? = null
     private var loadPersistedValue: (() -> Boolean?)? = null
     private var savePersistedValue: ((Boolean) -> Unit)? = null
+    private var loadAggressiveModePersistedValue: (() -> Boolean?)? = null
+    private var saveAggressiveModePersistedValue: ((Boolean) -> Unit)? = null
     private var loadDebugLogsPersistedValue: (() -> Boolean?)? = null
     private var saveDebugLogsPersistedValue: ((Boolean) -> Unit)? = null
     private var lastStartupSessionKey: Int? = null
-    private var lastStartupVideoKey: String? = null
+    private var lastStartupPlaybackKey: String? = null
 
     fun installPersistence(
         load: () -> Boolean?,
         save: (Boolean) -> Unit,
+        loadAggressiveMode: () -> Boolean? = { null },
+        saveAggressiveMode: (Boolean) -> Unit = {},
         loadDebugLogs: () -> Boolean? = { null },
         saveDebugLogs: (Boolean) -> Unit = {},
     ) {
         loadPersistedValue = load
         savePersistedValue = save
+        loadAggressiveModePersistedValue = loadAggressiveMode
+        saveAggressiveModePersistedValue = saveAggressiveMode
         loadDebugLogsPersistedValue = loadDebugLogs
         saveDebugLogsPersistedValue = saveDebugLogs
         loadedProfileId = null
@@ -45,10 +54,11 @@ internal object AutoSyncPreferencesRepository {
         if (loadedProfileId == profileId) return
 
         _preferredSubtitleAutoSyncOnStart.value = loadPersistedValue?.invoke() ?: false
+        _aggressiveMode.value = loadAggressiveModePersistedValue?.invoke() ?: true
         _debugLogsEnabled.value = loadDebugLogsPersistedValue?.invoke() ?: false
         loadedProfileId = profileId
         lastStartupSessionKey = null
-        lastStartupVideoKey = null
+        lastStartupPlaybackKey = null
     }
 
     fun setPreferredSubtitleAutoSyncOnStart(enabled: Boolean) {
@@ -58,6 +68,13 @@ internal object AutoSyncPreferencesRepository {
         savePersistedValue?.invoke(enabled)
     }
 
+    fun setAggressiveMode(enabled: Boolean) {
+        ensureLoaded()
+        if (_aggressiveMode.value == enabled) return
+        _aggressiveMode.value = enabled
+        saveAggressiveModePersistedValue?.invoke(enabled)
+    }
+
     fun setDebugLogsEnabled(enabled: Boolean) {
         ensureLoaded()
         if (_debugLogsEnabled.value == enabled) return
@@ -65,13 +82,13 @@ internal object AutoSyncPreferencesRepository {
         saveDebugLogsPersistedValue?.invoke(enabled)
     }
 
-    fun claimStartupRun(sessionKey: Int, videoKey: String): Boolean {
+    fun claimStartupRun(sessionKey: Int, playbackKey: String): Boolean {
         ensureLoaded()
         if (!_preferredSubtitleAutoSyncOnStart.value) return false
-        if (lastStartupSessionKey == sessionKey && lastStartupVideoKey == videoKey) return false
+        if (lastStartupSessionKey == sessionKey && lastStartupPlaybackKey == playbackKey) return false
 
         lastStartupSessionKey = sessionKey
-        lastStartupVideoKey = videoKey
+        lastStartupPlaybackKey = playbackKey
         return true
     }
 }

@@ -54,7 +54,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.addons.enabledAddons
-import com.nuvio.app.features.autosync.AutoSyncPreferencesRepository
 import com.nuvio.app.features.player.AndroidLibmpvVideoOutput
 import com.nuvio.app.features.player.AndroidPlaybackEngine
 import com.nuvio.app.features.player.AudioLanguageOption
@@ -324,14 +323,6 @@ private fun PlaybackSettingsSection(
     var p2pCacheClearFailed by remember { mutableStateOf(false) }
     val pluginsEnabled = AppFeaturePolicy.pluginsEnabled
     val autoPlayPlayerSettings by PlayerSettingsRepository.uiState.collectAsStateWithLifecycle()
-    val preferredSubtitleAutoSyncOnStart by remember {
-        AutoSyncPreferencesRepository.ensureLoaded()
-        AutoSyncPreferencesRepository.preferredSubtitleAutoSyncOnStart
-    }.collectAsStateWithLifecycle()
-    val autoSyncDebugLogsEnabled by remember {
-        AutoSyncPreferencesRepository.ensureLoaded()
-        AutoSyncPreferencesRepository.debugLogsEnabled
-    }.collectAsStateWithLifecycle()
     val p2pSettings by remember {
         P2pSettingsRepository.ensureLoaded()
         P2pSettingsRepository.uiState
@@ -488,11 +479,6 @@ private fun PlaybackSettingsSection(
             val audioLanguageEnabled = !isExternalPlayer
             val subtitleLanguageEnabled = !isExternalPlayer || isForwardingSubtitles
             val otherSubtitleOptionsEnabled = !isExternalPlayer
-            val autoSyncPreferredLanguageAvailable =
-                preferredSubtitleLanguage.isNotBlank() &&
-                    preferredSubtitleLanguage != SubtitleLanguageOption.NONE &&
-                    preferredSubtitleLanguage != SubtitleLanguageOption.FORCED
-
             SettingsGroup(isTablet = isTablet) {
                 SettingsNavigationRow(
                     title = stringResource(Res.string.settings_playback_preferred_audio_language),
@@ -535,26 +521,11 @@ private fun PlaybackSettingsSection(
                     isTablet = isTablet,
                     onClick = { showSecondarySubtitleDialog = true },
                 )
-                if (!isIos) {
-                    SettingsGroupDivider(isTablet = isTablet)
-                    SettingsSwitchRow(
-                        title = stringResource(Res.string.settings_playback_subtitle_auto_sync),
-                        description = stringResource(Res.string.settings_playback_subtitle_auto_sync_description),
-                        checked = preferredSubtitleAutoSyncOnStart,
-                        enabled = otherSubtitleOptionsEnabled && autoSyncPreferredLanguageAvailable,
-                        isTablet = isTablet,
-                        onCheckedChange = AutoSyncPreferencesRepository::setPreferredSubtitleAutoSyncOnStart,
-                    )
-                    SettingsGroupDivider(isTablet = isTablet)
-                    SettingsSwitchRow(
-                        title = stringResource(Res.string.settings_playback_auto_sync_debug_logs),
-                        description = stringResource(Res.string.settings_playback_auto_sync_debug_logs_description),
-                        checked = autoSyncDebugLogsEnabled,
-                        enabled = otherSubtitleOptionsEnabled,
-                        isTablet = isTablet,
-                        onCheckedChange = AutoSyncPreferencesRepository::setDebugLogsEnabled,
-                    )
-                }
+                AutoSyncPlaybackSettingsRows(
+                    isTablet = isTablet,
+                    enabled = otherSubtitleOptionsEnabled,
+                    preferredSubtitleLanguage = preferredSubtitleLanguage,
+                )
                 SettingsGroupDivider(isTablet = isTablet)
                 SettingsSwitchRow(
                     title = stringResource(Res.string.settings_playback_subtitle_strip_sdh),

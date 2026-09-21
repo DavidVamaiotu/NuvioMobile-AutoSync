@@ -108,6 +108,8 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi() {
     val gestureCallbacks = rememberSurfaceGestureCallbacks()
     val playbackGesturesEnabled = initialLoadCompleted && errorMessage == null
 
+    BindAutoSyncRuntimeEffects()
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -164,26 +166,7 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi() {
                 onControllerReady = { controller ->
                     playerController = controller
                     playerControllerSourceUrl = activeSourceUrl
-                    controller.setAutoSyncAppliedListener { subtitleUrl, delayMs ->
-                        val appliedSubtitle = addonSubtitles.firstOrNull { it.url == subtitleUrl }
-                        selectedAddonSubtitleId = appliedSubtitle?.selectionKey ?: subtitleUrl
-                        selectedSubtitleIndex = -1
-                        useCustomSubtitles = true
-                        preferredSubtitleSelectionApplied = true
-                        if (appliedSubtitle != null) {
-                            persistAddonSubtitlePreference(appliedSubtitle)
-                        }
-
-                        val appliedDelayMs = delayMs.coerceIn(
-                            SUBTITLE_DELAY_MIN_MS,
-                            SUBTITLE_DELAY_MAX_MS,
-                        )
-                        subtitleDelayMs = appliedDelayMs
-                        PlayerTrackPreferenceStorage.saveSubtitleDelayMs(
-                            playbackSession.videoId,
-                            appliedDelayMs,
-                        )
-                    }
+                    configureAutoSyncController(controller)
                 },
                 onSnapshot = { snapshot ->
                     updatePlaybackSnapshot(snapshot)
@@ -525,8 +508,10 @@ private fun PlayerScreenRuntime.RenderPlayerModals(displayedPositionMs: Long) {
             selectedSubtitleIndex = -1
             useCustomSubtitles = true
             preferredSubtitleSelectionApplied = true
+            subtitleAutoSyncState = SubtitleAutoSyncUiState()
+            setSubtitleDelay(0)
             persistAddonSubtitlePreference(addon)
-            playerController?.setSubtitleUri(addon.url)
+            playerController?.setSubtitleUriWithSelectedAutoSync(addon.url)
         },
         onFetchAddonSubtitles = { fetchAddonSubtitlesForActiveItem() },
         onSubtitleStyleChanged = PlayerSettingsRepository::setSubtitleStyle,
@@ -535,11 +520,6 @@ private fun PlayerScreenRuntime.RenderPlayerModals(displayedPositionMs: Long) {
         onAutoSyncCapture = { captureSubtitleAutoSyncTime() },
         onAutoSyncCueSelected = { cue -> applySubtitleAutoSyncCue(cue) },
         onAutoSyncReload = { loadSubtitleAutoSyncCues(force = true) },
-        onAutomaticAutoSync = {
-            selectedAddonSubtitle?.let { subtitle ->
-                playerController?.runSubtitleAutoSync(subtitle.url)
-            }
-        },
         onSubtitleModalDismissed = { showSubtitleModal = false },
         showVideoSettingsModal = showVideoSettingsModal,
         playerSettings = playerSettingsUiState,

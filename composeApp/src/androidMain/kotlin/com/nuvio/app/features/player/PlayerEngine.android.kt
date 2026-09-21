@@ -12,7 +12,6 @@ import android.graphics.Typeface
 import android.os.Build
 import android.os.SystemClock
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
-import android.widget.Toast
 import android.util.AttributeSet
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -66,9 +65,11 @@ import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
 import androidx.media3.ui.CaptionStyleCompat
 import com.nuvio.app.R
-import com.nuvio.app.features.autosync.AutoSyncDebugLog
+import com.nuvio.app.features.autosync.AutoSyncCandidateScope
 import com.nuvio.app.features.autosync.AutoSyncExtractorsFactory
-import com.nuvio.app.features.autosync.AutomaticSubtitleSync
+import com.nuvio.app.features.autosync.AutoSyncPlayerController
+import com.nuvio.app.features.autosync.AutoSyncPlayerCoordinator
+import com.nuvio.app.features.autosync.AutoSyncSubtitleCandidate
 import com.nuvio.app.features.streams.normalizeStreamType
 import `is`.xyz.mpv.BaseMPVView
 import `is`.xyz.mpv.MPV
@@ -293,10 +294,13 @@ private fun ExoPlayerSurface(
     var probeAttempted by remember(playerSourceKey) { mutableStateOf(false) }
 
     val extractorsFactory = remember(sourceUrl, sourceAudioUrl) {
+        val playbackExtractorsFactory = DefaultExtractorsFactory()
+            .setTsExtractorFlags(
+                DefaultTsPayloadReaderFactory.FLAG_ENABLE_HDMV_DTS_AUDIO_STREAMS,
+            )
+            .setTsExtractorTimestampSearchBytes(1500 * TsExtractor.TS_PACKET_SIZE)
         AutoSyncExtractorsFactory(
-            delegate = DefaultExtractorsFactory()
-                .setTsExtractorFlags(DefaultTsPayloadReaderFactory.FLAG_ENABLE_HDMV_DTS_AUDIO_STREAMS)
-                .setTsExtractorTimestampSearchBytes(1500 * TsExtractor.TS_PACKET_SIZE),
+            delegate = playbackExtractorsFactory,
             sourceKey = sourceUrl,
         )
     }
@@ -489,11 +493,6 @@ private fun ExoPlayerSurface(
     val pendingSubtitleTrackIndex = remember { mutableListOf<Int>() }
     val pendingAudioTrackSelection = remember { mutableListOf<TrackSelectionSnapshot>() }
     var subtitleSelectionJob by remember { mutableStateOf<Job?>(null) }
-    var automaticSubtitleSyncJob by remember(playerSourceKey) { mutableStateOf<Job?>(null) }
-    var autoSyncApplyingSubtitleUrl by remember(playerSourceKey) { mutableStateOf<String?>(null) }
-    var autoSyncAppliedListener by remember {
-        mutableStateOf<((subtitleUrl: String, delayMs: Int) -> Unit)?>(null)
-    }
     val isInPip = rememberIsInPictureInPicture()
     val pipSubtitleScale by rememberUpdatedState(if (isInPip) 0.4f else 1.0f)
 
@@ -502,6 +501,31 @@ private fun ExoPlayerSurface(
             scope = coroutineScope,
             getPlayer = { exoPlayer },
             getSubtitleDelayMs = { latestSubtitleDelayMs.value },
+        )
+    }
+
+    val latestAutoSyncExternalSubtitles = rememberUpdatedState(externalSubtitles)
+    val latestAutoSyncUseLibass = rememberUpdatedState(useLibass)
+    val latestAutoSyncPreferredLanguage =
+        rememberUpdatedState(playerSettings.preferredSubtitleLanguage)
+    val autoSyncCoordinator = remember(playerSourceKey, exoPlayer, sidecarController, coroutineScope) {
+        AutoSyncPlayerCoordinator(
+            context = context,
+            scope = coroutineScope,
+            player = exoPlayer,
+            sidecar = sidecarController,
+            sourceUrl = sourceUrl,
+            sourceHeaders = sanitizedSourceHeaders,
+            getSubtitleHeaders = { subtitleUrl ->
+                latestAutoSyncExternalSubtitles.value
+                    .firstOrNull { it.url == subtitleUrl }
+                    ?.headers
+                    .orEmpty()
+            },
+            getUseLibass = { latestAutoSyncUseLibass.value },
+            getPreferredLanguage = { latestAutoSyncPreferredLanguage.value },
+            onMimeTypeSelected = { selectedExternalSubtitleMimeType = it },
+            onSubtitleDelayChanged = { subtitleDelayMs = it },
         )
     }
 
@@ -683,8 +707,7 @@ private fun ExoPlayerSurface(
             exoPlayer.removeListener(listener)
             playerViewRef?.keepScreenOn = false
             subtitleSelectionJob?.cancel()
-            automaticSubtitleSyncJob?.cancel()
-            autoSyncAppliedListener = null
+            autoSyncCoordinator.dispose()
             sidecarController.stopSidecarAddonSubtitle(clearView = true)
         }
     }
@@ -722,7 +745,7 @@ private fun ExoPlayerSurface(
 
     LaunchedEffect(exoPlayer) {
         onControllerReady(
-            object : PlayerEngineController {
+            object : PlayerEngineController, AutoSyncPlayerController {
                 override fun play() {
                     exoPlayer.playWhenReady = true
                     exoPlayer.play()
@@ -783,7 +806,7 @@ private fun ExoPlayerSurface(
 
                 override fun selectSubtitleTrack(index: Int) {
                     Log.d(TAG, "selectSubtitleTrack: index=$index")
-                    automaticSubtitleSyncJob?.cancel()
+                    autoSyncCoordinator.cancel()
                     sidecarController.stopSidecarAddonSubtitle(clearView = true)
                     if (index < 0) {
                         Log.d(TAG, "selectSubtitleTrack: disabling text tracks")
@@ -802,34 +825,30 @@ private fun ExoPlayerSurface(
                     exoPlayer.logCurrentTracks("after selectSubtitleTrack")
                 }
 
+                override fun setAutoSyncSubtitleCandidates(
+                    candidates: List<AutoSyncSubtitleCandidate>,
+                ) = autoSyncCoordinator.setCandidates(candidates)
+
                 override fun setSubtitleUri(url: String) {
                     Log.d(TAG, "setSubtitleUri: url=$url")
                     subtitleSelectionJob?.cancel()
+                    autoSyncCoordinator.cancel()
 
-                    val isAutoSyncRecommendation = autoSyncApplyingSubtitleUrl == url
-                    if (isAutoSyncRecommendation) {
-                        autoSyncApplyingSubtitleUrl = null
-                    } else {
-                        automaticSubtitleSyncJob?.cancel()
-                    }
-
-                    if (sidecarController.canAttachAddonSubtitleViaSidecar(url, useLibass)) {
-                        Log.d(TAG, "setSubtitleUri: using buffer-preserving sidecar for url=$url")
-                        val headers = externalSubtitles.firstOrNull { it.url == url }?.headers.orEmpty()
-                        val attached = sidecarController.startSidecarAddonSubtitle(
+                    val sidecarHeaders =
+                        externalSubtitles.firstOrNull { it.url == url }?.headers.orEmpty()
+                    if (
+                        tryAttachExternalSubtitleSidecar(
+                            player = exoPlayer,
+                            sidecar = sidecarController,
                             url = url,
-                            headers = headers,
+                            headers = sidecarHeaders,
                             useLibass = useLibass,
+                            onMimeTypeSelected = { selectedExternalSubtitleMimeType = it },
                         )
-                        if (attached) {
-                            selectedExternalSubtitleMimeType = PlayerSubtitleUtils.mimeTypeFromUrl(url)
-                            exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
-                                .buildUpon()
-                                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-                                .build()
-                            return
-                        }
+                    ) {
+                        return
                     }
+
                     sidecarController.stopSidecarAddonSubtitle(clearView = true)
                     subtitleSelectionJob = coroutineScope.launch {
                         val currentPosition = exoPlayer.currentPosition
@@ -838,9 +857,7 @@ private fun ExoPlayerSurface(
                             Log.e(TAG, "setSubtitleUri: currentMediaItem is null, aborting")
                             return@launch
                         }
-                        preserveAudioSelectionForReload(
-                            if (isAutoSyncRecommendation) "AutoSync subtitle switch" else "setSubtitleUri",
-                        )
+                        preserveAudioSelectionForReload("setSubtitleUri")
                         val resolvedMime = PlayerSubtitleUtils.mimeTypeFromUrl(url)
                         selectedExternalSubtitleMimeType = resolvedMime
                         Log.d(TAG, "setSubtitleUri: currentPosition=$currentPosition, wasPlaying=$wasPlaying")
@@ -857,10 +874,15 @@ private fun ExoPlayerSurface(
                             .setSubtitleConfigurations(listOf(subtitleConfig))
                             .build()
                         Log.d(TAG, "setSubtitleUri: newMediaItem subtitleConfigs count=${newMediaItem.localConfiguration?.subtitleConfigurations?.size}")
+                        val currentTextFlags =
+                            exoPlayer.trackSelectionParameters.ignoredTextSelectionFlags
                         exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
                             .buildUpon()
                             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
                             .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                            .setIgnoredTextSelectionFlags(
+                                currentTextFlags and C.SELECTION_FLAG_DEFAULT.inv()
+                            )
                             .setPreferredTextRoleFlags(C.ROLE_FLAG_SUBTITLE)
                             .build()
                         Log.d(TAG, "setSubtitleUri: track params set before prepare, textDisabled=${exoPlayer.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)}")
@@ -871,121 +893,26 @@ private fun ExoPlayerSurface(
                     }
                 }
 
-                override fun runSubtitleAutoSync(url: String) {
-                    automaticSubtitleSyncJob?.cancel()
-                    val subtitleHeaders = externalSubtitles.firstOrNull { it.url == url }?.headers.orEmpty()
-                    automaticSubtitleSyncJob = coroutineScope.launch {
-                        Toast.makeText(
-                            context,
-                            "Auto Sync: waiting for embedded subtitles…",
-                            Toast.LENGTH_SHORT,
-                        ).show()
-                        val recommendation = AutomaticSubtitleSync.findBestSubtitleRecommendation(
-                            sourceKey = sourceUrl,
-                            sourceHeaders = sanitizedSourceHeaders,
-                            selectedSubtitleUrl = url,
-                            selectedSubtitleHeaders = subtitleHeaders,
-                            streamSubtitles = externalSubtitles,
-                            preferredLanguage = playerSettings.preferredSubtitleLanguage,
-                            onReferenceReady = {
-                                Toast.makeText(
-                                    context,
-                                    "Auto Sync: comparing same-language subtitles…",
-                                    Toast.LENGTH_SHORT,
-                                ).show()
-                            },
-                        )
-                        if (recommendation == null) {
-                            val copied = if (AutoSyncDebugLog.ENABLED) {
-                                AutoSyncDebugLog.finishAndCopy(
-                                    context = context,
-                                    decision = "REJECT - couldn't find a reliable same-language subtitle",
-                                )
-                            } else {
-                                false
-                            }
-                            Toast.makeText(
-                                context,
-                                if (copied) {
-                                    "Auto Sync: no reliable subtitle match — debug log copied"
-                                } else {
-                                    "Auto Sync: couldn't find a reliable subtitle match"
-                                },
-                                Toast.LENGTH_LONG,
-                            ).show()
-                            return@launch
-                        }
+                override fun setSubtitleUriWithAutoSync(url: String) {
+                    autoSyncCoordinator.start(
+                        url = url,
+                        candidateScope = AutoSyncCandidateScope.STARTUP_SEARCH,
+                        fallbackAttach = { setSubtitleUri(it) },
+                    )
+                }
 
-                        val rawCorrectionMs = recommendation.correctionMs
-                            .coerceIn(SUBTITLE_DELAY_MIN_MS, SUBTITLE_DELAY_MAX_MS)
-                        val correctionMs = (
-                            (rawCorrectionMs / SUBTITLE_DELAY_STEP_MS.toDouble()).roundToInt() *
-                                SUBTITLE_DELAY_STEP_MS
-                            ).coerceIn(SUBTITLE_DELAY_MIN_MS, SUBTITLE_DELAY_MAX_MS)
-                        val switchedSubtitle = !recommendation.isCurrentSubtitle
-
-                        // Matcher stays millisecond-precise. Only the value applied to the player/UI is
-                        // quantized to the same 100 ms steps used by the subtitle delay controls.
-                        if (switchedSubtitle) {
-                            autoSyncApplyingSubtitleUrl = recommendation.url
-                            setSubtitleUri(recommendation.url)
-                        }
-                        subtitleDelayMs = correctionMs
-                        autoSyncAppliedListener?.invoke(recommendation.url, correctionMs)
-                        AutoSyncDebugLog.info { "AUTO APPLY switched=$switchedSubtitle rawCorrection=${rawCorrectionMs}ms " +
-                                "correction=${correctionMs}ms final=${subtitleDelayMs}ms" }
-
-                        val subtitleListNumber = run {
-                            val visibleAddonSubtitles = mergeStreamAndAddonSubtitles(
-                                SubtitleRepository.addonSubtitles.value,
-                                externalSubtitles,
-                            )
-                            val recommendedAddon = visibleAddonSubtitles
-                                .firstOrNull { it.url == recommendation.url }
-                                ?: return@run null
-                            val recommendationLanguageKey = subtitleLanguageKey(recommendedAddon.language)
-                            buildSubtitleSelectionOptions(
-                                languageKey = recommendationLanguageKey,
-                                subtitleTracks = exoPlayer.extractSubtitleTracks(context),
-                                addonSubtitles = visibleAddonSubtitles,
-                            ).indexOfFirst { option ->
-                                option is SubtitleSelectionOption.Addon &&
-                                    option.subtitle.url == recommendation.url
-                            }.takeIf { it >= 0 }?.plus(1)
-                        }
-                        val toastSubtitleLabel = subtitleListNumber
-                            ?.let { "#$it" }
-                            ?: recommendation.displayName.take(24)
-                        val delayLabel = "%+.2fs".format(correctionMs / 1000.0)
-
-                        if (AutoSyncDebugLog.ENABLED) {
-                            AutoSyncDebugLog.finishAndCopy(
-                                context = context,
-                                decision =
-                                    "APPLIED list=${subtitleListNumber ?: "<unknown>"} " +
-                                        "name=${recommendation.displayName} switched=$switchedSubtitle " +
-                                        "rawCorrection=${rawCorrectionMs}ms correction=${correctionMs}ms " +
-                                        "finalDelay=${subtitleDelayMs}ms",
-                            )
-                        }
-                        Toast.makeText(
-                            context,
-                            "Auto Sync: $toastSubtitleLabel selected • $delayLabel",
-                            Toast.LENGTH_LONG,
-                        ).show()
-                        Log.i(
-                            TAG,
-                            "Automatic subtitle applied list=${subtitleListNumber ?: "<unknown>"} " +
-                                "name=${recommendation.displayName} rawCorrection=${rawCorrectionMs}ms " +
-                                "correction=${correctionMs}ms switched=$switchedSubtitle",
-                        )
-                    }
+                override fun setSubtitleUriWithSelectedAutoSync(url: String) {
+                    autoSyncCoordinator.start(
+                        url = url,
+                        candidateScope = AutoSyncCandidateScope.SELECTED_ONLY,
+                        fallbackAttach = { setSubtitleUri(it) },
+                    )
                 }
 
                 override fun clearExternalSubtitle() {
                     Log.d(TAG, "clearExternalSubtitle called")
                     subtitleSelectionJob?.cancel()
-                    automaticSubtitleSyncJob?.cancel()
+                    autoSyncCoordinator.cancel()
                     sidecarController.stopSidecarAddonSubtitle(clearView = true)
                     selectedExternalSubtitleMimeType = null
                     val currentPosition = exoPlayer.currentPosition
@@ -1008,7 +935,7 @@ private fun ExoPlayerSurface(
                 override fun clearExternalSubtitleAndSelect(trackIndex: Int) {
                     Log.d(TAG, "clearExternalSubtitleAndSelect: trackIndex=$trackIndex")
                     subtitleSelectionJob?.cancel()
-                    automaticSubtitleSyncJob?.cancel()
+                    autoSyncCoordinator.cancel()
                     sidecarController.stopSidecarAddonSubtitle(clearView = true)
                     selectedExternalSubtitleMimeType = null
                     val currentPosition = exoPlayer.currentPosition
@@ -1059,9 +986,7 @@ private fun ExoPlayerSurface(
 
                 override fun setAutoSyncAppliedListener(
                     listener: ((subtitleUrl: String, delayMs: Int) -> Unit)?,
-                ) {
-                    autoSyncAppliedListener = listener
-                }
+                ) = autoSyncCoordinator.setAppliedListener(listener)
             }
         )
     }

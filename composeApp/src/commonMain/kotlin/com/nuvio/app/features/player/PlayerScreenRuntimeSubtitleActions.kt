@@ -34,6 +34,7 @@ internal fun PlayerScreenRuntime.loadSubtitleAutoSyncCues(force: Boolean = false
             )
             PlayerSubtitleCueParser.parse(body, subtitle.url)
         }
+        if (selectedAddonSubtitle?.url != subtitle.url) return@launch
         result.fold(
             onSuccess = { cues ->
                 subtitleAutoSyncState = subtitleAutoSyncState.copy(
