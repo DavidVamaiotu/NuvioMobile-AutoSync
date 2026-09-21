@@ -1,11 +1,6 @@
 name: AutoSync Release
 
 on:
-  push:
-    branches:
-      - subtitle-autosync
-    paths:
-      - .github/workflows/mirror-nuvio-release.yml
   workflow_dispatch:
     inputs:
       release_suffix:
