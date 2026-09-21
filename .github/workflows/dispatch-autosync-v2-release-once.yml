@@ -1,0 +1,47 @@
+name: Dispatch AutoSync V2 Release Once
+
+on:
+  push:
+    branches:
+      - subtitle-autosync
+    paths:
+      - .github/workflows/dispatch-autosync-v2-release-once.yml
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch AutoSync V2 release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run mirror-nuvio-release.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref subtitle-autosync \
+            -f release_suffix=autosync-v2 \
+            -f sync_official_release=false
+
+          sleep 5
+
+          RUN_ID="$(
+            gh run list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --workflow mirror-nuvio-release.yml \
+              --branch subtitle-autosync \
+              --event workflow_dispatch \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId'
+          )"
+
+          if [[ -z "$RUN_ID" || "$RUN_ID" == "null" ]]; then
+            echo "Could not resolve dispatched release run id" >&2
+            exit 1
+          fi
+
+          echo "Dispatched release run: $RUN_ID"
+          echo "https://github.com/${GITHUB_REPOSITORY}/actions/runs/$RUN_ID"
