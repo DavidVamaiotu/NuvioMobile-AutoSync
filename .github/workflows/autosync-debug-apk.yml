@@ -18,6 +18,7 @@ jobs:
       NUVIO_SUPABASE_URL: ${{ secrets.NUVIO_SUPABASE_URL }}
       NUVIO_SUPABASE_ANON_KEY: ${{ secrets.NUVIO_SUPABASE_ANON_KEY }}
       NUVIO_SUPABASE_FALLBACK_URL: ${{ secrets.NUVIO_SUPABASE_FALLBACK_URL }}
+      TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
 
     steps:
       - name: Check out source
