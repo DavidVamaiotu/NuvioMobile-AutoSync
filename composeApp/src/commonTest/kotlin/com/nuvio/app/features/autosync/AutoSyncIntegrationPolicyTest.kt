@@ -55,24 +55,11 @@ class AutoSyncIntegrationPolicyTest {
     fun disabledAutoSyncDoesNotEnterAutoSyncRun() {
         assertEquals(
             AutoSyncStartAction.ATTACH_ORIGINAL,
-            decideAutoSyncStart(
-                enabled = false,
-                attachSubtitleOnReject = true,
-            ),
-        )
-        assertEquals(
-            AutoSyncStartAction.NO_OP,
-            decideAutoSyncStart(
-                enabled = false,
-                attachSubtitleOnReject = false,
-            ),
+            decideAutoSyncStart(enabled = false),
         )
         assertEquals(
             AutoSyncStartAction.RUN,
-            decideAutoSyncStart(
-                enabled = true,
-                attachSubtitleOnReject = true,
-            ),
+            decideAutoSyncStart(enabled = true),
         )
     }
 
@@ -100,21 +87,11 @@ class AutoSyncIntegrationPolicyTest {
     @Test
     fun originalSubtitleIsRestoredOnlyWhenAutoSyncSidecarIsGone() {
         assertTrue(
-            shouldRestoreOriginalSubtitle(
-                attachSubtitleOnReject = true,
-                activeSidecarSubtitleKey = null,
-            ),
+            shouldRestoreOriginalSubtitle(activeSidecarSubtitleKey = null),
         )
         assertFalse(
             shouldRestoreOriginalSubtitle(
-                attachSubtitleOnReject = true,
                 activeSidecarSubtitleKey = "https://subs.example/selected.srt",
-            ),
-        )
-        assertFalse(
-            shouldRestoreOriginalSubtitle(
-                attachSubtitleOnReject = false,
-                activeSidecarSubtitleKey = null,
             ),
         )
     }
