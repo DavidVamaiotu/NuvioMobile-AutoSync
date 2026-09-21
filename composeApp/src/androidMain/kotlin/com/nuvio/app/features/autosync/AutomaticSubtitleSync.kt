@@ -176,6 +176,9 @@ internal object AutomaticSubtitleSync {
             sourceKey = sourceKey,
             subtitleUrl = selectedSubtitleUrl,
         )
+        AutoSyncDebugLog.info {
+            "mode=${if (aggressiveMode) "AGGRESSIVE" else "PASSIVE"}"
+        }
 
         var cleanupStartedAtMs: Long? = null
         var cleanupCanceledLoads = 0
