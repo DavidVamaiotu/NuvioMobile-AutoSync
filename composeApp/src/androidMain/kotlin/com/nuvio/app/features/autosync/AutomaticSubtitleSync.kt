@@ -2,7 +2,6 @@ package com.nuvio.app.features.autosync
 
 import android.os.SystemClock
 import androidx.media3.common.C
-import com.nuvio.app.features.player.AutoSyncSubtitleCandidate
 import com.nuvio.app.features.player.PlayerSubtitleCueParser
 import com.nuvio.app.features.player.SubtitleLanguageMatching
 import com.nuvio.app.features.player.SubtitleSyncCue
