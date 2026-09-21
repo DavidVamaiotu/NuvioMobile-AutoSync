@@ -904,7 +904,9 @@ internal object AutomaticSubtitleSync {
                 match: TimelineRetimeMatch,
             ): Boolean {
                 if (isExceptionalMatch(match)) return true
-                if (family.completedUsableAttempts < REFERENCE_SEARCH_CHECKPOINT) {
+                val requiredAttempts =
+                    minOf(REFERENCE_SEARCH_CHECKPOINT, family.rankedReferences.size)
+                if (family.completedUsableAttempts < requiredAttempts) {
                     return false
                 }
                 return isStrongCheckpointMatch(match) ||
