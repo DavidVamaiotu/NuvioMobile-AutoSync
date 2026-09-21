@@ -29,8 +29,15 @@ jobs:
           unzip -q p/mobile/androidApp-full-arm64-v8a-release.apk 'classes*.dex' -d p/mobile/dex
           unzip -q p/tv/app-full-arm64-v8a-release.apk 'classes*.dex' -d p/tv/dex
 
-          find p/mobile/dex -name 'classes*.dex' -print0 | xargs -0 strings -n 64 | grep -E '^[0-9a-f]{64}$' | sort -u > p/mobile.ids || true
-          find p/tv/dex -name 'classes*.dex' -print0 | xargs -0 strings -n 64 | grep -E '^[0-9a-f]{64}$' | sort -u > p/tv.ids || true
+          find p/mobile/dex -name 'classes*.dex' -print0 \
+            | xargs -0 strings -n 64 \
+            | grep -oE '[0-9a-f]{64}' \
+            | sort -u > p/mobile.ids || true
+
+          find p/tv/dex -name 'classes*.dex' -print0 \
+            | xargs -0 strings -n 64 \
+            | grep -oE '[0-9a-f]{64}' \
+            | sort -u > p/tv.ids || true
 
           echo '=== MOBILE_IDS_BEGIN ==='
           cat p/mobile.ids
