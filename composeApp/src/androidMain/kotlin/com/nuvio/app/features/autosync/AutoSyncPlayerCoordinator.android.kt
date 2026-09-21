@@ -58,6 +58,7 @@ internal class AutoSyncPlayerCoordinator(
     fun start(
         url: String,
         attachSubtitleOnReject: Boolean,
+        searchAlternatives: Boolean,
         fallbackAttach: (String) -> Unit,
     ) {
         cancel()
@@ -118,8 +119,12 @@ internal class AutoSyncPlayerCoordinator(
                 selectedSubtitleHeaders = subtitleHeaders,
                 selectedSubtitleBodyDeferred = selectedSubtitleBodyDeferred,
                 preferredLanguage = getPreferredLanguage(),
-                alternativeSubtitles = candidates,
-                alternativeSubtitlesProvider = { candidates },
+                alternativeSubtitles = if (searchAlternatives) candidates else emptyList(),
+                alternativeSubtitlesProvider = if (searchAlternatives) {
+                    { candidates }
+                } else {
+                    null
+                },
                 onReferenceReady = {},
             )
 
