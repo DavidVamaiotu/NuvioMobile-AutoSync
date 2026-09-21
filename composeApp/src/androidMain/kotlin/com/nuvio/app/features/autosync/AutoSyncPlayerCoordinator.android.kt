@@ -133,6 +133,7 @@ internal class AutoSyncPlayerCoordinator(
             .build()
 
         job = scope.launch {
+            var noSubtitleTracks = false
             val resolved = AutomaticSubtitleSync.findTimelineRetime(
                 sourceKey = sourceUrl,
                 sourceHeaders = sourceHeaders,
@@ -147,6 +148,7 @@ internal class AutoSyncPlayerCoordinator(
                     null
                 },
                 onReferenceReady = {},
+                onNoSubtitleTracks = { noSubtitleTracks = true },
             )
             AutoSyncDebugLog.info {
                 "candidateScope=${candidateScope.name}"
@@ -162,7 +164,7 @@ internal class AutoSyncPlayerCoordinator(
                 }
                 Toast.makeText(
                     context,
-                    "Auto Sync V2 failed: no reliable match",
+                    if (noSubtitleTracks) "No subtitles in tracks" else "Auto Sync V2 failed: no reliable match",
                     Toast.LENGTH_SHORT,
                 ).show()
                 return@launch
