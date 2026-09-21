@@ -57,15 +57,24 @@ internal class AutoSyncPlayerCoordinator(
     fun start(
         url: String,
         attachSubtitleOnReject: Boolean,
-        searchAlternatives: Boolean,
+        candidateScope: AutoSyncCandidateScope,
         fallbackAttach: (String) -> Unit,
     ) {
         cancel()
 
         AutoSyncPreferencesRepository.ensureLoaded()
-        if (!AutoSyncPreferencesRepository.preferredSubtitleAutoSyncOnStart.value) {
-            if (attachSubtitleOnReject) fallbackAttach(url)
-            return
+        when (
+            decideAutoSyncStart(
+                enabled = AutoSyncPreferencesRepository.preferredSubtitleAutoSyncOnStart.value,
+                attachSubtitleOnReject = attachSubtitleOnReject,
+            )
+        ) {
+            AutoSyncStartAction.RUN -> Unit
+            AutoSyncStartAction.ATTACH_ORIGINAL -> {
+                fallbackAttach(url)
+                return
+            }
+            AutoSyncStartAction.NO_OP -> return
         }
 
         Toast.makeText(
@@ -111,7 +120,12 @@ internal class AutoSyncPlayerCoordinator(
         val selectedSubtitleBodyDeferred = sidecar.rawBodyDeferredFor(url)
 
         fun restoreOriginalSubtitleIfSidecarFailed() {
-            if (attachSubtitleOnReject && sidecar.activeSidecarSubtitleKey == null) {
+            if (
+                shouldRestoreOriginalSubtitle(
+                    attachSubtitleOnReject = attachSubtitleOnReject,
+                    activeSidecarSubtitleKey = sidecar.activeSidecarSubtitleKey,
+                )
+            ) {
                 fallbackAttach(url)
             }
         }
@@ -130,8 +144,8 @@ internal class AutoSyncPlayerCoordinator(
                 selectedSubtitleHeaders = subtitleHeaders,
                 selectedSubtitleBodyDeferred = selectedSubtitleBodyDeferred,
                 preferredLanguage = getPreferredLanguage(),
-                alternativeSubtitles = if (searchAlternatives) candidates else emptyList(),
-                alternativeSubtitlesProvider = if (searchAlternatives) {
+                alternativeSubtitles = candidateScope.alternativeCandidates(candidates),
+                alternativeSubtitlesProvider = if (candidateScope.usesAlternativeProvider) {
                     { candidates }
                 } else {
                     null
@@ -139,7 +153,7 @@ internal class AutoSyncPlayerCoordinator(
                 onReferenceReady = {},
             )
             AutoSyncDebugLog.info {
-                "candidateScope=${if (searchAlternatives) "STARTUP_SEARCH" else "SELECTED_ONLY"}"
+                "candidateScope=${candidateScope.name}"
             }
 
             if (resolved == null) {
