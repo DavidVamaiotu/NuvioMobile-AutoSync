@@ -575,6 +575,14 @@
     <string name="settings_poster_width_dense">Gęsty</string>
     <string name="settings_poster_width_large">Duży</string>
     <string name="settings_poster_width_standard">Standardowy</string>
+    <!-- Custom Poster URL -->
+    <string name="settings_custom_poster_title">NIESTANDARDOWE ŹRÓDŁO PLAKATÓW</string>
+    <string name="settings_custom_poster_description">Podaj wzorzec URL z zewnętrznego serwisu. Jeśli symbol zastępczy nie ma wartości dla danego tytułu, zostanie użyty oryginalny plakat.</string>
+    <string name="settings_custom_poster_placeholder">https://example.com/poster?id={id}&amp;id_type={id_type}&amp;type={type}</string>
+    <string name="settings_custom_poster_active">Niestandardowe źródło plakatów aktywne</string>
+    <string name="settings_custom_poster_none">Brak skonfigurowanego wzorca</string>
+    <string name="settings_custom_poster_save">Zapisz</string>
+    <string name="settings_custom_poster_clear">Wyczyść</string>
     <string name="settings_show_secret">Pokaż wartość</string>
     <string name="settings_continue_watching_resume_prompt_description">Pokaż okno kontynuowania od miejsca, w którym skończyłeś, po otwarciu aplikacji po wyjściu z odtwarzacza.</string>
     <string name="settings_continue_watching_resume_prompt_title">Monit o wznowienie przy uruchomieniu</string>

@@ -780,6 +780,14 @@
     <string name="settings_poster_width_dense">Dense</string>
     <string name="settings_poster_width_large">Large</string>
     <string name="settings_poster_width_standard">Standard</string>
+    <!-- Custom Poster URL -->
+    <string name="settings_custom_poster_title">CUSTOM POSTER SOURCE</string>
+    <string name="settings_custom_poster_description">Provide a poster URL pattern from an external service. If a placeholder has no value for a given title, the original poster is used instead.</string>
+    <string name="settings_custom_poster_placeholder">https://example.com/poster?id={id}&amp;id_type={id_type}&amp;type={type}</string>
+    <string name="settings_custom_poster_active">Custom poster source active</string>
+    <string name="settings_custom_poster_none">No pattern configured</string>
+    <string name="settings_custom_poster_save">Save</string>
+    <string name="settings_custom_poster_clear">Clear</string>
     <string name="settings_show_secret">Show value</string>
     <string name="settings_continue_watching_resume_prompt_description">Show a popup to continue where you left off when opening the app after leaving from the player.</string>
     <string name="settings_continue_watching_resume_prompt_title">Resume prompt on launch</string>

@@ -219,6 +219,8 @@ data class ContinueWatchingItem(
     val progressFraction: Float,
     val isReleaseAlert: Boolean = false,
     val isNewSeasonRelease: Boolean = false,
+    val rawPosterUrl: String? = null,
+    val rawBackgroundUrl: String? = null,
 )
 
 internal fun continueWatchingItemKey(item: ContinueWatchingItem): String {

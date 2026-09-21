@@ -884,7 +884,7 @@ final class MPVPlayerViewController: UIViewController {
     private func activateAudioSessionForPlayback() {
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .moviePlayback)
+            try session.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
             try session.setActive(true)
         } catch {
             print("[NowPlaying] Failed to activate audio session: \(error)")
