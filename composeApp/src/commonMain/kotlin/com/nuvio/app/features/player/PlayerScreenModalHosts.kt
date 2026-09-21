@@ -43,7 +43,6 @@ internal fun PlayerScreenModalHosts(
     onAutoSyncCapture: () -> Unit,
     onAutoSyncCueSelected: (SubtitleSyncCue) -> Unit,
     onAutoSyncReload: () -> Unit,
-    onAutomaticAutoSync: () -> Unit,
     onSubtitleModalDismissed: () -> Unit,
     showVideoSettingsModal: Boolean,
     playerSettings: PlayerSettingsUiState,
@@ -145,7 +144,6 @@ internal fun PlayerScreenModalHosts(
         onAutoSyncCapture = onAutoSyncCapture,
         onAutoSyncCueSelected = onAutoSyncCueSelected,
         onAutoSyncReload = onAutoSyncReload,
-        onAutomaticAutoSync = onAutomaticAutoSync,
         onDismiss = onSubtitleModalDismissed,
     )
 
