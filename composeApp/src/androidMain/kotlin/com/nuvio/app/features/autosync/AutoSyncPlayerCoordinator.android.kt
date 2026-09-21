@@ -63,6 +63,12 @@ internal class AutoSyncPlayerCoordinator(
     ) {
         cancel()
 
+        AutoSyncPreferencesRepository.ensureLoaded()
+        if (!AutoSyncPreferencesRepository.preferredSubtitleAutoSyncOnStart.value) {
+            if (attachSubtitleOnReject) fallbackAttach(url)
+            return
+        }
+
         Toast.makeText(
             context,
             "Auto Sync V2 started",
