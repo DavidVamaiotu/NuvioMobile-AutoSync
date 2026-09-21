@@ -163,6 +163,7 @@ internal object AutomaticSubtitleSync {
         preferredLanguage: String?,
         alternativeSubtitles: List<AutoSyncSubtitleCandidate> = emptyList(),
         alternativeSubtitlesProvider: (() -> List<AutoSyncSubtitleCandidate>)? = null,
+        alternativeSubtitlesLoadingProvider: (() -> Boolean)? = null,
         onReferenceReady: () -> Unit = {},
         sourceHeaders: Map<String, String> = emptyMap(),
     ): AutoSyncResolvedTimeline? {
@@ -899,6 +900,13 @@ internal object AutomaticSubtitleSync {
                 return candidate.track.key < current.track.key
             }
 
+            fun hasEnoughSingleReferenceEvidence(): Boolean =
+                referenceTracks.size != 1 ||
+                    alternativeSubtitlesLoadingProvider?.invoke() != true ||
+                    timingFamilies.count { family ->
+                        family.best?.let(::isStrongCheckpointMatch) == true
+                    } >= REFERENCE_SEARCH_CHECKPOINT
+
             fun canStopForFamily(
                 family: CandidateTimingFamilyState,
                 match: TimelineRetimeMatch,
@@ -906,7 +914,10 @@ internal object AutomaticSubtitleSync {
                 if (isExceptionalMatch(match)) return true
                 val requiredAttempts =
                     minOf(REFERENCE_SEARCH_CHECKPOINT, family.rankedReferences.size)
-                if (family.completedUsableAttempts < requiredAttempts) {
+                if (
+                    family.completedUsableAttempts < requiredAttempts ||
+                    !hasEnoughSingleReferenceEvidence()
+                ) {
                     return false
                 }
                 return isStrongCheckpointMatch(match) ||
@@ -1035,7 +1046,13 @@ internal object AutomaticSubtitleSync {
                     ) {
                         refreshCandidatePool()
                         scheduleMoreLoads()
-                        if (activeLoads.isEmpty()) break
+                        if (activeLoads.isEmpty()) {
+                            if (!hasEnoughSingleReferenceEvidence()) {
+                                delay(FALLBACK_CANDIDATE_POLL_MS)
+                                continue
+                            }
+                            break
+                        }
                     }
 
                     val event = select<SchedulerEvent> {
