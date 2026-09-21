@@ -10,7 +10,6 @@ import androidx.media3.exoplayer.ExoPlayer
 import com.nuvio.app.features.player.AutoSyncSubtitleCandidate
 import com.nuvio.app.features.player.PlayerSubtitleUtils
 import com.nuvio.app.features.player.SidecarSubtitleController
-import com.nuvio.app.features.player.SubtitleRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -121,9 +120,6 @@ internal class AutoSyncPlayerCoordinator(
                 preferredLanguage = getPreferredLanguage(),
                 alternativeSubtitles = candidates,
                 alternativeSubtitlesProvider = { candidates },
-                alternativeSubtitlesLoadingProvider = {
-                    SubtitleRepository.isLoading.value
-                },
                 onReferenceReady = {},
             )
 
