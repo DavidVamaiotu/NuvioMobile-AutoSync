@@ -20,6 +20,16 @@
       "category": "entertainment",
       "versions": [
         {
+          "version": "0.4.26",
+          "buildVersion": "131",
+          "date": "2026-09-21T09:49:45Z",
+          "localizedDescription": "- 458f810b fix(streams): share addon filtering across pickers @tapframe  \n- [i18n(nb): complete missing Norwegian Bokmål strings (#2005)](https://github.com/NuvioMedia/NuvioMobile/pull/2005) @SimSalabimse  \n",
+          "downloadURL": "https://github.com/NuvioMedia/NuvioMobile/releases/download/0.4.26-beta/nuvio-0.4.26-full-release.ipa",
+          "size": 65234840,
+          "sha256": "50bb70d89a4201070840b7530ea730e1bf2c603c72a1bdfed48126740d6dde07",
+          "minOSVersion": "16.1"
+        },
+        {
           "version": "0.4.25",
           "buildVersion": "130",
           "date": "2026-09-19T15:15:17Z",
