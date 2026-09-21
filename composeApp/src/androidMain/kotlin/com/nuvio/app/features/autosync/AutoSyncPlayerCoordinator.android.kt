@@ -127,6 +127,9 @@ internal class AutoSyncPlayerCoordinator(
                 },
                 onReferenceReady = {},
             )
+            AutoSyncDebugLog.info {
+                "candidateScope=${if (searchAlternatives) "STARTUP_SEARCH" else "SELECTED_ONLY"}"
+            }
 
             if (resolved == null) {
                 if (AutoSyncDebugLog.ENABLED) {
