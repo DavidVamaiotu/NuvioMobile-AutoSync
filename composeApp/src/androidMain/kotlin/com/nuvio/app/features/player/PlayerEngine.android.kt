@@ -896,7 +896,6 @@ private fun ExoPlayerSurface(
                 override fun setSubtitleUriWithAutoSync(url: String) {
                     autoSyncCoordinator.start(
                         url = url,
-                        attachSubtitleOnReject = true,
                         candidateScope = AutoSyncCandidateScope.STARTUP_SEARCH,
                         fallbackAttach = { setSubtitleUri(it) },
                     )
@@ -905,7 +904,6 @@ private fun ExoPlayerSurface(
                 override fun setSubtitleUriWithSelectedAutoSync(url: String) {
                     autoSyncCoordinator.start(
                         url = url,
-                        attachSubtitleOnReject = true,
                         candidateScope = AutoSyncCandidateScope.SELECTED_ONLY,
                         fallbackAttach = { setSubtitleUri(it) },
                     )
