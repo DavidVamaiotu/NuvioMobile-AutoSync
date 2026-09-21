@@ -3,6 +3,7 @@ package com.nuvio.app.features.player
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import com.nuvio.app.features.autosync.AutoSyncPreferencesRepository
+import com.nuvio.app.features.autosync.AutoSyncSubtitleCandidate
 import kotlinx.coroutines.flow.collect
 
 private fun List<AddonSubtitle>.toAutoSyncCandidates(): List<AutoSyncSubtitleCandidate> =
