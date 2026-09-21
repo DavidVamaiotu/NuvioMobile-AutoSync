@@ -46,6 +46,9 @@ internal object AutomaticSubtitleSync {
     private const val STRONG_CHECKPOINT_QUALITY = 0.92
     private const val STRONG_CHECKPOINT_TARGET_COVERAGE = 0.98
     private const val STRONG_CHECKPOINT_REFERENCE_COVERAGE = 0.90
+    private const val PASSIVE_CHECKPOINT_QUALITY = 0.88
+    private const val PASSIVE_CHECKPOINT_TARGET_COVERAGE = 0.96
+    private const val PASSIVE_CHECKPOINT_REFERENCE_COVERAGE = 0.85
     private const val ASYMMETRIC_CHECKPOINT_QUALITY = 0.94
     private const val ASYMMETRIC_CHECKPOINT_TARGET_COVERAGE = 0.995
     private const val ASYMMETRIC_CHECKPOINT_REFERENCE_COVERAGE = 0.84
@@ -166,6 +169,9 @@ internal object AutomaticSubtitleSync {
         onReferenceReady: () -> Unit = {},
         sourceHeaders: Map<String, String> = emptyMap(),
     ): AutoSyncResolvedTimeline? {
+        AutoSyncPreferencesRepository.ensureLoaded()
+        val aggressiveMode = AutoSyncPreferencesRepository.aggressiveMode.value
+
         AutoSyncDebugLog.start(
             sourceKey = sourceKey,
             subtitleUrl = selectedSubtitleUrl,
@@ -909,7 +915,7 @@ internal object AutomaticSubtitleSync {
                 if (family.completedUsableAttempts < requiredAttempts) {
                     return false
                 }
-                return isStrongCheckpointMatch(match) ||
+                return isStrongCheckpointMatch(match, aggressiveMode) ||
                     isAsymmetricReferenceCheckpointMatch(
                         match,
                         targetCueCount = family.representative.loaded.cues.size,
@@ -1958,12 +1964,30 @@ internal object AutomaticSubtitleSync {
             result.simpleGroupRatio >= EXCEPTIONAL_MATCH_SIMPLE_RATIO
     }
 
-    private fun isStrongCheckpointMatch(match: TimelineRetimeMatch): Boolean {
+    private fun isStrongCheckpointMatch(
+        match: TimelineRetimeMatch,
+        aggressiveMode: Boolean,
+    ): Boolean {
         val result = match.timeline
+        val qualityThreshold =
+            if (aggressiveMode) STRONG_CHECKPOINT_QUALITY else PASSIVE_CHECKPOINT_QUALITY
+        val targetCoverageThreshold =
+            if (aggressiveMode) {
+                STRONG_CHECKPOINT_TARGET_COVERAGE
+            } else {
+                PASSIVE_CHECKPOINT_TARGET_COVERAGE
+            }
+        val referenceCoverageThreshold =
+            if (aggressiveMode) {
+                STRONG_CHECKPOINT_REFERENCE_COVERAGE
+            } else {
+                PASSIVE_CHECKPOINT_REFERENCE_COVERAGE
+            }
+
         return result.confident &&
-            directTimelineQualityScore(match) >= STRONG_CHECKPOINT_QUALITY &&
-            result.targetCoverage >= STRONG_CHECKPOINT_TARGET_COVERAGE &&
-            result.referenceCoverage >= STRONG_CHECKPOINT_REFERENCE_COVERAGE
+            directTimelineQualityScore(match) >= qualityThreshold &&
+            result.targetCoverage >= targetCoverageThreshold &&
+            result.referenceCoverage >= referenceCoverageThreshold
     }
 
     private fun isAsymmetricReferenceCheckpointMatch(

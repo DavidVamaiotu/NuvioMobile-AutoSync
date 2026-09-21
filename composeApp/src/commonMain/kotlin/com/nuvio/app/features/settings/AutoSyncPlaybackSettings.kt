@@ -10,6 +10,10 @@ import com.nuvio.app.isIos
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.settings_playback_auto_sync_debug_logs
 import nuvio.composeapp.generated.resources.settings_playback_auto_sync_debug_logs_description
+import nuvio.composeapp.generated.resources.settings_playback_auto_sync_mode_aggressive
+import nuvio.composeapp.generated.resources.settings_playback_auto_sync_mode_aggressive_description
+import nuvio.composeapp.generated.resources.settings_playback_auto_sync_mode_passive
+import nuvio.composeapp.generated.resources.settings_playback_auto_sync_mode_passive_description
 import nuvio.composeapp.generated.resources.settings_playback_subtitle_auto_sync
 import nuvio.composeapp.generated.resources.settings_playback_subtitle_auto_sync_description
 import org.jetbrains.compose.resources.stringResource
@@ -23,6 +27,10 @@ internal fun AutoSyncPlaybackSettingsRows(
     val preferredSubtitleAutoSyncOnStart by remember {
         AutoSyncPreferencesRepository.ensureLoaded()
         AutoSyncPreferencesRepository.preferredSubtitleAutoSyncOnStart
+    }.collectAsStateWithLifecycle()
+    val aggressiveMode by remember {
+        AutoSyncPreferencesRepository.ensureLoaded()
+        AutoSyncPreferencesRepository.aggressiveMode
     }.collectAsStateWithLifecycle()
     val debugLogsEnabled by remember {
         AutoSyncPreferencesRepository.ensureLoaded()
@@ -46,6 +54,27 @@ internal fun AutoSyncPlaybackSettingsRows(
         enabled = enabled && preferredLanguageAvailable,
         isTablet = isTablet,
         onCheckedChange = AutoSyncPreferencesRepository::setPreferredSubtitleAutoSyncOnStart,
+    )
+    SettingsGroupDivider(isTablet = isTablet)
+    SettingsSwitchRow(
+        title = stringResource(
+            if (aggressiveMode) {
+                Res.string.settings_playback_auto_sync_mode_aggressive
+            } else {
+                Res.string.settings_playback_auto_sync_mode_passive
+            },
+        ),
+        description = stringResource(
+            if (aggressiveMode) {
+                Res.string.settings_playback_auto_sync_mode_aggressive_description
+            } else {
+                Res.string.settings_playback_auto_sync_mode_passive_description
+            },
+        ),
+        checked = aggressiveMode,
+        enabled = enabled,
+        isTablet = isTablet,
+        onCheckedChange = AutoSyncPreferencesRepository::setAggressiveMode,
     )
     SettingsGroupDivider(isTablet = isTablet)
     SettingsSwitchRow(
