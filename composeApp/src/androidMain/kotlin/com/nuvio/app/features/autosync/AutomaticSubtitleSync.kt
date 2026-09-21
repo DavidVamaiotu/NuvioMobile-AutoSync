@@ -654,6 +654,13 @@ internal object AutomaticSubtitleSync {
             val scheduledUrls = hashSetOf<String>()
             val activeLoads = linkedMapOf<String, Deferred<LoadedSubtitle?>>()
 
+            // Do not starve an already-parsed selected subtitle behind speculative prefetches.
+            // This changes only readiness order; matching and scoring remain identical.
+            if (selected != null) {
+                activeLoads[selectedSubtitleUrl] = selectedSubtitleDeferred
+                scheduledUrls += selectedSubtitleUrl
+            }
+
             prefetchedAlternativeLoads.forEach { (url, job) ->
                 if (url in candidateByUrl) {
                     activeLoads[url] = job
