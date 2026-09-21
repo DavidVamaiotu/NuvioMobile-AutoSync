@@ -66,7 +66,9 @@ import androidx.media3.ui.SubtitleView
 import androidx.media3.ui.CaptionStyleCompat
 import com.nuvio.app.R
 import com.nuvio.app.features.autosync.AutoSyncExtractorsFactory
+import com.nuvio.app.features.autosync.AutoSyncPlayerController
 import com.nuvio.app.features.autosync.AutoSyncPlayerCoordinator
+import com.nuvio.app.features.autosync.AutoSyncSubtitleCandidate
 import com.nuvio.app.features.streams.normalizeStreamType
 import `is`.xyz.mpv.BaseMPVView
 import `is`.xyz.mpv.MPV
@@ -905,15 +907,6 @@ private fun ExoPlayerSurface(
                         attachSubtitleOnReject = true,
                         searchAlternatives = false,
                         fallbackAttach = { setSubtitleUri(it) },
-                    )
-                }
-
-                override fun runSubtitleAutoSync(url: String) {
-                    autoSyncCoordinator.start(
-                        url = url,
-                        attachSubtitleOnReject = false,
-                        searchAlternatives = false,
-                        fallbackAttach = {},
                     )
                 }
 
