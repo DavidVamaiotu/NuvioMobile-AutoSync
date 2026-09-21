@@ -5,20 +5,12 @@ internal enum class AutoSyncCandidateScope {
     SELECTED_ONLY,
 }
 
-internal fun decideAutoSyncStart(
-    enabled: Boolean,
-    attachSubtitleOnReject: Boolean,
-): AutoSyncStartAction =
-    when {
-        enabled -> AutoSyncStartAction.RUN
-        attachSubtitleOnReject -> AutoSyncStartAction.ATTACH_ORIGINAL
-        else -> AutoSyncStartAction.NO_OP
-    }
+internal fun decideAutoSyncStart(enabled: Boolean): AutoSyncStartAction =
+    if (enabled) AutoSyncStartAction.RUN else AutoSyncStartAction.ATTACH_ORIGINAL
 
 internal enum class AutoSyncStartAction {
     RUN,
     ATTACH_ORIGINAL,
-    NO_OP,
 }
 
 internal fun AutoSyncCandidateScope.alternativeCandidates(
@@ -30,7 +22,5 @@ internal val AutoSyncCandidateScope.usesAlternativeProvider: Boolean
     get() = this == AutoSyncCandidateScope.STARTUP_SEARCH
 
 internal fun shouldRestoreOriginalSubtitle(
-    attachSubtitleOnReject: Boolean,
     activeSidecarSubtitleKey: String?,
-): Boolean =
-    attachSubtitleOnReject && activeSidecarSubtitleKey == null
+): Boolean = activeSidecarSubtitleKey == null
