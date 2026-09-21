@@ -30,7 +30,7 @@ internal object AutoSyncPreferencesRepository {
     private var loadDebugLogsPersistedValue: (() -> Boolean?)? = null
     private var saveDebugLogsPersistedValue: ((Boolean) -> Unit)? = null
     private var lastStartupSessionKey: Int? = null
-    private var lastStartupVideoKey: String? = null
+    private var lastStartupPlaybackKey: String? = null
 
     fun installPersistence(
         load: () -> Boolean?,
@@ -58,7 +58,7 @@ internal object AutoSyncPreferencesRepository {
         _debugLogsEnabled.value = loadDebugLogsPersistedValue?.invoke() ?: false
         loadedProfileId = profileId
         lastStartupSessionKey = null
-        lastStartupVideoKey = null
+        lastStartupPlaybackKey = null
     }
 
     fun setPreferredSubtitleAutoSyncOnStart(enabled: Boolean) {
@@ -82,13 +82,13 @@ internal object AutoSyncPreferencesRepository {
         saveDebugLogsPersistedValue?.invoke(enabled)
     }
 
-    fun claimStartupRun(sessionKey: Int, videoKey: String): Boolean {
+    fun claimStartupRun(sessionKey: Int, playbackKey: String): Boolean {
         ensureLoaded()
         if (!_preferredSubtitleAutoSyncOnStart.value) return false
-        if (lastStartupSessionKey == sessionKey && lastStartupVideoKey == videoKey) return false
+        if (lastStartupSessionKey == sessionKey && lastStartupPlaybackKey == playbackKey) return false
 
         lastStartupSessionKey = sessionKey
-        lastStartupVideoKey = videoKey
+        lastStartupPlaybackKey = playbackKey
         return true
     }
 }
