@@ -550,6 +550,7 @@ internal object AutomaticSubtitleSync {
             }
 
             var referenceTracks: List<ReferenceTrack> = emptyList()
+            var forcedFallbackTracks: List<ReferenceTrack> = emptyList()
 
             AutoSyncDebugLog.section { "INDEXED EMBEDDED REFERENCE" }
             if (indexedTimeline != null) {
@@ -578,18 +579,22 @@ internal object AutomaticSubtitleSync {
                 }
                 val preferredProfiles =
                     eligibleProfiles.filter { profile -> profile.fullDialogue }
-                val selectedProfiles = if (preferredProfiles.isNotEmpty()) {
-                    preferredProfiles
-                } else {
+                val forcedProfiles =
                     eligibleProfiles.filter { profile -> isForcedReferenceTrack(profile.track) }
-                }
-                if (preferredProfiles.isEmpty() && selectedProfiles.isNotEmpty()) {
-                    AutoSyncDebugLog.info {
-                        "using forced-only indexed reference fallback tracks=${selectedProfiles.size}"
+                if (preferredProfiles.isNotEmpty()) {
+                    referenceTracks = orderReferenceProfiles(preferredProfiles)
+                        .map { it.track.copy(cues = it.track.cues.toList()) }
+                    forcedFallbackTracks = orderReferenceProfiles(forcedProfiles)
+                        .map { it.track.copy(cues = it.track.cues.toList()) }
+                } else {
+                    referenceTracks = orderReferenceProfiles(forcedProfiles)
+                        .map { it.track.copy(cues = it.track.cues.toList()) }
+                    if (referenceTracks.isNotEmpty()) {
+                        AutoSyncDebugLog.info {
+                            "using forced-only indexed reference fallback tracks=${referenceTracks.size}"
+                        }
                     }
                 }
-                referenceTracks = orderReferenceProfiles(selectedProfiles)
-                    .map { it.track.copy(cues = it.track.cues.toList()) }
             } else {
                 AutoSyncDebugLog.info {
                     "indexed timeline unavailable; checking Media3 for a near-complete embedded timeline"
@@ -597,12 +602,14 @@ internal object AutomaticSubtitleSync {
             }
 
             if (referenceTracks.isEmpty()) {
-                referenceTracks = awaitNearCompleteLiveReferences(
+                val liveSelection = awaitNearCompleteLiveReferences(
                     sourceKey = sourceKey,
                     preferredLanguage = preferredLanguage,
                     target = seedTarget,
                     waitMs = if (indexedTimeline?.skipLiveFallbackWait == true) 0L else LIVE_REFERENCE_WAIT_MS,
                 )
+                referenceTracks = liveSelection.primary
+                forcedFallbackTracks = liveSelection.forcedFallback
             }
 
             if (referenceTracks.isEmpty()) {
@@ -928,6 +935,96 @@ internal object AutomaticSubtitleSync {
                 return candidate.track.key < current.track.key
             }
 
+            suspend fun evaluateForcedReferenceFallback():
+                Pair<CandidateTimingFamilyState, TimelineRetimeMatch>? {
+                if (forcedFallbackTracks.isEmpty() || timingFamilies.isEmpty()) return null
+
+                AutoSyncDebugLog.section { "FORCED REFERENCE FALLBACK" }
+                AutoSyncDebugLog.info {
+                    "normal references produced no confident match; " +
+                        "trying forced references tracks=${forcedFallbackTracks.size}"
+                }
+
+                var fallbackBestFamily: CandidateTimingFamilyState? = null
+                var fallbackBestMatch: TimelineRetimeMatch? = null
+                var fallbackPairs = 0
+
+                for (family in timingFamilies) {
+                    pipelineContext.ensureActive()
+                    val target = family.representative.loaded.cues
+                    val preflightResult =
+                        if (family.targetActivity != null) {
+                            withContext(Dispatchers.Default) {
+                                AutoSyncDelayPreflight.evaluate(
+                                    referenceTracks = forcedFallbackTracks,
+                                    target = target,
+                                    referenceActivityCache = referenceActivityCache,
+                                    preparedTargetActivity = family.targetActivity,
+                                    cancellationCheck = { pipelineContext.ensureActive() },
+                                )
+                            }
+                        } else {
+                            AutoSyncDelayPreflight.Result(
+                                best = null,
+                                evidenceByReferenceKey = emptyMap(),
+                            )
+                        }
+                    val preflight = preflightResult.best
+                    val rankedReferences = withContext(Dispatchers.Default) {
+                        rankReferenceCandidates(
+                            target = target,
+                            referenceTracks = forcedFallbackTracks,
+                            preferredReferenceKey = preflight?.referenceKey,
+                        )
+                    }
+
+                    for (ranked in rankedReferences) {
+                        pipelineContext.ensureActive()
+                        val referenceKey = ranked.track.key
+                        val evidence = preflightResult.evidenceByReferenceKey[referenceKey]
+                        val isPreflightChampion = preflight?.referenceKey == referenceKey
+                        val evaluation = evaluatePair(
+                            label =
+                                "FORCED PAIR[${family.representative.index}/$referenceKey]",
+                            url = family.representative.candidate.url,
+                            target = target,
+                            rankedReference = ranked,
+                            referenceActivityCache = referenceActivityCache,
+                            preflightHint = evidence?.validatedAlignment?.let { alignment ->
+                                AutoSyncDelayPreflight.Match(
+                                    referenceKey = referenceKey,
+                                    alignment = alignment,
+                                )
+                            },
+                            preflightEvidence = evidence?.search,
+                            allowPrecomputedDelayFastPath = isPreflightChampion,
+                            preparedTargetActivity = family.targetActivity,
+                        )
+                        fallbackPairs++
+
+                        val match = evaluation.match
+                        if (
+                            match != null &&
+                            match.timeline.confident &&
+                            isBetterMatch(match, fallbackBestMatch)
+                        ) {
+                            fallbackBestMatch = match
+                            fallbackBestFamily = family
+                        }
+                    }
+                }
+
+                AutoSyncDebugLog.info {
+                    "forced fallback summary references=${forcedFallbackTracks.size} " +
+                        "families=${timingFamilies.size} evaluatedPairs=$fallbackPairs " +
+                        "confident=${fallbackBestMatch != null}"
+                }
+
+                val family = fallbackBestFamily ?: return null
+                val match = fallbackBestMatch ?: return null
+                return family to match
+            }
+
             fun canStopForFamily(
                 family: CandidateTimingFamilyState,
                 match: TimelineRetimeMatch,
@@ -1150,8 +1247,17 @@ internal object AutomaticSubtitleSync {
                     "loaded=${loadedByUrl.size}/${candidateByUrl.size}"
             }
 
-            val winningFamily = bestFamily
-            val winningMatch = bestMatch
+            var winningFamily = bestFamily
+            var winningMatch = bestMatch
+            if (
+                (winningFamily == null || winningMatch == null || !winningMatch.timeline.confident) &&
+                forcedFallbackTracks.isNotEmpty()
+            ) {
+                evaluateForcedReferenceFallback()?.let { fallback ->
+                    winningFamily = fallback.first
+                    winningMatch = fallback.second
+                }
+            }
             if (winningFamily == null || winningMatch == null || !winningMatch.timeline.confident) {
                 if (!selectedResolved) {
                     markSubtitleLoadCancellation(selectedSubtitleUrl, source = "selected")
@@ -1164,19 +1270,21 @@ internal object AutomaticSubtitleSync {
                 return@supervisorScope null
             }
 
+            val resolvedWinningFamily = winningFamily
+            val resolvedWinningMatch = winningMatch
             val winningMember =
-                winningFamily.members.minByOrNull { it.index }
-                    ?: winningFamily.representative
+                resolvedWinningFamily.members.minByOrNull { it.index }
+                    ?: resolvedWinningFamily.representative
             val memberMatch =
-                if (winningMember === winningFamily.representative) {
-                    winningMatch
+                if (winningMember === resolvedWinningFamily.representative) {
+                    resolvedWinningMatch
                 } else {
                     reuseShiftEquivalentMatch(
-                        match = winningMatch,
+                        match = resolvedWinningMatch,
                         representativeTarget =
-                            winningFamily.representative.loaded.cues,
+                            resolvedWinningFamily.representative.loaded.cues,
                         target = winningMember.loaded.cues,
-                    ) ?: winningMatch
+                    ) ?: resolvedWinningMatch
                 }
 
             if (!selectedResolved) {
@@ -1740,7 +1848,7 @@ internal object AutomaticSubtitleSync {
         preferredLanguage: String?,
         target: List<SubtitleSyncCue>,
         waitMs: Long = LIVE_REFERENCE_WAIT_MS,
-    ): List<ReferenceTrack> {
+    ): ReferenceSelection {
         val targetSpan = referenceSpanMs(target).coerceAtLeast(1L)
         val started = SystemClock.elapsedRealtime()
         var lastSignature = ""
@@ -1780,7 +1888,12 @@ internal object AutomaticSubtitleSync {
             }
 
             if (ready.isNotEmpty()) {
-                return ready.map { it.track.copy(cues = it.track.cues.toList()) }
+                return ReferenceSelection(
+                    primary = ready.map { it.track.copy(cues = it.track.cues.toList()) },
+                    forcedFallback = forcedFallback.map {
+                        it.track.copy(cues = it.track.cues.toList())
+                    },
+                )
             }
 
             val elapsedMs = SystemClock.elapsedRealtime() - started
@@ -1792,7 +1905,9 @@ internal object AutomaticSubtitleSync {
             AutoSyncDebugLog.info {
                 "using forced-only Media3 reference fallback tracks=${forcedFallback.size}"
             }
-            return forcedFallback.map { it.track.copy(cues = it.track.cues.toList()) }
+            return ReferenceSelection(
+                primary = forcedFallback.map { it.track.copy(cues = it.track.cues.toList()) },
+            )
         }
 
         if (waitMs == 0L) {
@@ -1804,7 +1919,7 @@ internal object AutomaticSubtitleSync {
                 "Media3 did not expose a near-complete reference within ${waitMs}ms"
             }
         }
-        return emptyList()
+        return ReferenceSelection()
     }
 
     private fun groupEquivalentReferenceTimelines(
@@ -2122,6 +2237,10 @@ internal object AutomaticSubtitleSync {
         val timingHash: Long,
     )
     private data class ReferenceTimingGroup(val members: MutableList<ReferenceTrack>)
+    private data class ReferenceSelection(
+        val primary: List<ReferenceTrack> = emptyList(),
+        val forcedFallback: List<ReferenceTrack> = emptyList(),
+    )
     private data class ReferenceProfile(
         val track: ReferenceTrack,
         val cueCount: Int,
