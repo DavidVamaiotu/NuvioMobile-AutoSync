@@ -1990,8 +1990,6 @@
     <string name="settings_meta_background_mode_dominant_description">Prispôsobiť pozadie stránky dominantnej farbe z obrázka na pozadí.</string>
     <string name="settings_playback_parental_guide">Upozornenia na obsah</string>
     <string name="settings_playback_parental_guide_description">Zobraziť rodičovské upozornenie pri spustení prehrávania.</string>
-    <string name="settings_tmdb_module_release_dates">Dátumy vydania</string>
-    <string name="settings_tmdb_module_release_dates_description">Používať dátumy vysielania z TMDB namiesto presných časov vydania z doplnkov</string>
     <string name="source_mal">MyAnimeList</string>
     <string name="updates_debug_test_complete">Test bannera dokončený</string>
     <string name="updates_debug_test_description">Zobraziť náhľad bannera a simulovaného priebehu sťahovania.</string>

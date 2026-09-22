@@ -2020,8 +2020,6 @@ Du bruker denne funksjonen helt på eget ansvar. P2P kan deaktiveres når som he
     <string name="settings_tmdb_module_networks_description">Nettverk med logoer fra TMDB</string>
     <string name="settings_tmdb_module_production_companies">Produksjonsselskaper</string>
     <string name="settings_tmdb_module_production_companies_description">Produksjonsselskaper fra TMDB</string>
-    <string name="settings_tmdb_module_release_dates">Utgivelsesdatoer</string>
-    <string name="settings_tmdb_module_release_dates_description">Bruk TMDB-kringkasteres sendedatoer i stedet for nøyaktige tilleggs-utgivelsestider</string>
     <string name="settings_tmdb_module_season_posters">Sesongplakater</string>
     <string name="settings_tmdb_module_season_posters_description">Bruk TMDB sesongplakater i metadata-skjermen for serier.</string>
     <string name="settings_tmdb_module_trailers">Trailere</string>

@@ -751,8 +751,6 @@
     <string name="settings_tmdb_module_credits_description">Χρήση δημιουργών, σκηνοθετών, σεναριογράφων και φωτογραφιών καστ TMDB.</string>
     <string name="settings_tmdb_module_details">Λεπτομέρειες</string>
     <string name="settings_tmdb_module_details_description">Χρήση πληροφοριών κυκλοφορίας, διάρκειας, διαβάθμισης ηλικίας, κατάστασης, χώρας και γλώσσας TMDB.</string>
-    <string name="settings_tmdb_module_release_dates">Ημερομηνίες κυκλοφορίας</string>
-    <string name="settings_tmdb_module_release_dates_description">Χρήση ημερομηνιών προβολής καναλιού από το TMDB αντί για ακριβείς χρόνους κυκλοφορίας πρόσθετου</string>
     <string name="settings_tmdb_module_episodes">Επεισόδια</string>
     <string name="settings_tmdb_module_episodes_description">Χρήση τίτλων επεισοδίων, μικρογραφιών, περιγραφών και διάρκειας TMDB για σειρές.</string>
     <string name="settings_tmdb_module_more_like_this">Περισσότερα σαν αυτό</string>

@@ -1216,8 +1216,6 @@
     <string name="settings_tmdb_module_credits_description">Diễn viên kèm ảnh, đạo diễn và biên kịch từ TMDB</string>
     <string name="settings_tmdb_module_details">Chi tiết</string>
     <string name="settings_tmdb_module_details_description">Thời lượng, trạng thái, quốc gia và ngôn ngữ từ TMDB</string>
-    <string name="settings_tmdb_module_release_dates">Ngày phát hành</string>
-    <string name="settings_tmdb_module_release_dates_description">Dùng ngày phát sóng của TMDB thay vì thời điểm phát hành chi tiết của tiện ích</string>
     <string name="settings_tmdb_module_episodes">Tập phim</string>
     <string name="settings_tmdb_module_episodes_description">Tiêu đề, mô tả, ảnh thu nhỏ và thời lượng tập phim từ TMDB</string>
     <string name="settings_tmdb_module_more_like_this">Nội dung tương tự</string>

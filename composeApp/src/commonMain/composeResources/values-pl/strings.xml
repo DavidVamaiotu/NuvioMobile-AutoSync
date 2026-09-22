@@ -2132,8 +2132,6 @@
     <string name="settings_playback_pause_overlay_description">Pokaż szczegóły po 5 sekundach pauzy.</string>
     <string name="settings_playback_subtitle_strip_sdh">Usuń napisy SDH</string>
     <string name="settings_playback_subtitle_strip_sdh_description">Ukryj opisy dźwięków i etykiety mówców z napisów tekstowych.</string>
-    <string name="settings_tmdb_module_release_dates">Daty premier</string>
-    <string name="settings_tmdb_module_release_dates_description">Używaj dat emisji TMDB zamiast dokładnych dat wydania z dodatków</string>
     <string name="settings_tracking_data_sources">Źródła</string>
     <string name="settings_tracking_features">PREFERENCJE ŹRÓDEŁ</string>
     <string name="settings_tracking_viewing_discovery">Funkcje Trakt</string>

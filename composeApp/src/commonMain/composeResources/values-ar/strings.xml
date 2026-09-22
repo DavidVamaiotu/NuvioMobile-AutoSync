@@ -1108,8 +1108,6 @@
     <string name="settings_tmdb_module_credits_description">الممثلون مع الصور، المخرج، والكاتب من TMDB</string>
     <string name="settings_tmdb_module_details">التفاصيل</string>
     <string name="settings_tmdb_module_details_description">مدة العرض، تاريخ الإصدار، الدولة، واللغة من TMDB</string>
-    <string name="settings_tmdb_module_release_dates">تواريخ الإصدار</string>
-    <string name="settings_tmdb_module_release_dates_description">استخدام تواريخ بث TMDB بدل أوقات الإصدار الدقيقة القادمة من الإضافة</string>
     <string name="settings_tmdb_module_episodes">الحلقات</string>
     <string name="settings_tmdb_module_episodes_description">عناوين الحلقات، الملخصات، الصور، ومدة العرض من TMDB</string>
     <string name="settings_tmdb_module_more_like_this">مقترحات مشابهة</string>

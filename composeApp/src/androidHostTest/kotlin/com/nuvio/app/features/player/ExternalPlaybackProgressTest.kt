@@ -23,6 +23,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @RunWith(RobolectricTestRunner::class)
@@ -101,6 +102,26 @@ class ExternalPlaybackProgressTest {
         assertEquals(1_800_000L, entry.lastPositionMs)
         assertEquals(3_600_000L, entry.durationMs)
         assertFalse(entry.isCompleted)
+    }
+
+    @Test
+    fun mxPlayerCompletionWithoutPositionIsRecordedAsWatched() = runBlocking {
+        // MX Player omits "position" and "duration" when playback runs to the end.
+        val returned = Intent().apply { putExtra("end_by", "playback_completion") }
+        val result = assertNotNull(ExternalPlayerActivityContract().parseResult(Activity.RESULT_OK, returned))
+        assertFalse(result.endedByUser)
+        recordExternalPlaybackProgress(
+            ExternalPlaybackResult(result.positionMs, result.durationMs, result.endedByUser),
+            fallbackSession = session(),
+        )
+        val entry = assertNotNull(WatchProgressRepository.progressForVideo("tt123"))
+        assertTrue(entry.isCompleted)
+    }
+
+    @Test
+    fun mxPlayerCompletionWithoutPositionIsDroppedOnErrorResult() {
+        val returned = Intent().apply { putExtra("end_by", "playback_completion") }
+        assertNull(ExternalPlayerActivityContract().parseResult(Activity.RESULT_FIRST_USER, returned))
     }
 
     private fun infuseResult(

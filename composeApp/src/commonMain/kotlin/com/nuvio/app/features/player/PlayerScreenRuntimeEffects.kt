@@ -274,19 +274,20 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
         playbackSnapshot.isLoading,
         preferredAudioSelectionApplied,
         preferredSubtitleSelectionApplied,
+        trackPreferenceRestoreApplied,
         addonSubtitles,
         isLoadingAddonSubtitles,
     ) {
         if (playerController == null || playbackSnapshot.isLoading) {
             return@LaunchedEffect
         }
-        if (preferredAudioSelectionApplied && preferredSubtitleSelectionApplied) {
+        if (trackPreferenceRestoreApplied && preferredAudioSelectionApplied && preferredSubtitleSelectionApplied) {
             return@LaunchedEffect
         }
 
         repeat(10) {
             refreshTracks()
-            if (preferredAudioSelectionApplied && preferredSubtitleSelectionApplied) {
+            if (trackPreferenceRestoreApplied && preferredAudioSelectionApplied && preferredSubtitleSelectionApplied) {
                 return@LaunchedEffect
             }
             delay(300)

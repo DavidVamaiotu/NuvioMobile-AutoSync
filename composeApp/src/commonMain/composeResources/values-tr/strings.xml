@@ -1095,8 +1095,6 @@
     <string name="settings_tmdb_module_credits_description">TMDB içerik oluşturucuları, yönetmenleri, yazarları ve oyuncu fotoğraflarını kullan.</string>
     <string name="settings_tmdb_module_details">Detaylar</string>
     <string name="settings_tmdb_module_details_description">TMDB yayın bilgisi, süre, yaş derecelendirmesi, durum, ülke ve dil bilgilerini kullan.</string>
-    <string name="settings_tmdb_module_release_dates">Yayın tarihleri</string>
-    <string name="settings_tmdb_module_release_dates_description">Hassas eklenti çıkış zamanları yerine TMDB yayıncı yayın tarihlerini kullanır</string>
     <string name="settings_tmdb_module_episodes">Bölümler</string>
     <string name="settings_tmdb_module_episodes_description">Diziler için TMDB bölüm başlıklarını, küçük görselleri, açıklamaları ve süreleri kullan.</string>
     <string name="settings_tmdb_module_more_like_this">Buna benzerler</string>

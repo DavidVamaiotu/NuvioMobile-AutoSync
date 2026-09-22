@@ -2010,8 +2010,6 @@
     <string name="upcoming_section_title">Közelgő</string>
     <string name="settings_playback_auto_play_next_episode_fallback">Tartalék megoldás, ha a sorozatkiadás nem található</string>
     <string name="settings_playback_auto_play_next_episode_fallback_description">Automatikusan az első elérhető stream kiválasztása, ha nem található binge-csoport. Ha ki van kapcsolva, a stream-választó jelenik meg helyette.</string>
-    <string name="settings_tmdb_module_release_dates">Megjelenési dátumok</string>
-    <string name="settings_tmdb_module_release_dates_description">A TMDB műsorszolgáltatói premierdátumainak használata a pontos bővítményes megjelenési idők helyett</string>
     <string name="settings_tracking_data_sources">Források</string>
     <string name="settings_tracking_features">FORRÁS BEÁLLÍTÁSOK</string>
     <string name="settings_tracking_viewing_discovery">Trakt funkciók</string>
