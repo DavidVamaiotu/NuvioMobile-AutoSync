@@ -2325,6 +2325,7 @@ internal object EmbeddedSubtitleTimelineLoader {
 
     private fun readFloat(bytes: ByteArray, element: EbmlElement): Double? {
         val size = element.size ?: return null
+        if (size != 4L && size != 8L) return null
         val end = element.dataStart + size.toInt()
         if (end > bytes.size) return null
         return when (size) {
