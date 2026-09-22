@@ -38,6 +38,25 @@ class AutoSyncReferenceRetryPolicyTest {
     }
 
     @Test
+    fun consecutiveRetriesKeepEarlierReferencesRejected() {
+        val afterA = mergeRejectedReferenceKeys(
+            previous = emptySet(),
+            referenceKey = "mkv-cues:3",
+            equivalentKeys = setOf("mkv-cues:3", "mkv-cues:4"),
+        )
+        val afterB = mergeRejectedReferenceKeys(
+            previous = afterA,
+            referenceKey = "mkv-cues:6",
+            equivalentKeys = setOf("mkv-cues:6"),
+        )
+
+        assertEquals(
+            setOf("mkv-cues:3", "mkv-cues:4", "mkv-cues:6"),
+            afterB,
+        )
+    }
+
+    @Test
     fun unknownReferenceOnlyRejectsItsOwnKey() {
         val equivalent = AutomaticSubtitleSync.equivalentReferenceKeysFor(
             referenceTracks = emptyList(),

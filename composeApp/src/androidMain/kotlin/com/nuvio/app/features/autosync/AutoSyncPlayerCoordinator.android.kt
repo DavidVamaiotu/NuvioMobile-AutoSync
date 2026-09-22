@@ -100,11 +100,11 @@ internal class AutoSyncPlayerCoordinator(
             return
         }
 
-        val rejectedKeys = buildSet {
-            addAll(snapshot.rejectedReferenceKeys)
-            add(snapshot.appliedReference.key)
-            addAll(snapshot.appliedReference.equivalentKeys)
-        }
+        val rejectedKeys = mergeRejectedReferenceKeys(
+            previous = snapshot.rejectedReferenceKeys,
+            referenceKey = snapshot.appliedReference.key,
+            equivalentKeys = snapshot.appliedReference.equivalentKeys,
+        )
         retryContext = snapshot.copy(rejectedReferenceKeys = rejectedKeys)
 
         val operationToken = ++retryOperationToken

@@ -650,6 +650,15 @@ internal object AutomaticSubtitleSync {
                 }
             }
 
+            if (requiredReferenceSource != null) {
+                AutoSyncDebugLog.info {
+                    "RETRY_REFERENCE_CATALOG source=${requiredReferenceSource.name} " +
+                        "remainingPrimary=${referenceTracks.size} " +
+                        "remainingForced=${forcedFallbackTracks.size} " +
+                        "excluded=${excludedReferenceKeys.size}"
+                }
+            }
+
             if (referenceTracks.isEmpty()) {
                 if (requiredReferenceSource != null) {
                     onReferenceSearchOutcome?.invoke(

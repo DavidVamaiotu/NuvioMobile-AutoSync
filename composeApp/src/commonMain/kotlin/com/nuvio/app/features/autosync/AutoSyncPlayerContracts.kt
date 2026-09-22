@@ -23,6 +23,16 @@ internal data class AutoSyncRetryUiState(
     val status: AutoSyncRetryStatus = AutoSyncRetryStatus.IDLE,
 )
 
+internal fun mergeRejectedReferenceKeys(
+    previous: Set<String>,
+    referenceKey: String,
+    equivalentKeys: Set<String>,
+): Set<String> = buildSet {
+    addAll(previous)
+    add(referenceKey)
+    addAll(equivalentKeys)
+}
+
 /**
  * Optional Android AutoSync capability layered beside PlayerEngineController.
  * Other platforms do not need to implement it.
