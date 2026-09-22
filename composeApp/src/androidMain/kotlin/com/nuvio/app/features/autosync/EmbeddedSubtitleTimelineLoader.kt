@@ -52,6 +52,7 @@ internal object EmbeddedSubtitleTimelineLoader {
     private const val DEFAULT_CUE_DURATION_MS = 5_000L
     private const val LAST_MKV_CUE_ESTIMATED_DURATION_MS = 2_000L
     private const val MAX_MKV_INTER_CUE_ESTIMATED_DURATION_MS = 4_000L
+    private const val MATROSKA_PGS_CODEC_ID = "S_HDMV/PGS"
     private const val MIN_INDEXED_CUES = 8
     private const val MIN_INDEXED_SPAN_MS = 30_000L
     private const val MAX_CACHE_ENTRIES = 2
@@ -1198,36 +1199,102 @@ internal object EmbeddedSubtitleTimelineLoader {
             }
         }
 
-        return pendingByTrack.mapValues { (_, pending) ->
+        val tracksByNumber = subtitleTracks.associateBy { it.number }
+        return pendingByTrack.mapValues { (trackNumber, pending) ->
             val sorted = pending
                 .sortedBy { it.startTimeMs }
                 .distinctBy { it.startTimeMs }
-            val estimatedEndStartsMs = HashSet<Long>()
 
-            val cues = sorted.mapIndexed { index, cue ->
-                val durationMs = cue.explicitDurationMs ?: run {
-                    estimatedEndStartsMs += cue.startTimeMs
-                    val nextStartMs = sorted.getOrNull(index + 1)?.startTimeMs
-                    if (nextStartMs != null && nextStartMs > cue.startTimeMs) {
-                        (nextStartMs - cue.startTimeMs)
-                            .coerceAtMost(MAX_MKV_INTER_CUE_ESTIMATED_DURATION_MS)
-                            .coerceAtLeast(1L)
-                    } else {
-                        LAST_MKV_CUE_ESTIMATED_DURATION_MS
-                    }
-                }
-                SubtitleSyncCue(
-                    startTimeMs = cue.startTimeMs,
-                    endTimeMs = cue.startTimeMs + durationMs,
-                    text = "",
-                )
+            if (tracksByNumber[trackNumber]?.codecId.equals(MATROSKA_PGS_CODEC_ID, ignoreCase = true)) {
+                buildPgsIndexedTimeline(sorted)
+            } else {
+                buildDefaultIndexedTimeline(sorted)
             }
+        }
+    }
 
-            IndexedSubtitleTimeline(
-                cues = cues,
-                estimatedEndStartsMs = estimatedEndStartsMs,
+    /**
+     * Matroska stores PGS display and clear frames as separate subtitle frames. The Cues index
+     * therefore contains roughly twice as many timestamps as the visible subtitle timeline.
+     *
+     * AutoSync only needs visibility intervals, not bitmap data: pair each display frame with its
+     * following clear frame and use the clear timestamp as the exact end. This stays O(n), performs
+     * no extra I/O or bitmap decoding, and keeps PGS-specific behavior entirely inside extraction.
+     */
+    private fun buildPgsIndexedTimeline(
+        sorted: List<PendingIndexedCue>,
+    ): IndexedSubtitleTimeline {
+        if (sorted.size < 2) {
+            return IndexedSubtitleTimeline(
+                cues = emptyList(),
+                estimatedEndStartsMs = emptySet(),
             )
         }
+
+        val cues = ArrayList<SubtitleSyncCue>(sorted.size / 2)
+        var index = 0
+        while (index + 1 < sorted.size) {
+            val display = sorted[index]
+            val clear = sorted[index + 1]
+            if (clear.startTimeMs > display.startTimeMs) {
+                val explicitEndMs = display.explicitDurationMs
+                    ?.takeIf { duration ->
+                        duration > 0L && display.startTimeMs <= Long.MAX_VALUE - duration
+                    }
+                    ?.let { duration -> display.startTimeMs + duration }
+                val endTimeMs = explicitEndMs
+                    ?.coerceAtMost(clear.startTimeMs)
+                    ?: clear.startTimeMs
+
+                if (endTimeMs > display.startTimeMs) {
+                    cues += SubtitleSyncCue(
+                        startTimeMs = display.startTimeMs,
+                        endTimeMs = endTimeMs,
+                        text = "",
+                    )
+                }
+            }
+            index += 2
+        }
+
+        AutoSyncDebugLog.verbose {
+            "PGS index normalized raw=" + sorted.size + " visible=" + cues.size
+        }
+
+        return IndexedSubtitleTimeline(
+            cues = cues,
+            estimatedEndStartsMs = emptySet(),
+        )
+    }
+
+    private fun buildDefaultIndexedTimeline(
+        sorted: List<PendingIndexedCue>,
+    ): IndexedSubtitleTimeline {
+        val estimatedEndStartsMs = HashSet<Long>()
+
+        val cues = sorted.mapIndexed { index, cue ->
+            val durationMs = cue.explicitDurationMs ?: run {
+                estimatedEndStartsMs += cue.startTimeMs
+                val nextStartMs = sorted.getOrNull(index + 1)?.startTimeMs
+                if (nextStartMs != null && nextStartMs > cue.startTimeMs) {
+                    (nextStartMs - cue.startTimeMs)
+                        .coerceAtMost(MAX_MKV_INTER_CUE_ESTIMATED_DURATION_MS)
+                        .coerceAtLeast(1L)
+                } else {
+                    LAST_MKV_CUE_ESTIMATED_DURATION_MS
+                }
+            }
+            SubtitleSyncCue(
+                startTimeMs = cue.startTimeMs,
+                endTimeMs = cue.startTimeMs + durationMs,
+                text = "",
+            )
+        }
+
+        return IndexedSubtitleTimeline(
+            cues = cues,
+            estimatedEndStartsMs = estimatedEndStartsMs,
+        )
     }
 
     private fun buildFallbackTrackLabel(track: MatroskaSubtitleTrack): String {
