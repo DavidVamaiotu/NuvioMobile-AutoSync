@@ -1,5 +1,8 @@
 name: AutoSync Release
 
+# Release trigger: conservative grouped reply timing repair
+
+
 on:
   workflow_dispatch:
     inputs:

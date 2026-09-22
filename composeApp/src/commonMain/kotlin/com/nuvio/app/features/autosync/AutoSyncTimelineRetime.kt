@@ -86,6 +86,17 @@ internal object AutoSyncTimelineRetimer {
     private const val COVERAGE_SEGMENT_MAX_AVERAGE_COST = 1.35
     private const val COVERAGE_SEGMENT_MIN_GROUPS = 4
 
+    // Conservative post-confidence repair for a supported 2:2 reply boundary. These checks are
+    // intentionally output-only: they never feed back into DP scoring, confidence, or selection.
+    private const val GROUPED_REPLY_MIN_REFERENCE_GAP_MS = 500L
+    private const val GROUPED_REPLY_MIN_EARLY_START_MS = 250L
+    private const val GROUPED_REPLY_MAX_START_ADJUSTMENT_MS = 1_250L
+    private const val GROUPED_REPLY_ENDPOINT_TOLERANCE_MS = 200L
+    private const val GROUPED_REPLY_CONTEXT_SHIFT_TOLERANCE_MS = 500L
+    private const val GROUPED_REPLY_MIN_RESULT_DURATION_MS = 800L
+    private const val GROUPED_REPLY_CONTEXT_GROUP_RADIUS = 2
+    private const val GROUPED_REPLY_REFERENCE_NEIGHBOR_RADIUS = 2
+
     private val groupShapes = arrayOf(
         GroupShape(referenceCount = 1, targetCount = 1),
         GroupShape(referenceCount = 1, targetCount = 2),
@@ -177,7 +188,7 @@ internal object AutoSyncTimelineRetimer {
             dpMs += elapsedMs(dpMark)
 
             val validationMark = if (timingEnabled) TimeSource.Monotonic.markNow() else null
-            val finalized = result.copy(
+            var finalized = result.copy(
                 alignmentSource = "provided",
                 alignmentScale = coarseScale,
                 alignmentInterceptMs = coarseInterceptMs,
@@ -188,6 +199,15 @@ internal object AutoSyncTimelineRetimer {
                     targetSize = target.size,
                 ),
             )
+            if (finalized.confident) {
+                finalized = refineGroupedReplyTiming(
+                    reference = reference,
+                    target = target,
+                    result = finalized,
+                    referenceEstimatedEndStartsMs = referenceEstimatedEndStartsMs,
+                    cancellationCheck = cancellationCheck,
+                )
+            }
             validationMs += elapsedMs(validationMark)
             reportTimings("provided")
             return finalized
@@ -293,7 +313,7 @@ internal object AutoSyncTimelineRetimer {
         dpMs += elapsedMs(dpMark)
 
         val validationMark = if (timingEnabled) TimeSource.Monotonic.markNow() else null
-        val finalized = finalizeDiscoveredResult(
+        var finalized = finalizeDiscoveredResult(
             result = result,
             referenceSize = reference.size,
             targetSize = target.size,
@@ -306,6 +326,15 @@ internal object AutoSyncTimelineRetimer {
                 allowAmbiguousDelayOnlyMargin ||
                     (delayOnly?.stableSegmentMarginOverride == true),
         )
+        if (finalized.confident && delayOnly == null) {
+            finalized = refineGroupedReplyTiming(
+                reference = reference,
+                target = target,
+                result = finalized,
+                referenceEstimatedEndStartsMs = referenceEstimatedEndStartsMs,
+                cancellationCheck = cancellationCheck,
+            )
+        }
         validationMs += elapsedMs(validationMark)
         reportTimings(if (delayOnly != null) "delay-only" else "activity")
         return if (finalized.confident && delayOnly != null) {
@@ -1422,6 +1451,239 @@ internal object AutoSyncTimelineRetimer {
         val margin: Double,
         val delayOnlySeed: DelayOnlySearchSeed?,
     )
+
+    private fun refineGroupedReplyTiming(
+        reference: List<SubtitleSyncCue>,
+        target: List<SubtitleSyncCue>,
+        result: AutoSyncTimelineRetimeResult,
+        referenceEstimatedEndStartsMs: Set<Long>,
+        cancellationCheck: (() -> Unit)?,
+    ): AutoSyncTimelineRetimeResult {
+        if (!result.confident || result.twoToTwoGroups == 0 || result.cues.size != target.size) {
+            return result
+        }
+
+        var refinedCues: MutableList<AutoSyncRetimedCue>? = null
+
+        for (groupIndex in result.groups.indices) {
+            if ((groupIndex and 0xFF) == 0) cancellationCheck?.invoke()
+
+            val group = result.groups[groupIndex]
+            if (group.referenceCount != 2 || group.targetCount != 2) continue
+
+            val firstReferenceIndex = group.referenceStartIndex
+            val secondReferenceIndex = firstReferenceIndex + 1
+            val firstTargetIndex = group.targetStartIndex
+            val secondTargetIndex = firstTargetIndex + 1
+            if (secondReferenceIndex !in reference.indices || secondTargetIndex !in target.indices) {
+                continue
+            }
+
+            val firstReference = reference[firstReferenceIndex]
+            val secondReference = reference[secondReferenceIndex]
+            val firstTarget = target[firstTargetIndex]
+            val secondTarget = target[secondTargetIndex]
+
+            if (
+                !isValidCueInterval(firstReference) ||
+                !isValidCueInterval(secondReference) ||
+                !isValidCueInterval(firstTarget) ||
+                !isValidCueInterval(secondTarget)
+            ) {
+                continue
+            }
+            if (
+                firstReference.startTimeMs in referenceEstimatedEndStartsMs ||
+                secondReference.startTimeMs in referenceEstimatedEndStartsMs
+            ) {
+                continue
+            }
+
+            val referenceGapMs = secondReference.startTimeMs - firstReference.endTimeMs
+            if (
+                firstReference.startTimeMs >= secondReference.startTimeMs ||
+                referenceGapMs < GROUPED_REPLY_MIN_REFERENCE_GAP_MS ||
+                hasAmbiguousReferenceGap(
+                    reference = reference,
+                    firstReferenceIndex = firstReferenceIndex,
+                    secondReferenceIndex = secondReferenceIndex,
+                )
+            ) {
+                continue
+            }
+
+            // Restrict the first patch to ordinary sequential external cues. Simultaneous or
+            // overlapping authored cues need stronger identity evidence than timing alone.
+            if (
+                firstTarget.startTimeMs >= secondTarget.startTimeMs ||
+                firstTarget.endTimeMs > secondTarget.startTimeMs ||
+                (firstTargetIndex > 0 &&
+                    target[firstTargetIndex - 1].endTimeMs > firstTarget.startTimeMs) ||
+                (secondTargetIndex < target.lastIndex &&
+                    secondTarget.endTimeMs > target[secondTargetIndex + 1].startTimeMs)
+            ) {
+                continue
+            }
+
+            val currentCues = refinedCues ?: result.cues
+            val firstOutput = currentCues[firstTargetIndex]
+            val secondOutput = currentCues[secondTargetIndex]
+            if (
+                !isValidRetimedCue(firstOutput) ||
+                !isValidRetimedCue(secondOutput) ||
+                firstOutput.originalStartTimeMs != firstTarget.startTimeMs ||
+                firstOutput.originalEndTimeMs != firstTarget.endTimeMs ||
+                secondOutput.originalStartTimeMs != secondTarget.startTimeMs ||
+                secondOutput.originalEndTimeMs != secondTarget.endTimeMs ||
+                firstOutput.endTimeMs > secondOutput.startTimeMs
+            ) {
+                continue
+            }
+
+            if (
+                abs(firstOutput.startTimeMs - firstReference.startTimeMs) >
+                    GROUPED_REPLY_ENDPOINT_TOLERANCE_MS ||
+                abs(secondOutput.endTimeMs - secondReference.endTimeMs) >
+                    GROUPED_REPLY_ENDPOINT_TOLERANCE_MS
+            ) {
+                continue
+            }
+
+            val startAdjustmentMs = secondReference.startTimeMs - secondOutput.startTimeMs
+            if (
+                startAdjustmentMs < GROUPED_REPLY_MIN_EARLY_START_MS ||
+                startAdjustmentMs > GROUPED_REPLY_MAX_START_ADJUSTMENT_MS
+            ) {
+                continue
+            }
+
+            val localGroupShiftMs =
+                firstReference.startTimeMs -
+                    transformTime(
+                        firstTarget.startTimeMs,
+                        result.alignmentScale,
+                        result.alignmentInterceptMs,
+                    )
+            if (
+                !hasSupportingSimpleGroup(
+                    reference = reference,
+                    target = target,
+                    groups = result.groups,
+                    groupIndex = groupIndex,
+                    direction = -1,
+                    expectedShiftMs = localGroupShiftMs,
+                    scale = result.alignmentScale,
+                    interceptMs = result.alignmentInterceptMs,
+                ) ||
+                !hasSupportingSimpleGroup(
+                    reference = reference,
+                    target = target,
+                    groups = result.groups,
+                    groupIndex = groupIndex,
+                    direction = 1,
+                    expectedShiftMs = localGroupShiftMs,
+                    scale = result.alignmentScale,
+                    interceptMs = result.alignmentInterceptMs,
+                )
+            ) {
+                continue
+            }
+
+            val proposedStartMs = secondReference.startTimeMs
+            if (
+                proposedStartMs < firstOutput.endTimeMs ||
+                proposedStartMs >= secondOutput.endTimeMs ||
+                (secondTargetIndex < currentCues.lastIndex &&
+                    proposedStartMs >= currentCues[secondTargetIndex + 1].startTimeMs)
+            ) {
+                continue
+            }
+
+            val currentDurationMs = secondOutput.endTimeMs - secondOutput.startTimeMs
+            val proposedDurationMs = secondOutput.endTimeMs - proposedStartMs
+            if (
+                proposedDurationMs < GROUPED_REPLY_MIN_RESULT_DURATION_MS ||
+                proposedDurationMs * 2L < currentDurationMs
+            ) {
+                continue
+            }
+
+            val output = refinedCues ?: result.cues.toMutableList().also { refinedCues = it }
+            output[secondTargetIndex] = secondOutput.copy(startTimeMs = proposedStartMs)
+        }
+
+        val output = refinedCues ?: return result
+        return result.copy(cues = output)
+    }
+
+    private fun hasSupportingSimpleGroup(
+        reference: List<SubtitleSyncCue>,
+        target: List<SubtitleSyncCue>,
+        groups: List<AutoSyncCueGroup>,
+        groupIndex: Int,
+        direction: Int,
+        expectedShiftMs: Long,
+        scale: Double,
+        interceptMs: Double,
+    ): Boolean {
+        for (distance in 1..GROUPED_REPLY_CONTEXT_GROUP_RADIUS) {
+            val neighborIndex = groupIndex + direction * distance
+            if (neighborIndex !in groups.indices) break
+
+            val neighbor = groups[neighborIndex]
+            if (neighbor.referenceCount != 1 || neighbor.targetCount != 1) continue
+            val referenceIndex = neighbor.referenceStartIndex
+            val targetIndex = neighbor.targetStartIndex
+            if (referenceIndex !in reference.indices || targetIndex !in target.indices) continue
+
+            val referenceCue = reference[referenceIndex]
+            val targetCue = target[targetIndex]
+            if (!isValidCueInterval(referenceCue) || !isValidCueInterval(targetCue)) continue
+
+            val neighborShiftMs =
+                referenceCue.startTimeMs -
+                    transformTime(targetCue.startTimeMs, scale, interceptMs)
+            return abs(neighborShiftMs - expectedShiftMs) <=
+                GROUPED_REPLY_CONTEXT_SHIFT_TOLERANCE_MS
+        }
+        return false
+    }
+
+    private fun hasAmbiguousReferenceGap(
+        reference: List<SubtitleSyncCue>,
+        firstReferenceIndex: Int,
+        secondReferenceIndex: Int,
+    ): Boolean {
+        val first = reference[firstReferenceIndex]
+        val second = reference[secondReferenceIndex]
+        val gapStartMs = first.endTimeMs
+        val gapEndMs = second.startTimeMs
+        val startIndex = max(0, firstReferenceIndex - GROUPED_REPLY_REFERENCE_NEIGHBOR_RADIUS)
+        val endIndex = min(
+            reference.lastIndex,
+            secondReferenceIndex + GROUPED_REPLY_REFERENCE_NEIGHBOR_RADIUS,
+        )
+
+        for (index in startIndex..endIndex) {
+            if (index == firstReferenceIndex || index == secondReferenceIndex) continue
+            val cue = reference[index]
+            if (!isValidCueInterval(cue)) return true
+            if (cue.startTimeMs < gapEndMs && cue.endTimeMs > gapStartMs) return true
+            if (
+                abs(cue.startTimeMs - second.startTimeMs) <=
+                    GROUPED_REPLY_ENDPOINT_TOLERANCE_MS
+            ) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun isValidCueInterval(cue: SubtitleSyncCue): Boolean =
+        cue.startTimeMs >= 0L && cue.endTimeMs > cue.startTimeMs
+
+    private fun isValidRetimedCue(cue: AutoSyncRetimedCue): Boolean =
+        cue.startTimeMs >= 0L && cue.endTimeMs > cue.startTimeMs
 
     private fun transplantGroupTiming(
         reference: List<SubtitleSyncCue>,
