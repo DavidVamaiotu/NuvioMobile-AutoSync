@@ -496,7 +496,7 @@ internal object PgsCueSemanticParser {
             val current = active
             val forceReplacement = presentation.state != 0 || presentation.paletteUpdate
             if (current != null && !forceReplacement && current.signature == signature) {
-                if (current.explicitEndMs != null && current.explicitEndMs <= timeMs) {
+                if (current.explicitEndMs != null && current.explicitEndMs < timeMs) {
                     closeActive(current.explicitEndMs)
                     active = ActivePresentation(
                         startTimeMs = timeMs,
