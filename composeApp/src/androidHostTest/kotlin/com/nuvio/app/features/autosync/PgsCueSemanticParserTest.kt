@@ -7,7 +7,7 @@ import kotlin.test.assertIs
 class PgsCueSemanticParserTest {
     @Test
     fun assemblesSegmentBlocksAndPreservesSilence() {
-        val probes = buildList {
+        val probes = buildList<RawProbe> {
             visibleSet(startMs = 1_000, state = 2, objectVersion = 0)
             clearSet(startMs = 2_000)
             visibleSet(startMs = 4_000, objectVersion = 1)
@@ -32,7 +32,7 @@ class PgsCueSemanticParserTest {
 
     @Test
     fun keepsDirectReplacementBoundary() {
-        val probes = buildList {
+        val probes = buildList<RawProbe> {
             visibleSet(startMs = 1_000, state = 2, objectVersion = 0)
             visibleSet(startMs = 2_000, objectVersion = 1)
             clearSet(startMs = 3_000)
@@ -51,7 +51,7 @@ class PgsCueSemanticParserTest {
 
     @Test
     fun repeatedIdenticalCompositionDoesNotCreateFakeDialogueBoundary() {
-        val probes = buildList {
+        val probes = buildList<RawProbe> {
             visibleSet(startMs = 1_000, state = 2, objectVersion = 0)
             presentation(startMs = 2_000, objectId = 1)
             end(startMs = 2_000)
@@ -68,7 +68,7 @@ class PgsCueSemanticParserTest {
 
     @Test
     fun objectVersionChangeIsAReplacement() {
-        val probes = buildList {
+        val probes = buildList<RawProbe> {
             visibleSet(startMs = 1_000, state = 2, objectVersion = 0)
             presentation(startMs = 2_000, objectId = 1)
             objectData(startMs = 2_000, objectId = 1, version = 1)
@@ -89,7 +89,7 @@ class PgsCueSemanticParserTest {
 
     @Test
     fun rejectsDisplaySetWithoutEnd() {
-        val probes = buildList {
+        val probes = buildList<RawProbe> {
             presentation(startMs = 1_000, state = 2, objectId = 1)
             palette(startMs = 1_000)
             objectData(startMs = 1_000, objectId = 1, version = 0)
@@ -117,7 +117,7 @@ class PgsCueSemanticParserTest {
 
     @Test
     fun rejectsUnresolvedFinalVisiblePresentation() {
-        val probes = buildList {
+        val probes = buildList<RawProbe> {
             visibleSet(startMs = 1_000, state = 2, objectVersion = 0)
             clearSet(startMs = 2_000)
             visibleSet(startMs = 3_000, objectVersion = 1)
