@@ -116,6 +116,7 @@ internal class AutoSyncPlayerCoordinator(
 
         retryJob = scope.launch {
             var searchOutcome: AutoSyncReferenceSearchOutcome? = null
+            var rejectedAssessment: AutoSyncMatchAssessment? = null
             try {
                 val resolved = AutomaticSubtitleSync.findTimelineRetime(
                     sourceKey = sourceUrl,
@@ -129,6 +130,7 @@ internal class AutoSyncPlayerCoordinator(
                     excludedReferenceKeys = rejectedKeys,
                     requiredReferenceSource = snapshot.appliedReference.source,
                     onReferenceSearchOutcome = { outcome -> searchOutcome = outcome },
+                    onMatchAssessment = { assessment -> rejectedAssessment = assessment },
                 )
 
                 currentCoroutineContext().ensureActive()
@@ -164,6 +166,14 @@ internal class AutoSyncPlayerCoordinator(
                             decision = "REFERENCE RETRY $outcome - current timing kept",
                         )
                     }
+                    Toast.makeText(
+                        context,
+                        rejectedAssessment?.let { assessment ->
+                            "Auto Sync • Alternative reference weaker " +
+                                "(${assessment.confidencePercent}%) • current sync kept"
+                        } ?: "Auto Sync • No better reference found",
+                        Toast.LENGTH_SHORT,
+                    ).show()
                     return@launch
                 }
 
@@ -184,6 +194,11 @@ internal class AutoSyncPlayerCoordinator(
                             decision = "REFERENCE RETRY unavailable - current timing kept",
                         )
                     }
+                    Toast.makeText(
+                        context,
+                        "Auto Sync • No better reference found",
+                        Toast.LENGTH_SHORT,
+                    ).show()
                     return@launch
                 }
 
@@ -220,6 +235,11 @@ internal class AutoSyncPlayerCoordinator(
                             decision = "REFERENCE RETRY apply failed - current timing kept",
                         )
                     }
+                    Toast.makeText(
+                        context,
+                        "Auto Sync • Match found, but sync could not be applied",
+                        Toast.LENGTH_SHORT,
+                    ).show()
                     return@launch
                 }
 
@@ -249,6 +269,11 @@ internal class AutoSyncPlayerCoordinator(
                         decision = "REFERENCE RETRY applied reference=${resolved.reference.key}",
                     )
                 }
+                Toast.makeText(
+                    context,
+                    "Auto Sync • New reference matched (${resolved.assessment.confidencePercent}%)",
+                    Toast.LENGTH_SHORT,
+                ).show()
             } catch (cancel: CancellationException) {
                 throw cancel
             } catch (error: Exception) {
@@ -266,6 +291,13 @@ internal class AutoSyncPlayerCoordinator(
                         context = context,
                         decision = "REFERENCE RETRY error - current timing kept",
                     )
+                }
+                if (operationToken == retryOperationToken) {
+                    Toast.makeText(
+                        context,
+                        "Auto Sync • Reference retry failed • current sync kept",
+                        Toast.LENGTH_SHORT,
+                    ).show()
                 }
             } finally {
                 if (operationToken == retryOperationToken) {
@@ -300,7 +332,7 @@ internal class AutoSyncPlayerCoordinator(
 
         Toast.makeText(
             context,
-            "Auto Sync V2 started",
+            "Auto Sync • Analyzing…",
             Toast.LENGTH_SHORT,
         ).show()
 
@@ -310,7 +342,7 @@ internal class AutoSyncPlayerCoordinator(
             fallbackAttach(url)
             Toast.makeText(
                 context,
-                "Auto Sync V2 failed: unsupported subtitle renderer",
+                "Auto Sync • Unsupported subtitle renderer",
                 Toast.LENGTH_SHORT,
             ).show()
             return
@@ -332,7 +364,7 @@ internal class AutoSyncPlayerCoordinator(
             fallbackAttach(url)
             Toast.makeText(
                 context,
-                "Auto Sync V2 failed: subtitle could not be loaded",
+                "Auto Sync • Could not load subtitle",
                 Toast.LENGTH_SHORT,
             ).show()
             return
@@ -357,7 +389,8 @@ internal class AutoSyncPlayerCoordinator(
             .build()
 
         job = scope.launch {
-            var noSubtitleTracks = false
+            var analysisOutcome: AutoSyncAnalysisOutcome? = null
+            var rejectedAssessment: AutoSyncMatchAssessment? = null
             val resolved = AutomaticSubtitleSync.findTimelineRetime(
                 sourceKey = sourceUrl,
                 sourceHeaders = sourceHeaders,
@@ -372,7 +405,8 @@ internal class AutoSyncPlayerCoordinator(
                     null
                 },
                 onReferenceReady = {},
-                onNoSubtitleTracks = { noSubtitleTracks = true },
+                onAnalysisOutcome = { outcome -> analysisOutcome = outcome },
+                onMatchAssessment = { assessment -> rejectedAssessment = assessment },
             )
             AutoSyncDebugLog.info {
                 "candidateScope=${candidateScope.name}"
@@ -388,7 +422,10 @@ internal class AutoSyncPlayerCoordinator(
                 }
                 Toast.makeText(
                     context,
-                    if (noSubtitleTracks) "No subtitles in tracks" else "Auto Sync V2 failed: no reliable match",
+                    buildAutoSyncFailureToast(
+                        analysisOutcome = analysisOutcome,
+                        assessment = rejectedAssessment,
+                    ),
                     Toast.LENGTH_SHORT,
                 ).show()
                 return@launch
@@ -448,7 +485,7 @@ internal class AutoSyncPlayerCoordinator(
                 }
                 Toast.makeText(
                     context,
-                    "Auto Sync V2 failed: could not apply sync",
+                    "Auto Sync • Match found, but sync could not be applied",
                     Toast.LENGTH_SHORT,
                 ).show()
                 return@launch
@@ -506,6 +543,8 @@ internal class AutoSyncPlayerCoordinator(
                     replacedSubtitle = chosenUrl != url,
                     scale = timeline.alignmentScale,
                     interceptMs = timeline.alignmentInterceptMs,
+                    assessment = resolved.assessment,
+                    localizedMismatchIgnored = timeline.localizedMismatchIgnored,
                 ),
                 Toast.LENGTH_SHORT,
             ).show()
@@ -530,20 +569,44 @@ private fun buildAutoSyncSuccessToast(
     replacedSubtitle: Boolean,
     scale: Double,
     interceptMs: Double,
+    assessment: AutoSyncMatchAssessment,
+    localizedMismatchIgnored: Boolean,
 ): String {
+    val prefix =
+        "Auto Sync • ${assessment.strength.displayName} match " +
+            "(${assessment.confidencePercent}%)"
     val driftCorrected = abs(scale - 1.0) >= 0.0005
-    val prefix = if (replacedSubtitle) {
-        "Auto Sync V2: subtitle replaced"
-    } else {
-        "Auto Sync V2 succeeded"
-    }
 
     return when {
+        localizedMismatchIgnored -> "$prefix • localized mismatch ignored"
+        replacedSubtitle -> "$prefix • subtitle replaced"
         driftCorrected -> "$prefix • drift corrected"
-        abs(interceptMs) >= 50.0 -> "$prefix • ${formatAutoSyncOffset(interceptMs)}"
+        abs(interceptMs) >= 250.0 -> "$prefix • ${formatAutoSyncOffset(interceptMs)}"
         else -> "$prefix • already in sync"
     }
 }
+
+private fun buildAutoSyncFailureToast(
+    analysisOutcome: AutoSyncAnalysisOutcome?,
+    assessment: AutoSyncMatchAssessment?,
+): String =
+    when (analysisOutcome) {
+        AutoSyncAnalysisOutcome.SUBTITLE_UNAVAILABLE ->
+            "Auto Sync • Could not analyze subtitle"
+        AutoSyncAnalysisOutcome.NO_SUBTITLE_TRACKS ->
+            "Auto Sync • No embedded subtitles found"
+        AutoSyncAnalysisOutcome.NO_USABLE_REFERENCE ->
+            "Auto Sync • No usable reference track"
+        null -> {
+            val resolvedAssessment =
+                assessment ?: AutoSyncMatchAssessment(
+                    confidencePercent = 0,
+                    strength = AutoSyncMatchStrength.WEAK,
+                )
+            "Auto Sync • ${resolvedAssessment.strength.displayName} match " +
+                "(${resolvedAssessment.confidencePercent}%) • original timing kept"
+        }
+    }
 
 private fun formatAutoSyncOffset(offsetMs: Double): String {
     val roundedMs = offsetMs.roundToInt()

@@ -375,18 +375,27 @@ internal object AutoSyncTimelineRetimer {
             candidateActivityMargin >= requiredActivityMargin ||
                 (delayOnly && allowAmbiguousDelayOnlyMargin)
 
+        val matchedTargetCount = targetSize - result.skippedTargetCues
+        val skipRunOnlyFailure =
+            !result.confident &&
+                result.longestTargetSkipRun > MAX_LONGEST_TARGET_SKIP_RUN &&
+                matchedTargetCount >= min(MIN_MATCHED_TARGET_CUES, targetSize) &&
+                result.targetCoverage >= MIN_TARGET_COVERAGE &&
+                result.averageGroupCost <= MAX_AVERAGE_GROUP_COST
+
         val confirmed =
-            result.confident &&
+            (result.confident || skipRunOnlyFailure) &&
                 candidateActivityScore >= requiredActivityScore &&
                 activityMarginAccepted &&
                 coverageSegments >= requiredCoverageSegments &&
                 result.targetCoverage >= DISCOVERED_MIN_TARGET_COVERAGE &&
                 result.averageGroupCost <= DISCOVERED_MAX_AVERAGE_GROUP_COST &&
-                result.longestTargetSkipRun <= MAX_LONGEST_TARGET_SKIP_RUN &&
+                (result.longestTargetSkipRun <= MAX_LONGEST_TARGET_SKIP_RUN || skipRunOnlyFailure) &&
                 simpleRatio >= DISCOVERED_MIN_SIMPLE_GROUP_RATIO
 
         return result.copy(
             confident = confirmed,
+            localizedMismatchIgnored = confirmed && skipRunOnlyFailure,
             alignmentSource = if (delayOnly) "delay-only-validated" else "activity-correlation",
             alignmentScale = candidateScale,
             alignmentInterceptMs = candidateInterceptMs,
@@ -2087,4 +2096,5 @@ internal data class AutoSyncTimelineRetimeResult(
     val activityMargin: Double = 0.0,
     val coverageSegmentsPassed: Int = 0,
     val simpleGroupRatio: Double = 0.0,
+    val localizedMismatchIgnored: Boolean = false,
 )

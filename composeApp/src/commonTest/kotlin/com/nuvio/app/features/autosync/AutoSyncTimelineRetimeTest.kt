@@ -522,6 +522,33 @@ class AutoSyncTimelineRetimeTest {
     }
 
     @Test
+    fun localizedSkipRunIsAcceptedWhenEveryOtherConfidenceGatePasses() {
+        val reference = irregularTimeline(220)
+        val localizedExtras = (0 until 14).map { index ->
+            val start = 5_000L + index * 1_250L
+            SubtitleSyncCue(start, start + 700L, "local extra $index")
+        }
+        val target = (localizedExtras + reference).sortedBy { it.startTimeMs }
+
+        val result = assertNotNull(
+            AutoSyncTimelineRetimer.retime(
+                reference = reference,
+                target = target,
+                coarseScale = 1.0,
+                coarseInterceptMs = 0.0,
+                discoverAlignment = true,
+            ),
+        )
+
+        assertTrue(result.confident)
+        assertTrue(result.longestTargetSkipRun > 12)
+        assertTrue(result.localizedMismatchIgnored)
+        assertTrue(result.targetCoverage >= 0.90)
+        assertTrue(result.coverageSegmentsPassed >= 3)
+        assertTrue(result.simpleGroupRatio >= 0.55)
+    }
+
+    @Test
     fun activityAlignmentRejectsUnrelatedTimeline() {
         val reference = irregularTimeline(220)
         val target = (0 until 205).map { index ->
