@@ -48,7 +48,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.nuvio.app.core.ui.nuvio
 import com.nuvio.app.core.ui.withDuplicateSafeLazyKeys
-import com.nuvio.app.features.autosync.AutoSyncPlayerController
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.addon_title
 import nuvio.composeapp.generated.resources.compose_player_built_in
@@ -75,7 +74,7 @@ fun SubtitleModal(
     subtitleDelayMs: Int,
     selectedAddonSubtitle: AddonSubtitle?,
     subtitleAutoSyncState: SubtitleAutoSyncUiState,
-    autoSyncController: AutoSyncPlayerController? = null,
+    autoSyncRetryAction: @Composable (() -> Unit)? = null,
     onBuiltInTrackSelected: (Int) -> Unit,
     onAddonSubtitleSelected: (AddonSubtitle) -> Unit,
     onFetchAddonSubtitles: () -> Unit,
@@ -306,7 +305,7 @@ fun SubtitleModal(
                                     subtitleDelayMs = subtitleDelayMs,
                                     selectedAddonSubtitle = effectiveSelectedAddonSubtitle,
                                     subtitleAutoSyncState = subtitleAutoSyncState,
-                                    autoSyncController = autoSyncController,
+                                    autoSyncRetryAction = autoSyncRetryAction,
                                     isCompact = railMaxHeight < 420.dp,
                                     showHeader = false,
                                     onStyleChanged = onStyleChanged,
