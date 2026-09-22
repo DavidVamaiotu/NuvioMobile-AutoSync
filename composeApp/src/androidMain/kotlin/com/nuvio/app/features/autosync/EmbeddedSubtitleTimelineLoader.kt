@@ -55,7 +55,11 @@ internal object EmbeddedSubtitleTimelineLoader {
     private const val MATROSKA_PGS_CODEC_ID = "S_HDMV/PGS"
     private const val PGS_RESOLUTION_TIMEOUT_MS = 5_000L
     private const val PGS_RESOLUTION_MAX_BYTES = 4L * 1024L * 1024L
-    private const val PGS_RESOLUTION_MAX_REQUESTS = 32
+    private const val PGS_RESOLUTION_MAX_REQUESTS = 64
+    private const val PGS_CLUSTER_WINDOW_BYTES = 256
+    private const val PGS_BLOCK_WINDOW_BYTES = 256
+    private const val PGS_END_WINDOW_BYTES = 13
+    private const val PGS_MULTI_RANGE_BATCH = 128
     private const val MIN_INDEXED_CUES = 8
     private const val MIN_INDEXED_SPAN_MS = 30_000L
     private const val MAX_CACHE_ENTRIES = 2
@@ -216,18 +220,11 @@ internal object EmbeddedSubtitleTimelineLoader {
                     "${reference.cues.lastOrNull()?.startTimeMs ?: -1L}"
             val cached = synchronized(cacheLock) { pgsResolutionCache[cacheKey] }
             val resolution = cached ?: try {
-                PgsCueSemanticParser.resolve(
+                resolvePgsReference(
+                    sourceUrl = sourceUrl,
+                    sourceHeaders = sourceHeaders,
                     reference = reference,
-                    rangeReader = { start, length ->
-                        fetchRange(
-                            sourceUrl = sourceUrl,
-                            sourceHeaders = sourceHeaders,
-                            start = start,
-                            length = length,
-                            requirePartialContent = start > 0L,
-                            stats = stats,
-                        )?.bytes
-                    },
+                    stats = stats,
                 )
             } catch (cancel: CancellationException) {
                 throw cancel
@@ -275,6 +272,171 @@ internal object EmbeddedSubtitleTimelineLoader {
         }
 
         return ready
+    }
+
+    private suspend fun resolvePgsReference(
+        sourceUrl: String,
+        sourceHeaders: Map<String, String>,
+        reference: IndexedPgsReference,
+        stats: RangeStats,
+    ): PgsReferenceResolution {
+        reference.unsupportedReason?.let { reason ->
+            return PgsReferenceResolution.Unavailable(reason, cacheable = true)
+        }
+        if (reference.cues.isEmpty()) {
+            return PgsReferenceResolution.Unavailable("no-indexed-pgs-cues", cacheable = true)
+        }
+
+        val clusterStarts = reference.cues
+            .map { cue ->
+                if (cue.clusterPosition < 0L ||
+                    reference.segmentDataStart > Long.MAX_VALUE - cue.clusterPosition
+                ) {
+                    return PgsReferenceResolution.Unavailable(
+                        "invalid-cluster-position",
+                        cacheable = true,
+                    )
+                }
+                reference.segmentDataStart + cue.clusterPosition
+            }
+            .distinct()
+
+        val clusterRanges = clusterStarts.map { start ->
+            SparseRange(start = start, length = PGS_CLUSTER_WINDOW_BYTES)
+        }
+        val clusterWindows = fetchSparseRanges(
+            sourceUrl = sourceUrl,
+            sourceHeaders = sourceHeaders,
+            ranges = clusterRanges,
+            stats = stats,
+        ) ?: return PgsReferenceResolution.Unavailable(
+            "cluster-window-fetch-unavailable",
+            cacheable = false,
+        )
+
+        val clusterByPosition = mutableMapOf<Long, PgsClusterInfo>()
+        for (range in clusterRanges) {
+            val bytes = clusterWindows[range.start]
+                ?: return PgsReferenceResolution.Unavailable(
+                    "incomplete-cluster-window-coverage",
+                    cacheable = false,
+                )
+            val parsed = PgsCueSemanticParser.parseClusterWindow(
+                reference = reference,
+                clusterStart = range.start,
+                bytes = bytes,
+            )
+            val cluster = parsed.getOrElse { error ->
+                return PgsReferenceResolution.Unavailable(
+                    error.message ?: "cluster-parse-failed",
+                    cacheable = true,
+                )
+            }
+            clusterByPosition[range.start] = cluster
+        }
+
+        val blockPositions = ArrayList<Long>(reference.cues.size)
+        for (locator in reference.cues) {
+            val clusterStart = reference.segmentDataStart + locator.clusterPosition
+            val cluster = clusterByPosition[clusterStart]
+                ?: return PgsReferenceResolution.Unavailable(
+                    "missing-cluster-window",
+                    cacheable = false,
+                )
+            val blockPosition = PgsCueSemanticParser
+                .blockPosition(locator, cluster)
+                .getOrElse { error ->
+                    return PgsReferenceResolution.Unavailable(
+                        error.message ?: "block-position-unavailable",
+                        cacheable = true,
+                    )
+                }
+            blockPositions += blockPosition
+        }
+
+        val blockRanges = blockPositions
+            .distinct()
+            .map { start -> SparseRange(start = start, length = PGS_BLOCK_WINDOW_BYTES) }
+        val blockWindows = fetchSparseRanges(
+            sourceUrl = sourceUrl,
+            sourceHeaders = sourceHeaders,
+            ranges = blockRanges,
+            stats = stats,
+        ) ?: return PgsReferenceResolution.Unavailable(
+            "block-window-fetch-unavailable",
+            cacheable = false,
+        )
+
+        val probes = ArrayList<PgsPresentationProbe>(reference.cues.size)
+        reference.cues.forEachIndexed { index, locator ->
+            val clusterStart = reference.segmentDataStart + locator.clusterPosition
+            val cluster = clusterByPosition[clusterStart]
+                ?: return PgsReferenceResolution.Unavailable(
+                    "missing-cluster-window",
+                    cacheable = false,
+                )
+            val blockPosition = blockPositions[index]
+            val bytes = blockWindows[blockPosition]
+                ?: return PgsReferenceResolution.Unavailable(
+                    "incomplete-block-window-coverage",
+                    cacheable = false,
+                )
+            val probe = PgsCueSemanticParser.parsePresentationWindow(
+                reference = reference,
+                locator = locator,
+                cluster = cluster,
+                blockPosition = blockPosition,
+                bytes = bytes,
+                cueIndex = index,
+            ).getOrElse { error ->
+                return PgsReferenceResolution.Unavailable(
+                    error.message ?: "pgs-presentation-parse-failed",
+                    cacheable = true,
+                )
+            }
+            probes += probe
+        }
+
+        val endStarts = probes.map { probe ->
+            if (probe.payloadEnd < PGS_END_WINDOW_BYTES) {
+                return PgsReferenceResolution.Unavailable(
+                    "invalid-pgs-payload-end",
+                    cacheable = true,
+                )
+            }
+            probe.payloadEnd - PGS_END_WINDOW_BYTES
+        }
+        val endRanges = endStarts
+            .distinct()
+            .map { start -> SparseRange(start = start, length = PGS_END_WINDOW_BYTES) }
+        val endWindows = fetchSparseRanges(
+            sourceUrl = sourceUrl,
+            sourceHeaders = sourceHeaders,
+            ranges = endRanges,
+            stats = stats,
+        ) ?: return PgsReferenceResolution.Unavailable(
+            "display-end-fetch-unavailable",
+            cacheable = false,
+        )
+
+        for (start in endStarts) {
+            val bytes = endWindows[start]
+                ?: return PgsReferenceResolution.Unavailable(
+                    "incomplete-display-end-coverage",
+                    cacheable = false,
+                )
+            if (!PgsCueSemanticParser.hasDisplayEnd(bytes)) {
+                return PgsReferenceResolution.Unavailable(
+                    "display-set-missing-end",
+                    cacheable = true,
+                )
+            }
+        }
+
+        return PgsCueSemanticParser.buildTimeline(
+            reference = reference,
+            probes = probes,
+        )
     }
 
     private suspend fun loadMatroskaCueIndex(
