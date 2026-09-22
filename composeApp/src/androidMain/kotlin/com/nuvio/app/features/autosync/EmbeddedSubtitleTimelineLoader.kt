@@ -216,7 +216,7 @@ internal object EmbeddedSubtitleTimelineLoader {
             val resolution = cached ?: try {
                 PgsCueSemanticParser.resolve(
                     reference = reference,
-                    rangeReader = PgsRangeReader { start, length ->
+                    rangeReader = { start, length ->
                         fetchRange(
                             sourceUrl = sourceUrl,
                             sourceHeaders = sourceHeaders,
