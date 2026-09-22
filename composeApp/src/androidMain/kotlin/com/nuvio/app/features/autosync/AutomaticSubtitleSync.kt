@@ -183,6 +183,13 @@ internal object AutomaticSubtitleSync {
         AutoSyncDebugLog.info {
             "mode=${if (aggressiveMode) "AGGRESSIVE" else "PASSIVE"}"
         }
+        if (requiredReferenceSource != null) {
+            AutoSyncDebugLog.section { "REFERENCE RETRY" }
+            AutoSyncDebugLog.info {
+                "source=${requiredReferenceSource.name} " +
+                    "rejected=${excludedReferenceKeys.sorted().joinToString(",")}"
+            }
+        }
 
         var cleanupStartedAtMs: Long? = null
         var cleanupCanceledLoads = 0

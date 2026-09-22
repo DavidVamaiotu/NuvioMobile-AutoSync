@@ -114,13 +114,6 @@ internal class AutoSyncPlayerCoordinator(
             status = AutoSyncRetryStatus.TRYING,
         )
 
-        AutoSyncDebugLog.section { "REFERENCE RETRY" }
-        AutoSyncDebugLog.info {
-            "RETRY operation=$operationToken source=${snapshot.appliedReference.source} " +
-                "currentReference=${snapshot.appliedReference.key} " +
-                "rejected=${rejectedKeys.sorted().joinToString(",")}"
-        }
-
         retryJob = scope.launch {
             var searchOutcome: AutoSyncReferenceSearchOutcome? = null
             try {
@@ -161,8 +154,15 @@ internal class AutoSyncPlayerCoordinator(
                             AutoSyncRetryStatus.FAILED
                         },
                     )
+                    val outcome = searchOutcome ?: AutoSyncReferenceSearchOutcome.UNAVAILABLE
                     AutoSyncDebugLog.info {
-                        "RETRY operation=$operationToken outcome=${searchOutcome ?: AutoSyncReferenceSearchOutcome.UNAVAILABLE}"
+                        "RETRY operation=$operationToken outcome=$outcome"
+                    }
+                    if (AutoSyncDebugLog.ENABLED) {
+                        AutoSyncDebugLog.finishAndCopy(
+                            context = context,
+                            decision = "REFERENCE RETRY $outcome - current timing kept",
+                        )
                     }
                     return@launch
                 }
@@ -177,6 +177,12 @@ internal class AutoSyncPlayerCoordinator(
                     )
                     AutoSyncDebugLog.warn {
                         "RETRY operation=$operationToken rejected unexpected external/reference source"
+                    }
+                    if (AutoSyncDebugLog.ENABLED) {
+                        AutoSyncDebugLog.finishAndCopy(
+                            context = context,
+                            decision = "REFERENCE RETRY unavailable - current timing kept",
+                        )
                     }
                     return@launch
                 }
@@ -208,6 +214,12 @@ internal class AutoSyncPlayerCoordinator(
                     AutoSyncDebugLog.warn {
                         "RETRY operation=$operationToken apply=false"
                     }
+                    if (AutoSyncDebugLog.ENABLED) {
+                        AutoSyncDebugLog.finishAndCopy(
+                            context = context,
+                            decision = "REFERENCE RETRY apply failed - current timing kept",
+                        )
+                    }
                     return@launch
                 }
 
@@ -231,6 +243,12 @@ internal class AutoSyncPlayerCoordinator(
                     "RETRY operation=$operationToken applied=true " +
                         "reference=${resolved.reference.key} originalBody=true"
                 }
+                if (AutoSyncDebugLog.ENABLED) {
+                    AutoSyncDebugLog.finishAndCopy(
+                        context = context,
+                        decision = "REFERENCE RETRY applied reference=${resolved.reference.key}",
+                    )
+                }
             } catch (cancel: CancellationException) {
                 throw cancel
             } catch (error: Exception) {
@@ -242,6 +260,12 @@ internal class AutoSyncPlayerCoordinator(
                 }
                 AutoSyncDebugLog.error(error) {
                     "RETRY operation=$operationToken failed"
+                }
+                if (operationToken == retryOperationToken && AutoSyncDebugLog.ENABLED) {
+                    AutoSyncDebugLog.finishAndCopy(
+                        context = context,
+                        decision = "REFERENCE RETRY error - current timing kept",
+                    )
                 }
             } finally {
                 if (operationToken == retryOperationToken) {
@@ -435,19 +459,19 @@ internal class AutoSyncPlayerCoordinator(
             }
             val originalBody = resolved.subtitleBody
             val referenceGeneration = sidecar.currentGenerationFor(chosenUrl)
-            if (originalBody != null && referenceGeneration != null) {
-                retryContext = RetryContext(
-                    subtitleUrl = chosenUrl,
-                    subtitleHeaders = resolved.subtitleHeaders,
-                    originalBody = originalBody,
-                    appliedReference = resolved.reference,
-                    rejectedReferenceKeys = emptySet(),
-                    expectedGeneration = referenceGeneration,
-                )
-                _retryState.value = AutoSyncRetryUiState(available = true)
-            } else {
-                invalidateRetryContext()
-            }
+            val pendingRetryContext =
+                if (originalBody != null && referenceGeneration != null) {
+                    RetryContext(
+                        subtitleUrl = chosenUrl,
+                        subtitleHeaders = resolved.subtitleHeaders,
+                        originalBody = originalBody,
+                        appliedReference = resolved.reference,
+                        rejectedReferenceKeys = emptySet(),
+                        expectedGeneration = referenceGeneration,
+                    )
+                } else {
+                    null
+                }
 
             onSubtitleDelayChanged(0)
             appliedListener?.invoke(chosenUrl, 0)
@@ -468,6 +492,14 @@ internal class AutoSyncPlayerCoordinator(
                             "alignment=${timeline.alignmentSource}",
                 )
             }
+
+            if (pendingRetryContext != null) {
+                retryContext = pendingRetryContext
+                _retryState.value = AutoSyncRetryUiState(available = true)
+            } else {
+                invalidateRetryContext()
+            }
+
             Toast.makeText(
                 context,
                 buildAutoSyncSuccessToast(
