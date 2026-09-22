@@ -668,6 +668,64 @@ class AutoSyncTimelineRetimeTest {
         assertTrue(checkpoints >= 4)
     }
 
+    @Test
+    fun targetOnlyBlockBetweenAgreeingOffsetsDoesNotRejectMatch() {
+        // e.g. translated song lyrics that the embedded reference does not subtitle.
+        val full = irregularTimeline(300)
+        val reference = full.filterIndexed { index, _ -> index !in 140 until 160 }
+        val target = shift(full, -2_000L)
+
+        val result = assertNotNull(AutoSyncTimelineRetimer.retime(reference, target, 1.0, 0.0, true))
+
+        assertTrue(result.longestTargetSkipRun > 12)
+        assertTrue(result.longestUnexplainedTargetSkipRun <= 12)
+        assertTrue(result.confident, result.rejectReason)
+        assertTrue(abs(result.alignmentInterceptMs - 2_000.0) <= 500.0)
+    }
+
+    @Test
+    fun rejectedResultReportsFailedGates() {
+        val reference = irregularTimeline(240)
+        val target = reference.mapIndexed { index, cue ->
+            if (index < reference.size / 2) cue else cue.copy(startTimeMs = cue.startTimeMs - 5_000L, endTimeMs = cue.endTimeMs - 5_000L)
+        }
+        val result = AutoSyncTimelineRetimer.retime(reference, target, 1.0, 0.0, true)
+            ?: return
+        assertTrue(!result.confident)
+        assertTrue(!result.rejectReason.isNullOrBlank())
+    }
+
+    @Test
+    fun partialSubtitleIsFoundBeyondDefaultOffsetRange() {
+        // A CD2-style subtitle that restarts at zero for the second part of the film.
+        val reference = irregularTimeline(400)
+        val deltaMs = reference[250].startTimeMs - 4_000L
+        val target = shift(reference.drop(250), -deltaMs)
+        assertTrue(deltaMs > 180_000L)
+
+        val result = assertNotNull(AutoSyncTimelineRetimer.retime(reference, target, 1.0, 0.0, true))
+
+        assertTrue(result.confident, result.rejectReason)
+        assertTrue(abs(result.alignmentInterceptMs - deltaMs) <= 500.0)
+    }
+
+    @Test
+    fun tighterFitWinsOnlyWhenReferenceTransformsDisagree() {
+        val reference = irregularTimeline(220)
+        val precise = assertNotNull(
+            AutoSyncTimelineRetimer.retime(reference, shift(reference, -2_000L), 1.0, 0.0, true),
+        )
+        assertTrue(precise.confident, precise.rejectReason)
+        val loose = precise.copy(
+            alignmentInterceptMs = precise.alignmentInterceptMs + 3_000.0,
+            medianGroupResidualMs = precise.medianGroupResidualMs + 400.0,
+        )
+
+        assertEquals(true, preferTighterFitOnDisagreement(precise, loose))
+        assertEquals(false, preferTighterFitOnDisagreement(loose, precise))
+        val agreeing = loose.copy(alignmentInterceptMs = precise.alignmentInterceptMs + 100.0)
+        assertEquals(null, preferTighterFitOnDisagreement(precise, agreeing))
+    }
 
     private fun shift(cues: List<SubtitleSyncCue>, deltaMs: Long) = cues.map { cue ->
         cue.copy(startTimeMs = cue.startTimeMs + deltaMs, endTimeMs = cue.endTimeMs + deltaMs)

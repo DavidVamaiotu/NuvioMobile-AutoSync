@@ -989,10 +989,24 @@ internal object AutomaticSubtitleSync {
             fun isBetterMatch(
                 candidate: TimelineRetimeMatch,
                 current: TimelineRetimeMatch?,
+                sameTarget: Boolean,
             ): Boolean {
                 if (current == null) return true
                 if (candidate.timeline.confident != current.timeline.confident) {
                     return candidate.timeline.confident
+                }
+                if (sameTarget) {
+                    preferTighterFitOnDisagreement(candidate.timeline, current.timeline)
+                        ?.let { preferCandidate ->
+                            AutoSyncDebugLog.info {
+                                "references disagree; tighter fit wins " +
+                                    "${candidate.track.key}:" +
+                                    "${fmt(candidate.timeline.medianGroupResidualMs)}ms vs " +
+                                    "${current.track.key}:" +
+                                    "${fmt(current.timeline.medianGroupResidualMs)}ms"
+                            }
+                            return preferCandidate
+                        }
                 }
                 val candidateQuality = directTimelineQualityScore(candidate)
                 val currentQuality = directTimelineQualityScore(current)
@@ -1073,7 +1087,11 @@ internal object AutomaticSubtitleSync {
                         if (
                             match != null &&
                             match.timeline.confident &&
-                            isBetterMatch(match, fallbackBestMatch)
+                            isBetterMatch(
+                                match,
+                                fallbackBestMatch,
+                                sameTarget = family === fallbackBestFamily,
+                            )
                         ) {
                             fallbackBestMatch = match
                             fallbackBestFamily = family
@@ -1127,7 +1145,7 @@ internal object AutomaticSubtitleSync {
                 val pairMatch = completed.evaluation.match
                 if (pairMatch != null) {
                     family.completedUsableAttempts++
-                    if (isBetterMatch(pairMatch, family.best)) {
+                    if (isBetterMatch(pairMatch, family.best, sameTarget = true)) {
                         family.best = pairMatch
                         family.bestSchedulingScore = completed.hypothesis.schedulingScore
                     }
@@ -1137,7 +1155,7 @@ internal object AutomaticSubtitleSync {
                 if (
                     familyBest != null &&
                     familyBest.timeline.confident &&
-                    isBetterMatch(familyBest, bestMatch)
+                    isBetterMatch(familyBest, bestMatch, sameTarget = family === bestFamily)
                 ) {
                     bestMatch = familyBest
                     bestFamily = family
@@ -1502,7 +1520,11 @@ internal object AutomaticSubtitleSync {
                 "intercept=${"%.1f".format(timeline.alignmentInterceptMs)}ms " +
                 "activityScore=${fmt(timeline.activityScore)} activityMargin=${fmt(timeline.activityMargin)} " +
                 "targetCoverage=${fmt(timeline.targetCoverage)} referenceCoverage=${fmt(timeline.referenceCoverage)} " +
-                "avgGroupCost=${fmt(timeline.averageGroupCost)} simpleRatio=${fmt(timeline.simpleGroupRatio)}"
+                "avgGroupCost=${fmt(timeline.averageGroupCost)} simpleRatio=${fmt(timeline.simpleGroupRatio)} " +
+                "skipRun=${timeline.longestTargetSkipRun}/" +
+                "unexplained=${timeline.longestUnexplainedTargetSkipRun} " +
+                "residual=${fmt(timeline.medianGroupResidualMs)}ms" +
+                (timeline.rejectReason?.let { " rejectReason=$it" } ?: "")
         }
 
         if (timeline.confident && isExceptionalMatch(match)) {
