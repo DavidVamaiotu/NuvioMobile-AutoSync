@@ -2,6 +2,7 @@ package com.nuvio.app.features.autosync
 
 import com.nuvio.app.features.player.SubtitleSyncCue
 import kotlin.math.abs
+import kotlin.math.max
 
 internal data class IndexedPgsReference(
     val key: String,
@@ -53,25 +54,66 @@ internal sealed interface PgsReferenceResolution {
 internal data class PgsClusterInfo(
     val clusterStart: Long,
     val dataStart: Long,
+    val end: Long?,
     val timestampTicks: Long,
     val firstBlockPosition: Long?,
 )
 
-internal data class PgsPresentationProbe(
+internal data class PgsSegmentProbe(
     val cueIndex: Int,
     val startTimeMs: Long,
     val durationMs: Long?,
-    val visible: Boolean,
-    val payloadEnd: Long,
+    val segment: PgsSegmentInfo,
 )
+
+internal sealed interface PgsSegmentInfo {
+    data class Presentation(
+        val state: Int,
+        val paletteUpdate: Boolean,
+        val paletteId: Int,
+        val objects: List<ObjectRef>,
+    ) : PgsSegmentInfo
+
+    data class Palette(
+        val id: Int,
+        val version: Int,
+    ) : PgsSegmentInfo
+
+    data class ObjectData(
+        val id: Int,
+        val version: Int,
+        val sequence: Int,
+    ) : PgsSegmentInfo
+
+    data class Window(
+        val definitions: List<WindowDefinition>,
+    ) : PgsSegmentInfo
+
+    data object End : PgsSegmentInfo
+
+    data class ObjectRef(
+        val objectId: Int,
+        val windowId: Int,
+        val x: Int,
+        val y: Int,
+    )
+
+    data class WindowDefinition(
+        val id: Int,
+        val x: Int,
+        val y: Int,
+        val width: Int,
+        val height: Int,
+    )
+}
 
 /**
  * Pure parser for the small parts of Matroska/PGS that AutoSync needs.
  *
- * Matroska PGS subtitle packets are display sets. AutoSync does not need palette or bitmap data:
- * it only needs to know whether a presentation is visible and where the display set ends. The
- * loader therefore fetches sparse Cluster/Block windows while this parser validates EBML, track
- * identity, timestamps, PCS semantics, cropping support and the final PGS END segment.
+ * Matroska stores each S_HDMV/PGS segment in its own Block. The loader supplies those Blocks in
+ * indexed order; this parser validates their container timestamp, reads only segment metadata, and
+ * assembles PCS/PDS/ODS/WDS/END Blocks into semantic visibility intervals. Bitmap/RLE payloads are
+ * never decoded or allocated.
  */
 internal object PgsCueSemanticParser {
     private const val ID_CLUSTER = 0x1F43B675L
@@ -80,9 +122,15 @@ internal object PgsCueSemanticParser {
     private const val ID_BLOCK_GROUP = 0xA0L
     private const val ID_BLOCK = 0xA1L
 
+    private const val PGS_PALETTE_SEGMENT = 0x14
+    private const val PGS_OBJECT_SEGMENT = 0x15
     private const val PGS_PRESENTATION_SEGMENT = 0x16
+    private const val PGS_WINDOW_SEGMENT = 0x17
     private const val PGS_END_SEGMENT = 0x80
+
     private const val PGS_CROPPED_FLAG = 0x80
+    private const val PGS_OBJECT_FIRST = 0x80
+    private const val PGS_OBJECT_LAST = 0x40
 
     fun parseClusterWindow(
         reference: IndexedPgsReference,
@@ -93,6 +141,15 @@ internal object PgsCueSemanticParser {
             ?: return Result.failure(ParseException("invalid-cluster-header"))
         if (root.id != ID_CLUSTER) {
             return Result.failure(ParseException("expected-cluster"))
+        }
+
+        val clusterEnd = root.size?.let { size ->
+            if (clusterStart > Long.MAX_VALUE - root.dataStart.toLong() ||
+                clusterStart + root.dataStart > Long.MAX_VALUE - size
+            ) {
+                return Result.failure(ParseException("cluster-size-overflow"))
+            }
+            clusterStart + root.dataStart + size
         }
 
         var position = root.dataStart
@@ -122,6 +179,7 @@ internal object PgsCueSemanticParser {
             PgsClusterInfo(
                 clusterStart = clusterStart,
                 dataStart = clusterStart + root.dataStart,
+                end = clusterEnd,
                 timestampTicks = timestampTicks
                     ?: return Result.failure(ParseException("cluster-timestamp-unavailable")),
                 firstBlockPosition = firstBlockPosition,
@@ -148,14 +206,14 @@ internal object PgsCueSemanticParser {
         return Result.failure(ParseException("cue-block-number-requires-scan"))
     }
 
-    fun parsePresentationWindow(
+    fun parseSegmentWindow(
         reference: IndexedPgsReference,
         locator: PgsCueLocator,
         cluster: PgsClusterInfo,
         blockPosition: Long,
         bytes: ByteArray,
         cueIndex: Int,
-    ): Result<PgsPresentationProbe> {
+    ): Result<PgsSegmentProbe> {
         val root = readElementHeader(bytes, 0)
             ?: return Result.failure(ParseException("invalid-block-element"))
 
@@ -207,99 +265,90 @@ internal object PgsCueSemanticParser {
         }
 
         val payloadOffset = timecodeOffset + 3
-        val blockDataStartAbsolute = blockPosition + block.dataStart
-        if (blockDataStartAbsolute > Long.MAX_VALUE - blockSize) {
-            return Result.failure(ParseException("block-size-overflow"))
-        }
-        val payloadEnd = blockDataStartAbsolute + blockSize
-        if (payloadOffset >= bytes.size) {
+        val blockHeaderBytes = track.length + 3
+        if (blockSize <= blockHeaderBytes.toLong() || payloadOffset >= bytes.size) {
             return Result.failure(ParseException("missing-pgs-payload"))
         }
 
-        val pcs = parsePcs(bytes, payloadOffset)
-            ?: return Result.failure(ParseException("display-set-does-not-start-with-pcs"))
+        val payloadSize = blockSize - blockHeaderBytes
+        val segmentHeader = parseSegmentHeader(bytes, payloadOffset)
+            ?: return Result.failure(ParseException("invalid-pgs-segment-header"))
+        val expectedPayloadSize = segmentHeader.headerSize.toLong() + segmentHeader.dataLength
+        if (expectedPayloadSize != payloadSize) {
+            return Result.failure(
+                ParseException(
+                    "pgs-segment-size-mismatch block=$payloadSize segment=$expectedPayloadSize",
+                ),
+            )
+        }
+
+        val dataOffset = payloadOffset + segmentHeader.headerSize
+        val segment = when (segmentHeader.type) {
+            PGS_PRESENTATION_SEGMENT ->
+                parsePresentation(bytes, dataOffset, segmentHeader.dataLength.toInt())
+                    ?: return Result.failure(ParseException("malformed-pcs"))
+
+            PGS_PALETTE_SEGMENT ->
+                parsePalette(bytes, dataOffset, segmentHeader.dataLength.toInt())
+                    ?: return Result.failure(ParseException("malformed-pds"))
+
+            PGS_OBJECT_SEGMENT ->
+                parseObject(bytes, dataOffset, segmentHeader.dataLength.toInt())
+                    ?: return Result.failure(ParseException("malformed-ods"))
+
+            PGS_WINDOW_SEGMENT ->
+                parseWindow(bytes, dataOffset, segmentHeader.dataLength.toInt())
+                    ?: return Result.failure(ParseException("malformed-wds"))
+
+            PGS_END_SEGMENT -> {
+                if (segmentHeader.dataLength != 0L) {
+                    return Result.failure(ParseException("malformed-end-segment"))
+                }
+                PgsSegmentInfo.End
+            }
+
+            else -> return Result.failure(
+                ParseException(
+                    "unsupported-pgs-segment=0x${segmentHeader.type.toString(16)}",
+                ),
+            )
+        }
 
         return Result.success(
-            PgsPresentationProbe(
+            PgsSegmentProbe(
                 cueIndex = cueIndex,
                 startTimeMs = locator.startTimeMs,
                 durationMs = locator.durationMs,
-                visible = pcs.objectCount > 0,
-                payloadEnd = payloadEnd,
+                segment = segment,
             ),
         )
     }
 
-    fun hasDisplayEnd(bytes: ByteArray): Boolean {
-        if (bytes.size >= 3) {
-            val offset = bytes.size - 3
-            if ((bytes[offset].toInt() and 0xFF) == PGS_END_SEGMENT &&
-                bytes[offset + 1].toInt() == 0 &&
-                bytes[offset + 2].toInt() == 0
-            ) {
-                return true
-            }
-        }
-
-        if (bytes.size >= 13) {
-            val offset = bytes.size - 13
-            return bytes[offset].toInt() == 0x50 &&
-                bytes[offset + 1].toInt() == 0x47 &&
-                (bytes[offset + 10].toInt() and 0xFF) == PGS_END_SEGMENT &&
-                bytes[offset + 11].toInt() == 0 &&
-                bytes[offset + 12].toInt() == 0
-        }
-        return false
-    }
-
     fun buildTimeline(
         reference: IndexedPgsReference,
-        probes: List<PgsPresentationProbe>,
+        probes: List<PgsSegmentProbe>,
     ): PgsReferenceResolution {
         if (probes.size != reference.cues.size) {
             return unavailable("incomplete-cue-coverage", cacheable = false)
         }
 
-        val ordered = probes.sortedWith(
-            compareBy<PgsPresentationProbe> { it.startTimeMs }
-                .thenBy { it.cueIndex },
-        )
-        if (ordered.zipWithNext().any { (left, right) ->
-                right.startTimeMs < left.startTimeMs
-            }
-        ) {
-            return unavailable("non-monotonic-pgs-timeline", cacheable = true)
+        val ordered = probes.sortedBy { it.cueIndex }
+        if (ordered.indices.any { ordered[it].cueIndex != it }) {
+            return unavailable("non-contiguous-cue-coverage", cacheable = false)
         }
 
-        val cues = mutableListOf<SubtitleSyncCue>()
-        ordered.forEachIndexed { index, probe ->
-            if (!probe.visible) return@forEachIndexed
-
-            val nextStart = ordered.getOrNull(index + 1)?.startTimeMs
-            val explicitEnd = probe.durationMs
-                ?.takeIf { duration ->
-                    duration > 0L && probe.startTimeMs <= Long.MAX_VALUE - duration
-                }
-                ?.let { duration -> probe.startTimeMs + duration }
-
-            val end = when {
-                explicitEnd != null && nextStart != null -> minOf(explicitEnd, nextStart)
-                explicitEnd != null -> explicitEnd
-                nextStart != null -> nextStart
-                else -> return unavailable(
-                    "unresolved-final-presentation",
-                    cacheable = true,
-                )
+        val builder = TimelineBuilder()
+        for (probe in ordered) {
+            val error = builder.consume(probe)
+            if (error != null) {
+                return unavailable(error, cacheable = true)
             }
+        }
 
-            if (end <= probe.startTimeMs) {
-                return@forEachIndexed
-            }
-            cues += SubtitleSyncCue(
-                startTimeMs = probe.startTimeMs,
-                endTimeMs = end,
-                text = "",
-            )
+        val cues = when (val result = builder.finish()) {
+            is TimelineResult.Unavailable ->
+                return unavailable(result.reason, cacheable = true)
+            is TimelineResult.Ready -> result.cues
         }
 
         if (cues.size < 3) {
@@ -310,9 +359,7 @@ internal object PgsCueSemanticParser {
             ReferenceTrack(
                 key = reference.key,
                 language = reference.language,
-                cues = cues
-                    .sortedBy { it.startTimeMs }
-                    .distinctBy { it.startTimeMs to it.endTimeMs },
+                cues = cues,
                 label = reference.label,
                 selectionFlags = reference.selectionFlags,
                 roleFlags = reference.roleFlags,
@@ -322,8 +369,316 @@ internal object PgsCueSemanticParser {
         )
     }
 
-    private fun unavailable(reason: String, cacheable: Boolean) =
-        PgsReferenceResolution.Unavailable(reason = reason, cacheable = cacheable)
+    private class TimelineBuilder {
+        private val cues = mutableListOf<SubtitleSyncCue>()
+        private val paletteVersions = mutableMapOf<Int, Int>()
+        private val objectVersions = mutableMapOf<Int, Int>()
+        private val partialObjects = mutableMapOf<Int, Int>()
+        private val windows = mutableMapOf<Int, PgsSegmentInfo.WindowDefinition>()
+
+        private var pending: PendingPresentation? = null
+        private var active: ActivePresentation? = null
+
+        fun consume(probe: PgsSegmentProbe): String? {
+            return when (val segment = probe.segment) {
+                is PgsSegmentInfo.Presentation -> {
+                    if (pending != null) return "pcs-before-end"
+
+                    // PGS composition state uses the top two bits. Any non-normal state is an
+                    // acquisition/epoch boundary, so previously cached graphics state is invalid.
+                    if (segment.state != 0) {
+                        paletteVersions.clear()
+                        objectVersions.clear()
+                        partialObjects.clear()
+                        windows.clear()
+                    }
+
+                    expireActiveBefore(probe.startTimeMs)
+                    pending = PendingPresentation(
+                        startTimeMs = probe.startTimeMs,
+                        durationMs = probe.durationMs,
+                        presentation = segment,
+                    )
+                    null
+                }
+
+                is PgsSegmentInfo.Palette -> {
+                    if (pending == null) return "palette-outside-display-set"
+                    paletteVersions[segment.id] = segment.version
+                    null
+                }
+
+                is PgsSegmentInfo.ObjectData -> {
+                    if (pending == null) return "object-outside-display-set"
+                    val first = (segment.sequence and PGS_OBJECT_FIRST) != 0
+                    val last = (segment.sequence and PGS_OBJECT_LAST) != 0
+                    when {
+                        first && last -> {
+                            partialObjects.remove(segment.id)
+                            objectVersions[segment.id] = segment.version
+                        }
+
+                        first -> partialObjects[segment.id] = segment.version
+
+                        last -> {
+                            if (partialObjects[segment.id] != segment.version) {
+                                return "orphan-object-tail id=${segment.id}"
+                            }
+                            partialObjects.remove(segment.id)
+                            objectVersions[segment.id] = segment.version
+                        }
+
+                        partialObjects[segment.id] != segment.version ->
+                            return "orphan-object-middle id=${segment.id}"
+                    }
+                    null
+                }
+
+                is PgsSegmentInfo.Window -> {
+                    if (pending == null) return "window-outside-display-set"
+                    for (definition in segment.definitions) {
+                        windows[definition.id] = definition
+                    }
+                    null
+                }
+
+                PgsSegmentInfo.End -> {
+                    val current = pending ?: return "end-without-pcs"
+                    val error = commit(current)
+                    if (error == null) pending = null
+                    error
+                }
+            }
+        }
+
+        private fun commit(pending: PendingPresentation): String? {
+            val presentation = pending.presentation
+            val timeMs = pending.startTimeMs
+            expireActiveBefore(timeMs)
+
+            if (presentation.objects.isEmpty()) {
+                closeActive(timeMs)
+                return null
+            }
+
+            val paletteVersion = paletteVersions[presentation.paletteId]
+                ?: return "missing-palette id=${presentation.paletteId}"
+            val objectSignatures = ArrayList<ObjectSignature>(presentation.objects.size)
+
+            for (ref in presentation.objects) {
+                val version = objectVersions[ref.objectId]
+                    ?: return "missing-object id=${ref.objectId}"
+                if (partialObjects.containsKey(ref.objectId)) {
+                    return "incomplete-object id=${ref.objectId}"
+                }
+                val window = windows[ref.windowId]
+                objectSignatures += ObjectSignature(
+                    objectId = ref.objectId,
+                    version = version,
+                    windowId = ref.windowId,
+                    x = ref.x,
+                    y = ref.y,
+                    window = window,
+                )
+            }
+
+            val signature = PresentationSignature(
+                paletteId = presentation.paletteId,
+                paletteVersion = paletteVersion,
+                objects = objectSignatures,
+            )
+            val explicitEnd = pending.durationMs
+                ?.takeIf { duration ->
+                    duration > 0L && timeMs <= Long.MAX_VALUE - duration
+                }
+                ?.let { duration -> timeMs + duration }
+
+            val current = active
+            val forceReplacement = presentation.state != 0 || presentation.paletteUpdate
+            if (current != null && !forceReplacement && current.signature == signature) {
+                if (current.explicitEndMs != null && current.explicitEndMs <= timeMs) {
+                    closeActive(current.explicitEndMs)
+                    active = ActivePresentation(
+                        startTimeMs = timeMs,
+                        explicitEndMs = explicitEnd,
+                        signature = signature,
+                    )
+                } else if (explicitEnd != null) {
+                    active = current.copy(
+                        explicitEndMs = current.explicitEndMs
+                            ?.let { max(it, explicitEnd) }
+                            ?: explicitEnd,
+                    )
+                }
+                return null
+            }
+
+            closeActive(timeMs)
+            active = ActivePresentation(
+                startTimeMs = timeMs,
+                explicitEndMs = explicitEnd,
+                signature = signature,
+            )
+            return null
+        }
+
+        private fun expireActiveBefore(timeMs: Long) {
+            val current = active ?: return
+            val explicitEnd = current.explicitEndMs ?: return
+            if (explicitEnd < timeMs) {
+                closeActive(explicitEnd)
+            }
+        }
+
+        private fun closeActive(requestedEndMs: Long) {
+            val current = active ?: return
+            val endMs = current.explicitEndMs
+                ?.let { minOf(requestedEndMs, it) }
+                ?: requestedEndMs
+            if (endMs > current.startTimeMs) {
+                cues += SubtitleSyncCue(
+                    startTimeMs = current.startTimeMs,
+                    endTimeMs = endMs,
+                    text = "",
+                )
+            }
+            active = null
+        }
+
+        fun finish(): TimelineResult {
+            if (pending != null) {
+                return TimelineResult.Unavailable("display-set-missing-end")
+            }
+            if (partialObjects.isNotEmpty()) {
+                return TimelineResult.Unavailable("incomplete-object-sequence")
+            }
+
+            val current = active
+            if (current != null) {
+                val explicitEnd = current.explicitEndMs
+                    ?: return TimelineResult.Unavailable("unresolved-final-presentation")
+                closeActive(explicitEnd)
+            }
+
+            return TimelineResult.Ready(
+                cues = cues
+                    .sortedBy { it.startTimeMs }
+                    .filter { it.endTimeMs > it.startTimeMs }
+                    .distinctBy { it.startTimeMs to it.endTimeMs },
+            )
+        }
+    }
+
+    private fun parseSegmentHeader(
+        bytes: ByteArray,
+        offset: Int,
+    ): SegmentHeader? {
+        if (offset < 0 || offset + 3 > bytes.size) return null
+
+        val hasSupHeader =
+            offset + 13 <= bytes.size &&
+                bytes[offset].toInt() == 0x50 &&
+                bytes[offset + 1].toInt() == 0x47
+        val typeOffset = if (hasSupHeader) offset + 10 else offset
+        val headerSize = if (hasSupHeader) 13 else 3
+        if (typeOffset + 2 >= bytes.size) return null
+
+        val type = bytes[typeOffset].toInt() and 0xFF
+        val dataLength =
+            ((bytes[typeOffset + 1].toLong() and 0xFFL) shl 8) or
+                (bytes[typeOffset + 2].toLong() and 0xFFL)
+        return SegmentHeader(
+            type = type,
+            dataLength = dataLength,
+            headerSize = headerSize,
+        )
+    }
+
+    private fun parsePresentation(
+        bytes: ByteArray,
+        offset: Int,
+        length: Int,
+    ): PgsSegmentInfo.Presentation? {
+        if (length < 11 || offset < 0 || offset + length > bytes.size) return null
+
+        val state = (bytes[offset + 7].toInt() and 0xFF) ushr 6
+        val paletteUpdate = (bytes[offset + 8].toInt() and 0x80) != 0
+        val paletteId = bytes[offset + 9].toInt() and 0xFF
+        val objectCount = bytes[offset + 10].toInt() and 0xFF
+
+        var objectOffset = offset + 11
+        val end = offset + length
+        val objects = ArrayList<PgsSegmentInfo.ObjectRef>(objectCount)
+        repeat(objectCount) {
+            if (objectOffset + 8 > end) return null
+            val objectId = readUInt16(bytes, objectOffset)
+            val windowId = bytes[objectOffset + 2].toInt() and 0xFF
+            val flags = bytes[objectOffset + 3].toInt() and 0xFF
+            if ((flags and PGS_CROPPED_FLAG) != 0) return null
+            objects += PgsSegmentInfo.ObjectRef(
+                objectId = objectId,
+                windowId = windowId,
+                x = readUInt16(bytes, objectOffset + 4),
+                y = readUInt16(bytes, objectOffset + 6),
+            )
+            objectOffset += 8
+        }
+        return PgsSegmentInfo.Presentation(
+            state = state,
+            paletteUpdate = paletteUpdate,
+            paletteId = paletteId,
+            objects = objects,
+        )
+    }
+
+    private fun parsePalette(
+        bytes: ByteArray,
+        offset: Int,
+        length: Int,
+    ): PgsSegmentInfo.Palette? {
+        if (length < 2 || offset < 0 || offset + 2 > bytes.size) return null
+        return PgsSegmentInfo.Palette(
+            id = bytes[offset].toInt() and 0xFF,
+            version = bytes[offset + 1].toInt() and 0xFF,
+        )
+    }
+
+    private fun parseObject(
+        bytes: ByteArray,
+        offset: Int,
+        length: Int,
+    ): PgsSegmentInfo.ObjectData? {
+        if (length < 4 || offset < 0 || offset + 4 > bytes.size) return null
+        return PgsSegmentInfo.ObjectData(
+            id = readUInt16(bytes, offset),
+            version = bytes[offset + 2].toInt() and 0xFF,
+            sequence = bytes[offset + 3].toInt() and 0xFF,
+        )
+    }
+
+    private fun parseWindow(
+        bytes: ByteArray,
+        offset: Int,
+        length: Int,
+    ): PgsSegmentInfo.Window? {
+        if (length < 1 || offset < 0 || offset >= bytes.size) return null
+        val count = bytes[offset].toInt() and 0xFF
+        if (length != 1 + count * 9 || offset + length > bytes.size) return null
+
+        var position = offset + 1
+        val definitions = ArrayList<PgsSegmentInfo.WindowDefinition>(count)
+        repeat(count) {
+            definitions += PgsSegmentInfo.WindowDefinition(
+                id = bytes[position].toInt() and 0xFF,
+                x = readUInt16(bytes, position + 1),
+                y = readUInt16(bytes, position + 3),
+                width = readUInt16(bytes, position + 5),
+                height = readUInt16(bytes, position + 7),
+            )
+            position += 9
+        }
+        return PgsSegmentInfo.Window(definitions)
+    }
 
     private fun findBlockInGroup(
         bytes: ByteArray,
@@ -349,38 +704,7 @@ internal object PgsCueSemanticParser {
         return null
     }
 
-    private fun parsePcs(
-        bytes: ByteArray,
-        offset: Int,
-    ): Pcs? {
-        val supHeader =
-            offset + 13 <= bytes.size &&
-                bytes[offset].toInt() == 0x50 &&
-                bytes[offset + 1].toInt() == 0x47
-        val typeOffset = if (supHeader) offset + 10 else offset
-        val headerSize = if (supHeader) 13 else 3
-        if (typeOffset + 2 >= bytes.size || offset + headerSize > bytes.size) return null
-        if ((bytes[typeOffset].toInt() and 0xFF) != PGS_PRESENTATION_SEGMENT) return null
-
-        val dataLength =
-            ((bytes[typeOffset + 1].toInt() and 0xFF) shl 8) or
-                (bytes[typeOffset + 2].toInt() and 0xFF)
-        val dataStart = offset + headerSize
-        if (dataLength < 11 || dataStart + dataLength > bytes.size) return null
-
-        val objectCount = bytes[dataStart + 10].toInt() and 0xFF
-        var objectOffset = dataStart + 11
-        repeat(objectCount) {
-            if (objectOffset + 8 > dataStart + dataLength) return null
-            val flags = bytes[objectOffset + 3].toInt() and 0xFF
-            if ((flags and PGS_CROPPED_FLAG) != 0) return null
-            objectOffset += 8
-        }
-
-        return Pcs(objectCount = objectCount)
-    }
-
-    private fun readElementHeader(
+    internal fun readElementHeader(
         bytes: ByteArray,
         offset: Int,
     ): ElementHeader? {
@@ -461,6 +785,10 @@ internal object PgsCueSemanticParser {
         return value.toShort().toLong()
     }
 
+    private fun readUInt16(bytes: ByteArray, offset: Int): Int =
+        ((bytes[offset].toInt() and 0xFF) shl 8) or
+            (bytes[offset + 1].toInt() and 0xFF)
+
     private fun ticksToMs(ticks: Long, scaleNs: Long): Long? {
         if (ticks < 0L || scaleNs <= 0L) return null
         val whole = ticks / 1_000_000L
@@ -471,7 +799,10 @@ internal object PgsCueSemanticParser {
         return wholeMs + remainderNs / 1_000_000L
     }
 
-    private data class ElementHeader(
+    private fun unavailable(reason: String, cacheable: Boolean) =
+        PgsReferenceResolution.Unavailable(reason = reason, cacheable = cacheable)
+
+    internal data class ElementHeader(
         val id: Long,
         val size: Long?,
         val headerStart: Int,
@@ -483,9 +814,43 @@ internal object PgsCueSemanticParser {
         val length: Int,
     )
 
-    private data class Pcs(
-        val objectCount: Int,
+    private data class SegmentHeader(
+        val type: Int,
+        val dataLength: Long,
+        val headerSize: Int,
     )
+
+    private data class PendingPresentation(
+        val startTimeMs: Long,
+        val durationMs: Long?,
+        val presentation: PgsSegmentInfo.Presentation,
+    )
+
+    private data class ObjectSignature(
+        val objectId: Int,
+        val version: Int,
+        val windowId: Int,
+        val x: Int,
+        val y: Int,
+        val window: PgsSegmentInfo.WindowDefinition?,
+    )
+
+    private data class PresentationSignature(
+        val paletteId: Int,
+        val paletteVersion: Int,
+        val objects: List<ObjectSignature>,
+    )
+
+    private data class ActivePresentation(
+        val startTimeMs: Long,
+        val explicitEndMs: Long?,
+        val signature: PresentationSignature,
+    )
+
+    private sealed interface TimelineResult {
+        data class Ready(val cues: List<SubtitleSyncCue>) : TimelineResult
+        data class Unavailable(val reason: String) : TimelineResult
+    }
 
     private class ParseException(message: String) : Exception(message)
 }
