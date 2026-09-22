@@ -1,7 +1,6 @@
 package com.nuvio.app.features.player
 
 import androidx.compose.runtime.Composable
-import com.nuvio.app.features.autosync.AutoSyncPlayerController
 import com.nuvio.app.features.details.MetaDetailsUiState
 import com.nuvio.app.features.details.MetaVideo
 import com.nuvio.app.features.downloads.DownloadsRepository
@@ -35,7 +34,7 @@ internal fun PlayerScreenModalHosts(
     subtitleDelayMs: Int,
     selectedAddonSubtitle: AddonSubtitle?,
     subtitleAutoSyncState: SubtitleAutoSyncUiState,
-    autoSyncController: AutoSyncPlayerController?,
+    autoSyncRetryAction: @Composable (() -> Unit)?,
     onBuiltInSubtitleTrackSelected: (Int) -> Unit,
     onAddonSubtitleSelected: (AddonSubtitle) -> Unit,
     onFetchAddonSubtitles: () -> Unit,
@@ -137,7 +136,7 @@ internal fun PlayerScreenModalHosts(
         subtitleDelayMs = subtitleDelayMs,
         selectedAddonSubtitle = selectedAddonSubtitle,
         subtitleAutoSyncState = subtitleAutoSyncState,
-        autoSyncController = autoSyncController,
+        autoSyncRetryAction = autoSyncRetryAction,
         onBuiltInTrackSelected = onBuiltInSubtitleTrackSelected,
         onAddonSubtitleSelected = onAddonSubtitleSelected,
         onFetchAddonSubtitles = onFetchAddonSubtitles,
