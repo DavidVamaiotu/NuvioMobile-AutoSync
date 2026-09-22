@@ -51,9 +51,7 @@ internal sealed interface PgsReferenceResolution {
     ) : PgsReferenceResolution
 }
 
-internal fun interface PgsRangeReader {
-    suspend fun read(start: Long, length: Int): ByteArray?
-}
+internal typealias PgsRangeReader = suspend (start: Long, length: Int) -> ByteArray?
 
 /**
  * Resolves Matroska S_HDMV/PGS index entries into semantic subtitle visibility intervals.
@@ -769,7 +767,7 @@ internal object PgsCueSemanticParser {
 
             while (outputOffset < length) {
                 val pageStart = absolute - (absolute % PAGE_BYTES)
-                val page = pages[pageStart] ?: source.read(pageStart, PAGE_BYTES)?.also {
+                val page = pages[pageStart] ?: source(pageStart, PAGE_BYTES)?.also {
                     pages[pageStart] = it
                 } ?: return null
 
