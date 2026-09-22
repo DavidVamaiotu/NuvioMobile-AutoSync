@@ -363,9 +363,8 @@ private fun SubtitleAutoSyncSection(
                 enabled = selectedAddonSubtitle != null,
                 onClick = onCapture,
             )
+            autoSyncRetryAction?.invoke()
         }
-
-        autoSyncRetryAction?.invoke()
 
         when {
             selectedAddonSubtitle == null -> {
