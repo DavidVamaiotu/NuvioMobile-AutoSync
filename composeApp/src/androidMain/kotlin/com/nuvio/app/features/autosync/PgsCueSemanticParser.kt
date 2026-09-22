@@ -209,7 +209,6 @@ internal object PgsCueSemanticParser {
         reference: IndexedPgsReference,
         locator: PgsCueLocator,
         cluster: PgsClusterInfo,
-        blockPosition: Long,
         bytes: ByteArray,
         cueIndex: Int,
     ): Result<PgsSegmentProbe> {
