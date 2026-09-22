@@ -2,7 +2,6 @@ package com.nuvio.app.features.autosync
 
 import com.nuvio.app.features.player.SubtitleSyncCue
 import kotlin.math.abs
-import kotlin.math.max
 
 internal data class IndexedPgsReference(
     val key: String,
@@ -393,10 +392,8 @@ internal object PgsCueSemanticParser {
                         windows.clear()
                     }
 
-                    expireActiveBefore(probe.startTimeMs)
                     pending = PendingPresentation(
                         startTimeMs = probe.startTimeMs,
-                        durationMs = probe.durationMs,
                         presentation = segment,
                     )
                     null
@@ -454,7 +451,6 @@ internal object PgsCueSemanticParser {
         private fun commit(pending: PendingPresentation): String? {
             val presentation = pending.presentation
             val timeMs = pending.startTimeMs
-            expireActiveBefore(timeMs)
 
             if (presentation.objects.isEmpty()) {
                 closeActive(timeMs)
@@ -491,58 +487,26 @@ internal object PgsCueSemanticParser {
                 paletteVersion = paletteVersion,
                 objects = objectSignatures,
             )
-            val explicitEnd = pending.durationMs
-                ?.takeIf { duration ->
-                    duration > 0L && timeMs <= Long.MAX_VALUE - duration
-                }
-                ?.let { duration -> timeMs + duration }
-
             val current = active
             val forceReplacement = presentation.state != 0
             if (current != null && !forceReplacement && current.signature == signature) {
-                if (current.explicitEndMs != null && current.explicitEndMs < timeMs) {
-                    closeActive(current.explicitEndMs)
-                    active = ActivePresentation(
-                        startTimeMs = timeMs,
-                        explicitEndMs = explicitEnd,
-                        signature = signature,
-                    )
-                } else if (explicitEnd != null) {
-                    active = current.copy(
-                        explicitEndMs = current.explicitEndMs
-                            ?.let { max(it, explicitEnd) }
-                            ?: explicitEnd,
-                    )
-                }
                 return null
             }
 
             closeActive(timeMs)
             active = ActivePresentation(
                 startTimeMs = timeMs,
-                explicitEndMs = explicitEnd,
                 signature = signature,
             )
             return null
         }
 
-        private fun expireActiveBefore(timeMs: Long) {
+        private fun closeActive(endTimeMs: Long) {
             val current = active ?: return
-            val explicitEnd = current.explicitEndMs ?: return
-            if (explicitEnd < timeMs) {
-                closeActive(explicitEnd)
-            }
-        }
-
-        private fun closeActive(requestedEndMs: Long) {
-            val current = active ?: return
-            val endMs = current.explicitEndMs
-                ?.let { minOf(requestedEndMs, it) }
-                ?: requestedEndMs
-            if (endMs > current.startTimeMs) {
+            if (endTimeMs > current.startTimeMs) {
                 cues += SubtitleSyncCue(
                     startTimeMs = current.startTimeMs,
-                    endTimeMs = endMs,
+                    endTimeMs = endTimeMs,
                     text = "",
                 )
             }
@@ -557,11 +521,8 @@ internal object PgsCueSemanticParser {
                 return TimelineResult.Unavailable("incomplete-object-sequence")
             }
 
-            val current = active
-            if (current != null) {
-                val explicitEnd = current.explicitEndMs
-                    ?: return TimelineResult.Unavailable("unresolved-final-presentation")
-                closeActive(explicitEnd)
+            if (active != null) {
+                return TimelineResult.Unavailable("unresolved-final-presentation")
             }
 
             return TimelineResult.Ready(
@@ -826,7 +787,6 @@ internal object PgsCueSemanticParser {
 
     private data class PendingPresentation(
         val startTimeMs: Long,
-        val durationMs: Long?,
         val presentation: PgsSegmentInfo.Presentation,
     )
 
@@ -847,7 +807,6 @@ internal object PgsCueSemanticParser {
 
     private data class ActivePresentation(
         val startTimeMs: Long,
-        val explicitEndMs: Long?,
         val signature: PresentationSignature,
     )
 
