@@ -6,23 +6,17 @@ import kotlin.test.assertIs
 
 class PgsCueSemanticParserTest {
     @Test
-    fun preservesSilenceBetweenClearAndNextVisiblePresentation() {
-        val reference = reference(
-            locator(1_000),
-            locator(2_000),
-            locator(4_000),
-            locator(5_000),
-            locator(7_000, durationMs = 1_000),
-        )
+    fun assemblesSegmentBlocksAndPreservesSilence() {
+        val probes = buildList {
+            visibleSet(startMs = 1_000, state = 2, objectVersion = 0)
+            clearSet(startMs = 2_000)
+            visibleSet(startMs = 4_000, objectVersion = 1)
+            clearSet(startMs = 5_000)
+            visibleSet(startMs = 7_000, objectVersion = 2, durationMs = 1_000)
+        }.indexed()
         val result = PgsCueSemanticParser.buildTimeline(
-            reference = reference,
-            probes = listOf(
-                probe(0, 1_000, visible = true),
-                probe(1, 2_000, visible = false),
-                probe(2, 4_000, visible = true),
-                probe(3, 5_000, visible = false),
-                probe(4, 7_000, visible = true, durationMs = 1_000),
-            ),
+            reference = reference(probes),
+            probes = probes,
         )
 
         val ready = assertIs<PgsReferenceResolution.Ready>(result)
@@ -37,47 +31,84 @@ class PgsCueSemanticParserTest {
     }
 
     @Test
-    fun keepsDirectReplacementBoundaryWithoutArtificialGap() {
-        val reference = reference(
-            locator(1_000),
-            locator(2_000),
-            locator(3_000),
-            locator(4_000, durationMs = 1_000),
-        )
-        val result = PgsCueSemanticParser.buildTimeline(
-            reference = reference,
-            probes = listOf(
-                probe(0, 1_000, visible = true),
-                probe(1, 2_000, visible = true),
-                probe(2, 3_000, visible = false),
-                probe(3, 4_000, visible = true, durationMs = 1_000),
-            ),
-        )
+    fun keepsDirectReplacementBoundary() {
+        val probes = buildList {
+            visibleSet(startMs = 1_000, state = 2, objectVersion = 0)
+            visibleSet(startMs = 2_000, objectVersion = 1)
+            clearSet(startMs = 3_000)
+        }.indexed()
+        val result = PgsCueSemanticParser.buildTimeline(reference(probes), probes)
 
         val ready = assertIs<PgsReferenceResolution.Ready>(result)
         assertEquals(
             listOf(
                 1_000L to 2_000L,
                 2_000L to 3_000L,
-                4_000L to 5_000L,
             ),
             ready.track.cues.map { it.startTimeMs to it.endTimeMs },
         )
     }
 
     @Test
-    fun rejectsPartialCoverage() {
-        val reference = reference(
-            locator(1_000),
-            locator(2_000),
-            locator(3_000),
+    fun repeatedIdenticalCompositionDoesNotCreateFakeDialogueBoundary() {
+        val probes = buildList {
+            visibleSet(startMs = 1_000, state = 2, objectVersion = 0)
+            presentation(startMs = 2_000, objectId = 1)
+            end(startMs = 2_000)
+            clearSet(startMs = 3_000)
+        }.indexed()
+        val result = PgsCueSemanticParser.buildTimeline(reference(probes), probes)
+
+        val ready = assertIs<PgsReferenceResolution.Ready>(result)
+        assertEquals(
+            listOf(1_000L to 3_000L),
+            ready.track.cues.map { it.startTimeMs to it.endTimeMs },
         )
-        val result = PgsCueSemanticParser.buildTimeline(
-            reference = reference,
-            probes = listOf(
-                probe(0, 1_000, visible = true),
-                probe(1, 2_000, visible = false),
+    }
+
+    @Test
+    fun objectVersionChangeIsAReplacement() {
+        val probes = buildList {
+            visibleSet(startMs = 1_000, state = 2, objectVersion = 0)
+            presentation(startMs = 2_000, objectId = 1)
+            objectData(startMs = 2_000, objectId = 1, version = 1)
+            end(startMs = 2_000)
+            clearSet(startMs = 3_000)
+        }.indexed()
+        val result = PgsCueSemanticParser.buildTimeline(reference(probes), probes)
+
+        val ready = assertIs<PgsReferenceResolution.Ready>(result)
+        assertEquals(
+            listOf(
+                1_000L to 2_000L,
+                2_000L to 3_000L,
             ),
+            ready.track.cues.map { it.startTimeMs to it.endTimeMs },
+        )
+    }
+
+    @Test
+    fun rejectsDisplaySetWithoutEnd() {
+        val probes = buildList {
+            presentation(startMs = 1_000, state = 2, objectId = 1)
+            palette(startMs = 1_000)
+            objectData(startMs = 1_000, objectId = 1, version = 0)
+        }.indexed()
+        val result = PgsCueSemanticParser.buildTimeline(reference(probes), probes)
+
+        val unavailable = assertIs<PgsReferenceResolution.Unavailable>(result)
+        assertEquals("display-set-missing-end", unavailable.reason)
+    }
+
+    @Test
+    fun rejectsPartialIndexedCoverage() {
+        val full = buildList {
+            visibleSet(startMs = 1_000, state = 2, objectVersion = 0)
+            clearSet(startMs = 2_000)
+        }.indexed()
+        val result = PgsCueSemanticParser.buildTimeline(
+            reference = reference(full),
+            probes = full.dropLast(1),
         )
 
         val unavailable = assertIs<PgsReferenceResolution.Unavailable>(result)
@@ -86,29 +117,101 @@ class PgsCueSemanticParserTest {
 
     @Test
     fun rejectsUnresolvedFinalVisiblePresentation() {
-        val reference = reference(
-            locator(1_000),
-            locator(2_000),
-            locator(3_000),
-            locator(4_000),
-            locator(5_000),
-        )
-        val result = PgsCueSemanticParser.buildTimeline(
-            reference = reference,
-            probes = listOf(
-                probe(0, 1_000, visible = true),
-                probe(1, 2_000, visible = false),
-                probe(2, 3_000, visible = true),
-                probe(3, 4_000, visible = false),
-                probe(4, 5_000, visible = true),
-            ),
-        )
+        val probes = buildList {
+            visibleSet(startMs = 1_000, state = 2, objectVersion = 0)
+            clearSet(startMs = 2_000)
+            visibleSet(startMs = 3_000, objectVersion = 1)
+        }.indexed()
+        val result = PgsCueSemanticParser.buildTimeline(reference(probes), probes)
 
         val unavailable = assertIs<PgsReferenceResolution.Unavailable>(result)
         assertEquals("unresolved-final-presentation", unavailable.reason)
     }
 
-    private fun reference(vararg cues: PgsCueLocator) = IndexedPgsReference(
+    private fun MutableList<RawProbe>.visibleSet(
+        startMs: Long,
+        state: Int = 0,
+        objectVersion: Int,
+        durationMs: Long? = null,
+    ) {
+        add(presentation(startMs, state, objectId = 1, durationMs = durationMs))
+        add(palette(startMs))
+        add(objectData(startMs, objectId = 1, version = objectVersion))
+        add(end(startMs))
+    }
+
+    private fun MutableList<RawProbe>.clearSet(startMs: Long) {
+        add(
+            RawProbe(
+                startMs = startMs,
+                segment = PgsSegmentInfo.Presentation(
+                    state = 0,
+                    paletteUpdate = false,
+                    paletteId = 0,
+                    objects = emptyList(),
+                ),
+            ),
+        )
+        add(end(startMs))
+    }
+
+    private fun presentation(
+        startMs: Long,
+        state: Int = 0,
+        objectId: Int,
+        durationMs: Long? = null,
+    ) = RawProbe(
+        startMs = startMs,
+        durationMs = durationMs,
+        segment = PgsSegmentInfo.Presentation(
+            state = state,
+            paletteUpdate = false,
+            paletteId = 0,
+            objects = listOf(
+                PgsSegmentInfo.ObjectRef(
+                    objectId = objectId,
+                    windowId = 0,
+                    x = 100,
+                    y = 900,
+                ),
+            ),
+        ),
+    )
+
+    private fun palette(startMs: Long) = RawProbe(
+        startMs = startMs,
+        segment = PgsSegmentInfo.Palette(id = 0, version = 0),
+    )
+
+    private fun objectData(
+        startMs: Long,
+        objectId: Int,
+        version: Int,
+    ) = RawProbe(
+        startMs = startMs,
+        segment = PgsSegmentInfo.ObjectData(
+            id = objectId,
+            version = version,
+            sequence = 0xC0,
+        ),
+    )
+
+    private fun end(startMs: Long) = RawProbe(
+        startMs = startMs,
+        segment = PgsSegmentInfo.End,
+    )
+
+    private fun List<RawProbe>.indexed(): List<PgsSegmentProbe> =
+        mapIndexed { index, probe ->
+            PgsSegmentProbe(
+                cueIndex = index,
+                startTimeMs = probe.startMs,
+                durationMs = probe.durationMs,
+                segment = probe.segment,
+            )
+        }
+
+    private fun reference(probes: List<PgsSegmentProbe>) = IndexedPgsReference(
         key = "mkv-cues:4",
         language = "en",
         label = "English",
@@ -117,31 +220,21 @@ class PgsCueSemanticParserTest {
         trackNumber = 4,
         segmentDataStart = 100L,
         timestampScaleNs = 1_000_000L,
-        cues = cues.toList(),
+        cues = probes.mapIndexed { index, probe ->
+            PgsCueLocator(
+                startTimeMs = probe.startTimeMs,
+                cueTimeTicks = probe.startTimeMs,
+                durationMs = probe.durationMs,
+                clusterPosition = index * 1_000L,
+                relativePosition = 10L,
+                blockNumber = 1L,
+            )
+        },
     )
 
-    private fun locator(
-        startMs: Long,
-        durationMs: Long? = null,
-    ) = PgsCueLocator(
-        startTimeMs = startMs,
-        cueTimeTicks = startMs,
-        durationMs = durationMs,
-        clusterPosition = startMs,
-        relativePosition = 10L,
-        blockNumber = 1L,
-    )
-
-    private fun probe(
-        index: Int,
-        startMs: Long,
-        visible: Boolean,
-        durationMs: Long? = null,
-    ) = PgsPresentationProbe(
-        cueIndex = index,
-        startTimeMs = startMs,
-        durationMs = durationMs,
-        visible = visible,
-        payloadEnd = 1_000L + index,
+    private data class RawProbe(
+        val startMs: Long,
+        val durationMs: Long? = null,
+        val segment: PgsSegmentInfo,
     )
 }
