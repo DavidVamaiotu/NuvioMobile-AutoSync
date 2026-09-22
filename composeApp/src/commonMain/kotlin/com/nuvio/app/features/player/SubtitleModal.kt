@@ -305,7 +305,6 @@ fun SubtitleModal(
                                     subtitleDelayMs = subtitleDelayMs,
                                     selectedAddonSubtitle = effectiveSelectedAddonSubtitle,
                                     subtitleAutoSyncState = subtitleAutoSyncState,
-                                    autoSyncRetryAction = autoSyncRetryAction,
                                     isCompact = railMaxHeight < 420.dp,
                                     showHeader = false,
                                     onStyleChanged = onStyleChanged,
@@ -317,6 +316,14 @@ fun SubtitleModal(
                                 )
                             }
                         }
+                    }
+                }
+
+                autoSyncRetryAction?.let { action ->
+                    Box(
+                        modifier = Modifier.padding(top = 12.dp, start = 84.dp),
+                    ) {
+                        action()
                     }
                 }
             }
