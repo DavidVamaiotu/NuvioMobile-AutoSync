@@ -132,6 +132,9 @@ private class ObservingTextTrackOutput(
         if (timeUs == C.TIME_UNSET || size <= 0) return
         val sampleStart = end - offset - size
         val currentFormat = format
+        if (currentFormat?.sampleMimeType.equals("application/pgs", ignoreCase = true)) {
+            return
+        }
         if (currentFormat?.sampleMimeType == MimeTypes.APPLICATION_MEDIA3_CUES &&
             sampleStart >= start && sampleStart + size <= end
         ) {
