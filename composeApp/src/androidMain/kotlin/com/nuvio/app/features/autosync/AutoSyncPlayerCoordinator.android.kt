@@ -9,8 +9,15 @@ import androidx.media3.common.C
 import androidx.media3.exoplayer.ExoPlayer
 import com.nuvio.app.features.player.PlayerSubtitleUtils
 import com.nuvio.app.features.player.SidecarSubtitleController
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -31,8 +38,13 @@ internal class AutoSyncPlayerCoordinator(
     private val onSubtitleDelayChanged: (Int) -> Unit,
 ) {
     private var job: Job? = null
+    private var retryJob: Job? = null
+    private var retryContext: RetryContext? = null
+    private var retryOperationToken = 0L
     private var candidates: List<AutoSyncSubtitleCandidate> = emptyList()
     private var appliedListener: ((subtitleUrl: String, delayMs: Int) -> Unit)? = null
+    private val _retryState = MutableStateFlow(AutoSyncRetryUiState())
+    val retryState: StateFlow<AutoSyncRetryUiState> = _retryState.asStateFlow()
 
     fun setCandidates(value: List<AutoSyncSubtitleCandidate>) {
         candidates = value.distinctBy { it.url }
@@ -44,14 +56,202 @@ internal class AutoSyncPlayerCoordinator(
         appliedListener = listener
     }
 
+    private fun invalidateRetryContext() {
+        retryOperationToken++
+        retryJob?.cancel()
+        retryJob = null
+        retryContext = null
+        _retryState.value = AutoSyncRetryUiState()
+    }
+
     fun cancel() {
         job?.cancel()
         job = null
+        invalidateRetryContext()
+    }
+
+    fun onManualSubtitleDelayChanged() {
+        if (retryJob?.isActive != true) return
+        retryOperationToken++
+        retryJob?.cancel()
+        retryJob = null
+        _retryState.value = _retryState.value.copy(
+            busy = false,
+            exhausted = false,
+            status = AutoSyncRetryStatus.IDLE,
+        )
     }
 
     fun dispose() {
         cancel()
         appliedListener = null
+    }
+
+    fun retryWithAnotherReference() {
+        val snapshot = retryContext ?: return
+        if (retryJob?.isActive == true || _retryState.value.exhausted) return
+
+        val currentGeneration = sidecar.currentGenerationFor(snapshot.subtitleUrl)
+        if (
+            sidecar.activeSidecarSubtitleKey != snapshot.subtitleUrl ||
+            currentGeneration != snapshot.expectedGeneration
+        ) {
+            invalidateRetryContext()
+            return
+        }
+
+        val rejectedKeys = buildSet {
+            addAll(snapshot.rejectedReferenceKeys)
+            add(snapshot.appliedReference.key)
+            addAll(snapshot.appliedReference.equivalentKeys)
+        }
+        retryContext = snapshot.copy(rejectedReferenceKeys = rejectedKeys)
+
+        val operationToken = ++retryOperationToken
+        _retryState.value = AutoSyncRetryUiState(
+            available = true,
+            busy = true,
+            status = AutoSyncRetryStatus.TRYING,
+        )
+
+        AutoSyncDebugLog.section { "REFERENCE RETRY" }
+        AutoSyncDebugLog.info {
+            "RETRY operation=$operationToken source=${snapshot.appliedReference.source} " +
+                "currentReference=${snapshot.appliedReference.key} " +
+                "rejected=${rejectedKeys.sorted().joinToString(",")}"
+        }
+
+        retryJob = scope.launch {
+            var searchOutcome: AutoSyncReferenceSearchOutcome? = null
+            try {
+                val resolved = AutomaticSubtitleSync.findTimelineRetime(
+                    sourceKey = sourceUrl,
+                    sourceHeaders = sourceHeaders,
+                    selectedSubtitleUrl = snapshot.subtitleUrl,
+                    selectedSubtitleHeaders = snapshot.subtitleHeaders,
+                    selectedSubtitleBodyDeferred = CompletableDeferred(snapshot.originalBody),
+                    preferredLanguage = getPreferredLanguage(),
+                    alternativeSubtitles = emptyList(),
+                    alternativeSubtitlesProvider = null,
+                    excludedReferenceKeys = rejectedKeys,
+                    requiredReferenceSource = snapshot.appliedReference.source,
+                    onReferenceSearchOutcome = { outcome -> searchOutcome = outcome },
+                )
+
+                currentCoroutineContext().ensureActive()
+                val activeContext = retryContext ?: return@launch
+                if (operationToken != retryOperationToken) return@launch
+                if (
+                    sidecar.activeSidecarSubtitleKey != snapshot.subtitleUrl ||
+                    sidecar.currentGenerationFor(snapshot.subtitleUrl) != snapshot.expectedGeneration
+                ) {
+                    invalidateRetryContext()
+                    return@launch
+                }
+
+                if (resolved == null) {
+                    val exhausted = searchOutcome == AutoSyncReferenceSearchOutcome.EXHAUSTED
+                    _retryState.value = AutoSyncRetryUiState(
+                        available = true,
+                        busy = false,
+                        exhausted = exhausted,
+                        status = if (exhausted) {
+                            AutoSyncRetryStatus.EXHAUSTED
+                        } else {
+                            AutoSyncRetryStatus.FAILED
+                        },
+                    )
+                    AutoSyncDebugLog.info {
+                        "RETRY operation=$operationToken outcome=${searchOutcome ?: AutoSyncReferenceSearchOutcome.UNAVAILABLE}"
+                    }
+                    return@launch
+                }
+
+                if (
+                    resolved.subtitleUrl != snapshot.subtitleUrl ||
+                    resolved.reference.source != snapshot.appliedReference.source
+                ) {
+                    _retryState.value = AutoSyncRetryUiState(
+                        available = true,
+                        status = AutoSyncRetryStatus.FAILED,
+                    )
+                    AutoSyncDebugLog.warn {
+                        "RETRY operation=$operationToken rejected unexpected external/reference source"
+                    }
+                    return@launch
+                }
+
+                val applied = replaceAutoSyncSidecarSubtitle(
+                    sidecar = sidecar,
+                    expectedCurrentUrl = snapshot.subtitleUrl,
+                    url = snapshot.subtitleUrl,
+                    headers = snapshot.subtitleHeaders,
+                    rawBody = snapshot.originalBody,
+                    useLibass = getUseLibass(),
+                    timeline = resolved.timeline,
+                )
+                currentCoroutineContext().ensureActive()
+                if (operationToken != retryOperationToken) return@launch
+
+                if (!applied) {
+                    if (
+                        sidecar.activeSidecarSubtitleKey != snapshot.subtitleUrl ||
+                        sidecar.currentGenerationFor(snapshot.subtitleUrl) != snapshot.expectedGeneration
+                    ) {
+                        invalidateRetryContext()
+                    } else {
+                        _retryState.value = AutoSyncRetryUiState(
+                            available = true,
+                            status = AutoSyncRetryStatus.FAILED,
+                        )
+                    }
+                    AutoSyncDebugLog.warn {
+                        "RETRY operation=$operationToken apply=false"
+                    }
+                    return@launch
+                }
+
+                val committedGeneration =
+                    sidecar.currentGenerationFor(snapshot.subtitleUrl)
+                        ?: run {
+                            invalidateRetryContext()
+                            return@launch
+                        }
+                retryContext = activeContext.copy(
+                    appliedReference = resolved.reference,
+                    expectedGeneration = committedGeneration,
+                )
+                onSubtitleDelayChanged(0)
+                appliedListener?.invoke(snapshot.subtitleUrl, 0)
+                _retryState.value = AutoSyncRetryUiState(
+                    available = true,
+                    status = AutoSyncRetryStatus.UPDATED,
+                )
+                AutoSyncDebugLog.info {
+                    "RETRY operation=$operationToken applied=true " +
+                        "reference=${resolved.reference.key} originalBody=true"
+                }
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (error: Exception) {
+                if (operationToken == retryOperationToken && retryContext != null) {
+                    _retryState.value = AutoSyncRetryUiState(
+                        available = true,
+                        status = AutoSyncRetryStatus.FAILED,
+                    )
+                }
+                AutoSyncDebugLog.error(error) {
+                    "RETRY operation=$operationToken failed"
+                }
+            } finally {
+                if (operationToken == retryOperationToken) {
+                    retryJob = null
+                    if (_retryState.value.busy) {
+                        _retryState.value = _retryState.value.copy(busy = false)
+                    }
+                }
+            }
+        }
     }
 
     fun start(
@@ -233,6 +433,22 @@ internal class AutoSyncPlayerCoordinator(
             if (chosenUrl != url) {
                 onMimeTypeSelected(PlayerSubtitleUtils.mimeTypeFromUrl(chosenUrl))
             }
+            val originalBody = resolved.subtitleBody
+            val referenceGeneration = sidecar.currentGenerationFor(chosenUrl)
+            if (originalBody != null && referenceGeneration != null) {
+                retryContext = RetryContext(
+                    subtitleUrl = chosenUrl,
+                    subtitleHeaders = resolved.subtitleHeaders,
+                    originalBody = originalBody,
+                    appliedReference = resolved.reference,
+                    rejectedReferenceKeys = emptySet(),
+                    expectedGeneration = referenceGeneration,
+                )
+                _retryState.value = AutoSyncRetryUiState(available = true)
+            } else {
+                invalidateRetryContext()
+            }
+
             onSubtitleDelayChanged(0)
             appliedListener?.invoke(chosenUrl, 0)
 
@@ -267,6 +483,15 @@ internal class AutoSyncPlayerCoordinator(
             )
         }
     }
+
+    private data class RetryContext(
+        val subtitleUrl: String,
+        val subtitleHeaders: Map<String, String>,
+        val originalBody: String,
+        val appliedReference: AutoSyncReferenceIdentity,
+        val rejectedReferenceKeys: Set<String>,
+        val expectedGeneration: Long,
+    )
 }
 
 private fun buildAutoSyncSuccessToast(

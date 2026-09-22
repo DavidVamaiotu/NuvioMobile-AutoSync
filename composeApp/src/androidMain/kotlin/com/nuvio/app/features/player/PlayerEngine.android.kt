@@ -746,6 +746,12 @@ private fun ExoPlayerSurface(
     LaunchedEffect(exoPlayer) {
         onControllerReady(
             object : PlayerEngineController, AutoSyncPlayerController {
+                override val autoSyncRetryState = autoSyncCoordinator.retryState
+
+                override fun retryWithAnotherReference() {
+                    autoSyncCoordinator.retryWithAnotherReference()
+                }
+
                 override fun play() {
                     exoPlayer.playWhenReady = true
                     exoPlayer.play()
@@ -981,6 +987,7 @@ private fun ExoPlayerSurface(
                 }
 
                 override fun setSubtitleDelayMs(delayMs: Int) {
+                    autoSyncCoordinator.onManualSubtitleDelayChanged()
                     subtitleDelayMs = delayMs.coerceIn(SUBTITLE_DELAY_MIN_MS, SUBTITLE_DELAY_MAX_MS)
                 }
 

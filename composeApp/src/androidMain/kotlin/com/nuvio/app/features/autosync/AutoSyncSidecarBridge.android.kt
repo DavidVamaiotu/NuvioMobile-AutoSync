@@ -9,7 +9,9 @@ import com.nuvio.app.features.player.SidecarSubtitleController
 import com.nuvio.app.features.player.parseSidecarTimedCuesRobust
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.roundToLong
@@ -128,6 +130,7 @@ internal suspend fun replaceAutoSyncSidecarSubtitle(
         return false
     }
 
+    currentCoroutineContext().ensureActive()
     if (
         sidecar.activeSidecarSubtitleKey != expectedCurrentUrl ||
         sidecar.currentGenerationFor(expectedCurrentUrl) != expectedGeneration

@@ -84,6 +84,7 @@ fun SubtitleModal(
     onAutoSyncCueSelected: (SubtitleSyncCue) -> Unit,
     onAutoSyncReload: () -> Unit,
     onDismiss: () -> Unit,
+    autoSyncRetryAction: @Composable (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val effectiveSelectedAddonSubtitle = selectedAddonSubtitle
@@ -182,6 +183,12 @@ fun SubtitleModal(
                     style = MaterialTheme.typography.headlineMedium,
                     modifier = Modifier.padding(bottom = 12.dp),
                 )
+
+                autoSyncRetryAction?.let { action ->
+                    Box(modifier = Modifier.padding(bottom = 12.dp)) {
+                        action()
+                    }
+                }
 
                 Row(
                     modifier = Modifier.horizontalScroll(rememberScrollState()),
