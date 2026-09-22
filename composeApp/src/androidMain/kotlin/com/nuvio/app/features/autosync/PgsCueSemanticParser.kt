@@ -82,7 +82,6 @@ internal object PgsCueSemanticParser {
     private const val PGS_WINDOW_SEGMENT = 0x17
     private const val PGS_END_SEGMENT = 0x80
 
-    private const val PGS_EPOCH_START = 0x80
     private const val PGS_CROPPED_FLAG = 0x80
     private const val PGS_OBJECT_FIRST = 0x80
     private const val PGS_OBJECT_LAST = 0x40
@@ -595,7 +594,7 @@ internal object PgsCueSemanticParser {
                 when (segment) {
                     is PgsSegment.Presentation -> {
                         if (pending != null) return "pcs-before-end"
-                        if (segment.state == PGS_EPOCH_START) {
+                        if ((segment.state and 0xC0) != 0) {
                             objectVersions.clear()
                             partialObjects.clear()
                             paletteVersions.clear()
