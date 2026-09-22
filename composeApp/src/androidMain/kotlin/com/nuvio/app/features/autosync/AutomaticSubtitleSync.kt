@@ -565,6 +565,7 @@ internal object AutomaticSubtitleSync {
             var forcedFallbackTracks: List<ReferenceTrack> = emptyList()
             var referenceSource: AutoSyncReferenceSource? = null
             var hadEligibleReferencesBeforeExclusion = false
+            var pgsResolutionAttempted = false
 
             AutoSyncDebugLog.section { "INDEXED EMBEDDED REFERENCE" }
             if (
@@ -598,6 +599,7 @@ internal object AutomaticSubtitleSync {
                 if (pendingPgs.isNotEmpty() &&
                     (!hasPreferredReadyText || requiredReferenceSource == AutoSyncReferenceSource.INDEXED)
                 ) {
+                    pgsResolutionAttempted = true
                     val orderedPendingPgs = pendingPgs
                         .sortedWith(
                             compareByDescending<Pair<IndexedPgsReference, ReferenceProfile>> {
@@ -690,7 +692,13 @@ internal object AutomaticSubtitleSync {
                     sourceKey = sourceKey,
                     preferredLanguage = preferredLanguage,
                     target = seedTarget,
-                    waitMs = if (indexedTimeline?.skipLiveFallbackWait == true) 0L else LIVE_REFERENCE_WAIT_MS,
+                    waitMs = if (
+                        indexedTimeline?.skipLiveFallbackWait == true || pgsResolutionAttempted
+                    ) {
+                        0L
+                    } else {
+                        LIVE_REFERENCE_WAIT_MS
+                    },
                     excludedReferenceKeys = excludedReferenceKeys,
                 )
                 referenceTracks = liveSelection.primary
