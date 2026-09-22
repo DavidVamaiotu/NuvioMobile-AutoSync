@@ -54,7 +54,7 @@ internal object EmbeddedSubtitleTimelineLoader {
     private const val MAX_MKV_INTER_CUE_ESTIMATED_DURATION_MS = 4_000L
     private const val MATROSKA_PGS_CODEC_ID = "S_HDMV/PGS"
     private const val PGS_PROBE_BYTES = 512
-    private const val PGS_PROBE_PAIR_COUNT = 4
+    private const val PGS_PROBE_PAIR_COUNT = 2
     private const val MIN_INDEXED_CUES = 8
     private const val MIN_INDEXED_SPAN_MS = 30_000L
     private const val MAX_CACHE_ENTRIES = 2
@@ -1411,7 +1411,7 @@ internal object EmbeddedSubtitleTimelineLoader {
     ): List<Int> {
         if (cueCount < 2 || maxSamples < 4) return emptyList()
         val pairCount = minOf(PGS_PROBE_PAIR_COUNT, maxSamples / 2)
-        val anchors = intArrayOf(1, 3, 5, 7)
+        val anchors = intArrayOf(2, 6)
         val result = LinkedHashSet<Int>(pairCount * 2)
 
         for (anchor in anchors.take(pairCount)) {
