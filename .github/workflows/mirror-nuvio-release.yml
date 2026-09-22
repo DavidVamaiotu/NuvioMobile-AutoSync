@@ -1,6 +1,6 @@
 name: AutoSync Release
 
-# Release trigger: eliminate duplicate fallback wait
+# Release trigger: restore first working SDH PGS timing path
 
 
 on:
