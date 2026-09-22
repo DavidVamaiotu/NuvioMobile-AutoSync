@@ -96,6 +96,8 @@ internal object EmbeddedSubtitleTimelineLoader {
     private const val ID_LANGUAGE_IETF = 0x22B59DL
     private const val ID_CODEC_ID = 0x86L
     private const val ID_CONTENT_ENCODINGS = 0x6D80L
+    private const val ID_TRACK_TIMESTAMP_SCALE = 0x23314FL
+    private const val ID_CODEC_DELAY = 0x56AAL
     private const val TRACK_TYPE_SUBTITLE = 17L
 
     // Cues.
@@ -581,6 +583,9 @@ internal object EmbeddedSubtitleTimelineLoader {
                 },
                 unsupportedReason = when {
                     track.hasContentEncodings -> "track-content-encoding"
+                    !track.trackTimestampScale.isFinite() || track.trackTimestampScale != 1.0 ->
+                        "unsupported-track-timestamp-scale"
+                    track.codecDelayNs != 0L -> "unsupported-codec-delay"
                     missingClusterPosition -> "missing-cluster-position"
                     else -> null
                 },
@@ -1274,6 +1279,8 @@ internal object EmbeddedSubtitleTimelineLoader {
             var textDescriptions = false
             var commentary = false
             var hasContentEncodings = false
+            var trackTimestampScale = 1.0
+            var codecDelayNs = 0L
 
             forEachChild(tracksElement, entry.dataStart, entryEnd) { child ->
                 when (child.id) {
@@ -1284,6 +1291,9 @@ internal object EmbeddedSubtitleTimelineLoader {
                     ID_LANGUAGE_IETF -> languageIetf = readUtf8(tracksElement, child)
                     ID_CODEC_ID -> codecId = readUtf8(tracksElement, child)
                     ID_CONTENT_ENCODINGS -> hasContentEncodings = true
+                    ID_TRACK_TIMESTAMP_SCALE ->
+                        trackTimestampScale = readFloat(tracksElement, child) ?: Double.NaN
+                    ID_CODEC_DELAY -> codecDelayNs = readUnsigned(tracksElement, child) ?: Long.MAX_VALUE
                     ID_FLAG_DEFAULT -> isDefault = readUnsigned(tracksElement, child) != 0L
                     ID_FLAG_FORCED -> forced = readUnsigned(tracksElement, child) == 1L
                     ID_FLAG_HEARING_IMPAIRED -> hearingImpaired = readUnsigned(tracksElement, child) == 1L
@@ -1308,6 +1318,8 @@ internal object EmbeddedSubtitleTimelineLoader {
                     textDescriptions = textDescriptions,
                     commentary = commentary,
                     hasContentEncodings = hasContentEncodings,
+                    trackTimestampScale = trackTimestampScale,
+                    codecDelayNs = codecDelayNs,
                 )
             }
         }
@@ -1817,6 +1829,29 @@ internal object EmbeddedSubtitleTimelineLoader {
         return value
     }
 
+    private fun readFloat(bytes: ByteArray, element: EbmlElement): Double? {
+        val size = element.size ?: return null
+        val end = element.dataStart + size.toInt()
+        if (end > bytes.size) return null
+        return when (size) {
+            4L -> {
+                var bits = 0
+                for (index in element.dataStart until end) {
+                    bits = (bits shl 8) or (bytes[index].toInt() and 0xFF)
+                }
+                Float.fromBits(bits).toDouble()
+            }
+            8L -> {
+                var bits = 0L
+                for (index in element.dataStart until end) {
+                    bits = (bits shl 8) or (bytes[index].toLong() and 0xFFL)
+                }
+                Double.fromBits(bits)
+            }
+            else -> null
+        }
+    }
+
     private fun readBinaryId(bytes: ByteArray, element: EbmlElement): Long? {
         val size = element.size ?: return null
         if (size !in 1L..4L) return null
@@ -1932,6 +1967,8 @@ internal object EmbeddedSubtitleTimelineLoader {
         val textDescriptions: Boolean,
         val commentary: Boolean,
         val hasContentEncodings: Boolean,
+        val trackTimestampScale: Double,
+        val codecDelayNs: Long,
     )
 
     private data class CueTrackPosition(
