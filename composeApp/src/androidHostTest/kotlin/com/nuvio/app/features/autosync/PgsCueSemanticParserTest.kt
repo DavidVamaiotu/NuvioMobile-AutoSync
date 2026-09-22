@@ -103,7 +103,7 @@ class PgsCueSemanticParserTest {
 
     @Test
     fun rejectsPartialIndexedCoverage() {
-        val full = buildList {
+        val full = buildList<RawProbe> {
             visibleSet(startMs = 1_000, state = 2, objectVersion = 0)
             clearSet(startMs = 2_000)
         }.indexed()
