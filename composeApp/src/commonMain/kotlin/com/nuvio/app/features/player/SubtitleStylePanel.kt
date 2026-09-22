@@ -23,7 +23,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -34,16 +33,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.nuvio.app.core.ui.nuvio
-import com.nuvio.app.features.autosync.AutoSyncPlayerController
-import com.nuvio.app.features.autosync.AutoSyncRetryStatus
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.compose_action_off
 import nuvio.composeapp.generated.resources.compose_action_on
-import nuvio.composeapp.generated.resources.autosync_retry_action
-import nuvio.composeapp.generated.resources.autosync_retry_exhausted
-import nuvio.composeapp.generated.resources.autosync_retry_failed
-import nuvio.composeapp.generated.resources.autosync_retry_trying
-import nuvio.composeapp.generated.resources.autosync_retry_updated
 import nuvio.composeapp.generated.resources.compose_player_auto_sync
 import nuvio.composeapp.generated.resources.compose_player_bold
 import nuvio.composeapp.generated.resources.compose_player_bottom_offset
@@ -72,7 +64,7 @@ fun SubtitleStylePanel(
     subtitleDelayMs: Int,
     selectedAddonSubtitle: AddonSubtitle?,
     subtitleAutoSyncState: SubtitleAutoSyncUiState,
-    autoSyncController: AutoSyncPlayerController? = null,
+    autoSyncRetryAction: @Composable (() -> Unit)? = null,
     isCompact: Boolean,
     showHeader: Boolean = true,
     onStyleChanged: (SubtitleStyleState) -> Unit,
@@ -195,7 +187,7 @@ fun SubtitleStylePanel(
         SubtitleAutoSyncSection(
             selectedAddonSubtitle = selectedAddonSubtitle,
             state = subtitleAutoSyncState,
-            autoSyncController = autoSyncController,
+            autoSyncRetryAction = autoSyncRetryAction,
             onCapture = onAutoSyncCapture,
             onCueSelected = onAutoSyncCueSelected,
             onReload = onAutoSyncReload,
@@ -346,22 +338,12 @@ private fun SubtitleColorPicker(
 private fun SubtitleAutoSyncSection(
     selectedAddonSubtitle: AddonSubtitle?,
     state: SubtitleAutoSyncUiState,
-    autoSyncController: AutoSyncPlayerController?,
+    autoSyncRetryAction: @Composable (() -> Unit)?,
     onCapture: () -> Unit,
     onCueSelected: (SubtitleSyncCue) -> Unit,
     onReload: () -> Unit,
 ) {
     val tokens = MaterialTheme.nuvio
-    val retryState = autoSyncController?.autoSyncRetryState?.collectAsState()?.value
-    val retryStatusText = when (retryState?.status) {
-        AutoSyncRetryStatus.UPDATED -> stringResource(Res.string.autosync_retry_updated)
-        AutoSyncRetryStatus.EXHAUSTED -> stringResource(Res.string.autosync_retry_exhausted)
-        AutoSyncRetryStatus.FAILED -> stringResource(Res.string.autosync_retry_failed)
-        AutoSyncRetryStatus.IDLE,
-        AutoSyncRetryStatus.TRYING,
-        null,
-        -> null
-    }
     val capturedPositionMs = state.capturedPositionMs
     val nearestCues = if (capturedPositionMs == null) {
         emptyList()
@@ -381,22 +363,9 @@ private fun SubtitleAutoSyncSection(
                 enabled = selectedAddonSubtitle != null,
                 onClick = onCapture,
             )
-            if (retryState?.available == true) {
-                SubtitleTextAction(
-                    label = stringResource(
-                        if (retryState.busy) {
-                            Res.string.autosync_retry_trying
-                        } else {
-                            Res.string.autosync_retry_action
-                        },
-                    ),
-                    enabled = !retryState.busy && !retryState.exhausted,
-                    onClick = { autoSyncController?.retryWithAnotherReference() },
-                )
-            }
         }
 
-        retryStatusText?.let(::SubtitleHelperText)
+        autoSyncRetryAction?.invoke()
 
         when {
             selectedAddonSubtitle == null -> {
