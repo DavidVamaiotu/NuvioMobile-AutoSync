@@ -11,6 +11,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
 import com.nuvio.app.features.autosync.AutoSyncPlayerController
+import com.nuvio.app.features.autosync.AutoSyncRetryAction
 import com.nuvio.app.features.p2p.P2pStreamingState
 import com.nuvio.app.features.p2p.formatP2pMegabytes
 import com.nuvio.app.features.p2p.formatP2pSpeed
@@ -489,7 +490,9 @@ private fun PlayerScreenRuntime.RenderPlayerModals(displayedPositionMs: Long) {
         subtitleDelayMs = subtitleDelayMs,
         selectedAddonSubtitle = selectedAddonSubtitle,
         subtitleAutoSyncState = subtitleAutoSyncState,
-        autoSyncController = playerController as? AutoSyncPlayerController,
+        autoSyncRetryAction = (playerController as? AutoSyncPlayerController)?.let { autoSync ->
+            { AutoSyncRetryAction(autoSync) }
+        },
         onBuiltInSubtitleTrackSelected = { index ->
             val wasCustom = useCustomSubtitles
             isUserExplicitSubtitleSelection = true
