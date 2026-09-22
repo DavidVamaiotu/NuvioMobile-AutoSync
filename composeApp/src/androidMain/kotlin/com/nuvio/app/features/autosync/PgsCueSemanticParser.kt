@@ -139,20 +139,17 @@ internal object PgsCueSemanticParser {
                     cluster.dataStart + relative
                 }
 
-                locator.blockNumber != null ->
+                else -> {
+                    val blockNumber = locator.blockNumber ?: 1L
                     findBlockByNumber(
                         cluster = cluster,
-                        blockNumber = locator.blockNumber,
+                        blockNumber = blockNumber,
                         reader = reader,
                     ) ?: return unavailable(
-                        "block-number-unresolved index=$index block=${locator.blockNumber}",
+                        "block-number-unresolved index=$index block=$blockNumber",
                         cacheable = false,
                     )
-
-                else -> return unavailable(
-                    "missing-block-locator index=$index",
-                    cacheable = true,
-                )
+                }
             }
 
             val sample = readContainerSample(
