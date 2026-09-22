@@ -20,7 +20,6 @@ import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
-import java.io.ByteArrayOutputStream
 import java.util.ArrayDeque
 import java.util.LinkedHashMap
 import java.util.concurrent.TimeUnit
@@ -54,12 +53,6 @@ internal object EmbeddedSubtitleTimelineLoader {
     private const val LAST_MKV_CUE_ESTIMATED_DURATION_MS = 2_000L
     private const val MAX_MKV_INTER_CUE_ESTIMATED_DURATION_MS = 4_000L
     private const val MATROSKA_PGS_CODEC_ID = "S_HDMV/PGS"
-    private const val PGS_RESOLUTION_TIMEOUT_MS = 5_000L
-    private const val PGS_RESOLUTION_MAX_BYTES = 4L * 1024L * 1024L
-    private const val PGS_RESOLUTION_MAX_REQUESTS = 64
-    private const val PGS_CLUSTER_WINDOW_BYTES = 256
-    private const val PGS_BLOCK_WINDOW_BYTES = 256
-    private const val PGS_MULTI_RANGE_BATCH = 128
     private const val MIN_INDEXED_CUES = 8
     private const val MIN_INDEXED_SPAN_MS = 30_000L
     private const val MAX_CACHE_ENTRIES = 2
@@ -76,8 +69,6 @@ internal object EmbeddedSubtitleTimelineLoader {
     private const val ID_TRACKS = 0x1654AE6BL
     private const val ID_CUES = 0x1C53BB6BL
     private const val ID_CLUSTER = 0x1F43B675L
-    private const val ID_BLOCK_GROUP = 0xA0L
-    private const val ID_SIMPLE_BLOCK = 0xA3L
 
     // SeekHead.
     private const val ID_SEEK = 0x4DBBL
@@ -101,9 +92,6 @@ internal object EmbeddedSubtitleTimelineLoader {
     private const val ID_LANGUAGE = 0x22B59CL
     private const val ID_LANGUAGE_IETF = 0x22B59DL
     private const val ID_CODEC_ID = 0x86L
-    private const val ID_CONTENT_ENCODINGS = 0x6D80L
-    private const val ID_TRACK_TIMESTAMP_SCALE = 0x23314FL
-    private const val ID_CODEC_DELAY = 0x56AAL
     private const val TRACK_TYPE_SUBTITLE = 17L
 
     // Cues.
@@ -111,9 +99,6 @@ internal object EmbeddedSubtitleTimelineLoader {
     private const val ID_CUE_TIME = 0xB3L
     private const val ID_CUE_TRACK_POSITIONS = 0xB7L
     private const val ID_CUE_TRACK = 0xF7L
-    private const val ID_CUE_CLUSTER_POSITION = 0xF1L
-    private const val ID_CUE_RELATIVE_POSITION = 0xF0L
-    private const val ID_CUE_BLOCK_NUMBER = 0x5378L
     private const val ID_CUE_DURATION = 0xB2L
 
     private val httpClient = OkHttpClient.Builder()
@@ -133,16 +118,6 @@ internal object EmbeddedSubtitleTimelineLoader {
         override fun removeEldestEntry(
             eldest: MutableMap.MutableEntry<String, CachedLoadResult>?,
         ): Boolean = size > MAX_CACHE_ENTRIES
-    }
-
-    private val pgsResolutionCache = object : LinkedHashMap<String, PgsReferenceResolution>(
-        4,
-        0.75f,
-        true,
-    ) {
-        override fun removeEldestEntry(
-            eldest: MutableMap.MutableEntry<String, PgsReferenceResolution>?,
-        ): Boolean = size > 4
     }
 
     suspend fun load(
@@ -199,271 +174,6 @@ internal object EmbeddedSubtitleTimelineLoader {
             }
             null
         }
-    }
-
-    suspend fun resolvePgsReferences(
-        sourceUrl: String,
-        sourceHeaders: Map<String, String>,
-        references: List<IndexedPgsReference>,
-    ): List<ReferenceTrack> {
-        if (references.isEmpty()) return emptyList()
-
-        val stats = RangeStats(
-            deadlineNs = System.nanoTime() + PGS_RESOLUTION_TIMEOUT_MS * 1_000_000L,
-            maxBytes = PGS_RESOLUTION_MAX_BYTES,
-            maxRequests = PGS_RESOLUTION_MAX_REQUESTS,
-        )
-        val ready = mutableListOf<ReferenceTrack>()
-
-        for (reference in references) {
-            val cacheKey =
-                "$sourceUrl#${sourceHeaders.hashCode()}#${reference.key}#" +
-                    "${reference.cues.size}:${reference.cues.firstOrNull()?.startTimeMs ?: -1L}:" +
-                    "${reference.cues.lastOrNull()?.startTimeMs ?: -1L}"
-            val cached = synchronized(cacheLock) { pgsResolutionCache[cacheKey] }
-            val resolution = cached ?: try {
-                resolvePgsReference(
-                    sourceUrl = sourceUrl,
-                    sourceHeaders = sourceHeaders,
-                    reference = reference,
-                    stats = stats,
-                )
-            } catch (cancel: CancellationException) {
-                throw cancel
-            } catch (error: Exception) {
-                AutoSyncDebugLog.error(error) {
-                    "PGS semantic resolve failed track=${reference.key}"
-                }
-                PgsReferenceResolution.Unavailable(
-                    reason = "resolver-exception",
-                    cacheable = false,
-                )
-            }
-
-            when (resolution) {
-                is PgsReferenceResolution.Ready -> {
-                    ready += resolution.track
-                    synchronized(cacheLock) {
-                        pgsResolutionCache[cacheKey] = resolution
-                    }
-                    AutoSyncDebugLog.info {
-                        "PGS semantic ready track=${reference.key} cues=${resolution.track.cues.size} " +
-                            "requests=${stats.requests} bytes=${stats.bytesDownloaded}"
-                    }
-                }
-
-                is PgsReferenceResolution.Unavailable -> {
-                    if (resolution.cacheable) {
-                        synchronized(cacheLock) {
-                            pgsResolutionCache[cacheKey] = resolution
-                        }
-                    }
-                    AutoSyncDebugLog.info {
-                        "PGS semantic unavailable track=${reference.key} reason=${resolution.reason} " +
-                            "requests=${stats.requests} bytes=${stats.bytesDownloaded}"
-                    }
-                }
-            }
-
-            if (stats.remainingBudgetMs() <= 0L ||
-                stats.requests >= stats.maxRequests ||
-                stats.remainingByteBudget() <= 0L
-            ) {
-                break
-            }
-        }
-
-        return ready
-    }
-
-    private suspend fun resolvePgsReference(
-        sourceUrl: String,
-        sourceHeaders: Map<String, String>,
-        reference: IndexedPgsReference,
-        stats: RangeStats,
-    ): PgsReferenceResolution {
-        reference.unsupportedReason?.let { reason ->
-            return PgsReferenceResolution.Unavailable(reason, cacheable = true)
-        }
-        if (reference.cues.isEmpty()) {
-            return PgsReferenceResolution.Unavailable("no-indexed-pgs-cues", cacheable = true)
-        }
-
-        val clusterStarts = reference.cues
-            .map { cue ->
-                if (cue.clusterPosition < 0L ||
-                    reference.segmentDataStart > Long.MAX_VALUE - cue.clusterPosition
-                ) {
-                    return PgsReferenceResolution.Unavailable(
-                        "invalid-cluster-position",
-                        cacheable = true,
-                    )
-                }
-                reference.segmentDataStart + cue.clusterPosition
-            }
-            .distinct()
-
-        val clusterRanges = clusterStarts.map { start ->
-            SparseRange(start = start, length = PGS_CLUSTER_WINDOW_BYTES)
-        }
-        val clusterWindows = fetchSparseRanges(
-            sourceUrl = sourceUrl,
-            sourceHeaders = sourceHeaders,
-            ranges = clusterRanges,
-            stats = stats,
-        ) ?: return PgsReferenceResolution.Unavailable(
-            "cluster-window-fetch-unavailable",
-            cacheable = false,
-        )
-
-        val clusterByPosition = mutableMapOf<Long, PgsClusterInfo>()
-        for (range in clusterRanges) {
-            val bytes = clusterWindows[range.start]
-                ?: return PgsReferenceResolution.Unavailable(
-                    "incomplete-cluster-window-coverage",
-                    cacheable = false,
-                )
-            val parsed = PgsCueSemanticParser.parseClusterWindow(
-                reference = reference,
-                clusterStart = range.start,
-                bytes = bytes,
-            )
-            val cluster = parsed.getOrElse { error ->
-                return PgsReferenceResolution.Unavailable(
-                    error.message ?: "cluster-parse-failed",
-                    cacheable = true,
-                )
-            }
-            clusterByPosition[range.start] = cluster
-        }
-
-        val blockPositions = ArrayList<Long>(reference.cues.size)
-        val blockScanStates = mutableMapOf<Long, PgsBlockScanState>()
-        for (locator in reference.cues) {
-            val clusterStart = reference.segmentDataStart + locator.clusterPosition
-            val cluster = clusterByPosition[clusterStart]
-                ?: return PgsReferenceResolution.Unavailable(
-                    "missing-cluster-window",
-                    cacheable = false,
-                )
-            val directPosition = PgsCueSemanticParser
-                .blockPosition(locator, cluster)
-                .getOrNull()
-            val blockPosition = directPosition ?: run {
-                val blockNumber = locator.blockNumber ?: 1L
-                if (locator.relativePosition != null || blockNumber <= 1L) {
-                    return PgsReferenceResolution.Unavailable(
-                        "block-position-unavailable",
-                        cacheable = true,
-                    )
-                }
-                val state = blockScanStates.getOrPut(clusterStart) {
-                    PgsBlockScanState(position = cluster.dataStart)
-                }
-                resolvePgsBlockByNumber(
-                    sourceUrl = sourceUrl,
-                    sourceHeaders = sourceHeaders,
-                    cluster = cluster,
-                    blockNumber = blockNumber,
-                    state = state,
-                    stats = stats,
-                ) ?: return PgsReferenceResolution.Unavailable(
-                    "cue-block-number-unresolved block=$blockNumber",
-                    cacheable = false,
-                )
-            }
-            blockPositions += blockPosition
-        }
-
-        val blockRanges = blockPositions
-            .distinct()
-            .map { start -> SparseRange(start = start, length = PGS_BLOCK_WINDOW_BYTES) }
-        val blockWindows = fetchSparseRanges(
-            sourceUrl = sourceUrl,
-            sourceHeaders = sourceHeaders,
-            ranges = blockRanges,
-            stats = stats,
-        ) ?: return PgsReferenceResolution.Unavailable(
-            "block-window-fetch-unavailable",
-            cacheable = false,
-        )
-
-        val probes = ArrayList<PgsSegmentProbe>(reference.cues.size)
-        reference.cues.forEachIndexed { index, locator ->
-            val clusterStart = reference.segmentDataStart + locator.clusterPosition
-            val cluster = clusterByPosition[clusterStart]
-                ?: return PgsReferenceResolution.Unavailable(
-                    "missing-cluster-window",
-                    cacheable = false,
-                )
-            val blockPosition = blockPositions[index]
-            val bytes = blockWindows[blockPosition]
-                ?: return PgsReferenceResolution.Unavailable(
-                    "incomplete-block-window-coverage",
-                    cacheable = false,
-                )
-            val probe = PgsCueSemanticParser.parseSegmentWindow(
-                reference = reference,
-                locator = locator,
-                cluster = cluster,
-                bytes = bytes,
-                cueIndex = index,
-            ).getOrElse { error ->
-                return PgsReferenceResolution.Unavailable(
-                    error.message ?: "pgs-segment-parse-failed",
-                    cacheable = true,
-                )
-            }
-            probes += probe
-        }
-
-        return PgsCueSemanticParser.buildTimeline(
-            reference = reference,
-            probes = probes,
-        )
-    }
-
-    private suspend fun resolvePgsBlockByNumber(
-        sourceUrl: String,
-        sourceHeaders: Map<String, String>,
-        cluster: PgsClusterInfo,
-        blockNumber: Long,
-        state: PgsBlockScanState,
-        stats: RangeStats,
-    ): Long? {
-        state.resolved[blockNumber]?.let { return it }
-        val clusterEnd = cluster.end ?: return null
-
-        while (state.position < clusterEnd) {
-            if (stats.remainingBudgetMs() <= 0L ||
-                stats.requests >= stats.maxRequests ||
-                stats.remainingByteBudget() <= 0L
-            ) {
-                return null
-            }
-
-            val bytes = fetchRange(
-                sourceUrl = sourceUrl,
-                sourceHeaders = sourceHeaders,
-                start = state.position,
-                length = 16,
-                requirePartialContent = state.position > 0L,
-                stats = stats,
-            )?.bytes ?: return null
-            val header = PgsCueSemanticParser.readElementHeader(bytes, 0) ?: return null
-
-            if (header.id == ID_SIMPLE_BLOCK || header.id == ID_BLOCK_GROUP) {
-                state.seenBlocks++
-                state.resolved[state.seenBlocks] = state.position
-                if (state.seenBlocks == blockNumber) return state.position
-            }
-
-            val size = header.size ?: return null
-            val next = state.position + header.dataStart.toLong() + size
-            if (next <= state.position || next > clusterEnd) return null
-            state.position = next
-        }
-        return null
     }
 
     private suspend fun loadMatroskaCueIndex(
@@ -616,7 +326,7 @@ internal object EmbeddedSubtitleTimelineLoader {
                 "MKV index cues position unavailable; trying tail fallback"
             }
         }
-        val parsedCueIndex = if (cuesPosition != null) {
+        val parsedCues = if (cuesPosition != null) {
             (
                 extractElementFromInitialProbe(
                     initialBytes = initialMetadata.initialBytes,
@@ -656,26 +366,14 @@ internal object EmbeddedSubtitleTimelineLoader {
             return null
         }
 
-        val parsedCues = parsedCueIndex
-
         val subtitleCueCounts = subtitleTracks.joinToString(",") { track ->
-            val parsed = parsedCues[track.number]
-            val count = if (track.codecId.equals(MATROSKA_PGS_CODEC_ID, ignoreCase = true)) {
-                parsed?.rawEntries.orEmpty().size
-            } else {
-                parsed?.cues.orEmpty().size
-            }
-            "${track.number}:$count"
+            "${track.number}:${parsedCues[track.number]?.cues.orEmpty().size}"
         }
         AutoSyncDebugLog.info {
             "MKV index subtitleCueCounts=$subtitleCueCounts"
         }
 
-        if (subtitleTracks.all { track ->
-                val parsed = parsedCues[track.number]
-                parsed?.cues.orEmpty().isEmpty() && parsed?.rawEntries.orEmpty().isEmpty()
-            }
-        ) {
+        if (subtitleTracks.all { track -> parsedCues[track.number]?.cues.orEmpty().isEmpty() }) {
             AutoSyncDebugLog.warn {
                 "MKV index no subtitle Cue entries; skipping Media3 wait"
             }
@@ -690,9 +388,6 @@ internal object EmbeddedSubtitleTimelineLoader {
         }
 
         val referenceTracks = subtitleTracks.mapNotNull { track ->
-            if (track.codecId.equals(MATROSKA_PGS_CODEC_ID, ignoreCase = true)) {
-                return@mapNotNull null
-            }
             val parsedTimeline = parsedCues[track.number] ?: return@mapNotNull null
             val cues = parsedTimeline.cues
                 .sortedBy { it.startTimeMs }
@@ -727,61 +422,7 @@ internal object EmbeddedSubtitleTimelineLoader {
             )
         }
 
-        val pgsReferences = subtitleTracks.mapNotNull { track ->
-            if (!track.codecId.equals(MATROSKA_PGS_CODEC_ID, ignoreCase = true)) {
-                return@mapNotNull null
-            }
-            val raw = parsedCues[track.number]?.rawEntries.orEmpty()
-            if (raw.size < MIN_INDEXED_CUES) return@mapNotNull null
-            val spanMs = raw.last().startTimeMs - raw.first().startTimeMs
-            if (spanMs < MIN_INDEXED_SPAN_MS) return@mapNotNull null
-
-            var selectionFlags = 0
-            if (track.forced) selectionFlags = selectionFlags or C.SELECTION_FLAG_FORCED
-
-            var roleFlags = 0
-            if (track.commentary) roleFlags = roleFlags or C.ROLE_FLAG_COMMENTARY
-            if (track.hearingImpaired) {
-                roleFlags = roleFlags or C.ROLE_FLAG_DESCRIBES_MUSIC_AND_SOUND
-            }
-            if (track.visualImpaired || track.textDescriptions) {
-                roleFlags = roleFlags or C.ROLE_FLAG_DESCRIBES_VIDEO
-            }
-
-            val missingClusterPosition = raw.any { it.clusterPosition == null }
-            IndexedPgsReference(
-                key = "mkv-cues:${track.number}",
-                language = track.languageIetf?.takeIf { it.isNotBlank() }
-                    ?: track.language?.takeIf { it.isNotBlank() },
-                label = track.name?.takeIf { it.isNotBlank() }
-                    ?: buildFallbackTrackLabel(track),
-                selectionFlags = selectionFlags,
-                roleFlags = roleFlags,
-                trackNumber = track.number,
-                segmentDataStart = segmentDataStart,
-                timestampScaleNs = timestampScaleNs,
-                cues = raw.map { cue ->
-                    PgsCueLocator(
-                        startTimeMs = cue.startTimeMs,
-                        cueTimeTicks = cue.cueTimeTicks,
-                        durationMs = cue.explicitDurationMs,
-                        clusterPosition = cue.clusterPosition ?: -1L,
-                        relativePosition = cue.relativePosition,
-                        blockNumber = cue.blockNumber,
-                    )
-                },
-                unsupportedReason = when {
-                    track.hasContentEncodings -> "track-content-encoding"
-                    !track.trackTimestampScale.isFinite() || track.trackTimestampScale != 1.0 ->
-                        "unsupported-track-timestamp-scale"
-                    track.codecDelayNs != 0L -> "unsupported-codec-delay"
-                    missingClusterPosition -> "missing-cluster-position"
-                    else -> null
-                },
-            )
-        }
-
-        if (referenceTracks.isEmpty() && pgsReferences.isEmpty()) {
+        if (referenceTracks.isEmpty()) {
             AutoSyncDebugLog.warn {
                 "MKV index reject reason=no-usable-subtitle-cues counts=$subtitleCueCounts " +
                     "minCues=$MIN_INDEXED_CUES minSpanMs=$MIN_INDEXED_SPAN_MS"
@@ -791,7 +432,6 @@ internal object EmbeddedSubtitleTimelineLoader {
 
         return IndexedEmbeddedTimeline(
             tracks = referenceTracks,
-            pgsReferences = pgsReferences,
             source = "matroska-cues",
             bytesDownloaded = stats.bytesDownloaded,
             rangeRequests = stats.requests,
@@ -1467,9 +1107,6 @@ internal object EmbeddedSubtitleTimelineLoader {
             var visualImpaired = false
             var textDescriptions = false
             var commentary = false
-            var hasContentEncodings = false
-            var trackTimestampScale = 1.0
-            var codecDelayNs = 0L
 
             forEachChild(tracksElement, entry.dataStart, entryEnd) { child ->
                 when (child.id) {
@@ -1479,10 +1116,6 @@ internal object EmbeddedSubtitleTimelineLoader {
                     ID_LANGUAGE -> language = readUtf8(tracksElement, child)
                     ID_LANGUAGE_IETF -> languageIetf = readUtf8(tracksElement, child)
                     ID_CODEC_ID -> codecId = readUtf8(tracksElement, child)
-                    ID_CONTENT_ENCODINGS -> hasContentEncodings = true
-                    ID_TRACK_TIMESTAMP_SCALE ->
-                        trackTimestampScale = readFloat(tracksElement, child) ?: Double.NaN
-                    ID_CODEC_DELAY -> codecDelayNs = readUnsigned(tracksElement, child) ?: Long.MAX_VALUE
                     ID_FLAG_DEFAULT -> isDefault = readUnsigned(tracksElement, child) != 0L
                     ID_FLAG_FORCED -> forced = readUnsigned(tracksElement, child) == 1L
                     ID_FLAG_HEARING_IMPAIRED -> hearingImpaired = readUnsigned(tracksElement, child) == 1L
@@ -1506,9 +1139,6 @@ internal object EmbeddedSubtitleTimelineLoader {
                     visualImpaired = visualImpaired,
                     textDescriptions = textDescriptions,
                     commentary = commentary,
-                    hasContentEncodings = hasContentEncodings,
-                    trackTimestampScale = trackTimestampScale,
-                    codecDelayNs = codecDelayNs,
                 )
             }
         }
@@ -1540,31 +1170,14 @@ internal object EmbeddedSubtitleTimelineLoader {
                         val positionEnd = child.endWithin(pointEnd)
                         if (positionEnd != null) {
                             var trackNumber: Int? = null
-                            var clusterPosition: Long? = null
-                            var relativePosition: Long? = null
-                            var blockNumber: Long? = null
                             var durationTicks: Long? = null
                             forEachChild(cuesElement, child.dataStart, positionEnd) { positionChild ->
                                 when (positionChild.id) {
                                     ID_CUE_TRACK -> trackNumber = readUnsigned(cuesElement, positionChild)?.toInt()
-                                    ID_CUE_CLUSTER_POSITION ->
-                                        clusterPosition = readUnsigned(cuesElement, positionChild)
-                                    ID_CUE_RELATIVE_POSITION ->
-                                        relativePosition = readUnsigned(cuesElement, positionChild)
-                                    ID_CUE_BLOCK_NUMBER ->
-                                        blockNumber = readUnsigned(cuesElement, positionChild)
                                     ID_CUE_DURATION -> durationTicks = readUnsigned(cuesElement, positionChild)
                                 }
                             }
-                            trackNumber?.let {
-                                positions += CueTrackPosition(
-                                    trackNumber = it,
-                                    durationTicks = durationTicks,
-                                    clusterPosition = clusterPosition,
-                                    relativePosition = relativePosition,
-                                    blockNumber = blockNumber,
-                                )
-                            }
+                            trackNumber?.let { positions += CueTrackPosition(it, durationTicks) }
                         }
                     }
                 }
@@ -1580,43 +1193,129 @@ internal object EmbeddedSubtitleTimelineLoader {
                 pendingByTrack[position.trackNumber]?.add(
                     PendingIndexedCue(
                         startTimeMs = startMs,
-                        cueTimeTicks = timeTicks,
                         explicitDurationMs = durationMs,
-                        clusterPosition = position.clusterPosition,
-                        relativePosition = position.relativePosition,
-                        blockNumber = position.blockNumber,
                     ),
                 )
             }
         }
 
         val tracksByNumber = subtitleTracks.associateBy { it.number }
+        val peerDialogueCueCounts = subtitleTracks
+            .asSequence()
+            .filter { track ->
+                !track.codecId.equals(MATROSKA_PGS_CODEC_ID, ignoreCase = true) &&
+                    !track.forced &&
+                    !track.commentary
+            }
+            .mapNotNull { track ->
+                pendingByTrack[track.number]
+                    ?.size
+                    ?.takeIf { it >= MIN_INDEXED_CUES }
+            }
+            .sorted()
+            .toList()
+        val peerDialogueCueCount = peerDialogueCueCounts
+            .takeIf { it.isNotEmpty() }
+            ?.let { counts -> counts[counts.size / 2] }
+
         return pendingByTrack.mapValues { (trackNumber, pending) ->
             val sorted = pending
-                .sortedWith(
-                    compareBy<PendingIndexedCue> { it.startTimeMs }
-                        .thenBy { it.clusterPosition ?: Long.MAX_VALUE }
-                        .thenBy { it.relativePosition ?: Long.MAX_VALUE },
-                )
-                .distinctBy {
-                    PendingCueIdentity(
-                        startTimeMs = it.startTimeMs,
-                        clusterPosition = it.clusterPosition,
-                        relativePosition = it.relativePosition,
-                        blockNumber = it.blockNumber,
-                    )
-                }
+                .sortedBy { it.startTimeMs }
+                .distinctBy { it.startTimeMs }
 
             if (tracksByNumber[trackNumber]?.codecId.equals(MATROSKA_PGS_CODEC_ID, ignoreCase = true)) {
-                IndexedSubtitleTimeline(
-                    cues = emptyList(),
-                    estimatedEndStartsMs = emptySet(),
-                    rawEntries = sorted,
+                buildPgsIndexedTimeline(
+                    sorted = sorted,
+                    peerDialogueCueCount = peerDialogueCueCount,
                 )
             } else {
                 buildDefaultIndexedTimeline(sorted)
             }
         }
+    }
+
+    /**
+     * PGS commonly indexes both a visible display and the later clear display set. AutoSync only
+     * needs the resulting visibility interval, not the bitmap. Pair those events only when that
+     * interpretation is supported by peer text-track density (when available); otherwise preserve
+     * the original cue timeline. This keeps the fast O(n), zero-extra-I/O path conservative.
+     */
+    private fun buildPgsIndexedTimeline(
+        sorted: List<PendingIndexedCue>,
+        peerDialogueCueCount: Int?,
+    ): IndexedSubtitleTimeline {
+        if (sorted.size < 2) {
+            return IndexedSubtitleTimeline(
+                cues = emptyList(),
+                estimatedEndStartsMs = emptySet(),
+            )
+        }
+
+        val pairedCount = sorted.size / 2
+        val explicitDurationCount = sorted.count { (it.explicitDurationMs ?: 0L) > 0L }
+        val shouldPair = if (peerDialogueCueCount != null) {
+            val rawDelta = if (sorted.size >= peerDialogueCueCount) {
+                sorted.size - peerDialogueCueCount
+            } else {
+                peerDialogueCueCount - sorted.size
+            }
+            val pairedDelta = if (pairedCount >= peerDialogueCueCount) {
+                pairedCount - peerDialogueCueCount
+            } else {
+                peerDialogueCueCount - pairedCount
+            }
+
+            // Require a material improvement, not a marginal count coincidence.
+            pairedDelta.toLong() * 3L <= rawDelta.toLong() * 2L
+        } else {
+            // With no peer text track, explicit durations on most entries are evidence that the
+            // index already represents visible cues rather than alternating display/clear events.
+            explicitDurationCount.toLong() * 4L < sorted.size.toLong() * 3L
+        }
+
+        if (!shouldPair) {
+            AutoSyncDebugLog.verbose {
+                "PGS index kept raw=" + sorted.size +
+                    " peer=" + (peerDialogueCueCount ?: -1) +
+                    " explicitDurations=" + explicitDurationCount
+            }
+            return buildDefaultIndexedTimeline(sorted)
+        }
+
+        val cues = ArrayList<SubtitleSyncCue>(pairedCount)
+        var index = 0
+        while (index + 1 < sorted.size) {
+            val display = sorted[index]
+            val clear = sorted[index + 1]
+            if (clear.startTimeMs > display.startTimeMs) {
+                val explicitEndMs = display.explicitDurationMs
+                    ?.takeIf { duration ->
+                        duration > 0L && display.startTimeMs <= Long.MAX_VALUE - duration
+                    }
+                    ?.let { duration -> display.startTimeMs + duration }
+                val endTimeMs = explicitEndMs
+                    ?.coerceAtMost(clear.startTimeMs)
+                    ?: clear.startTimeMs
+
+                if (endTimeMs > display.startTimeMs) {
+                    cues += SubtitleSyncCue(
+                        startTimeMs = display.startTimeMs,
+                        endTimeMs = endTimeMs,
+                        text = "",
+                    )
+                }
+            }
+            index += 2
+        }
+
+        AutoSyncDebugLog.verbose {
+            "PGS index normalized raw=" + sorted.size + " visible=" + cues.size
+        }
+
+        return IndexedSubtitleTimeline(
+            cues = cues,
+            estimatedEndStartsMs = emptySet(),
+        )
     }
 
     private fun buildDefaultIndexedTimeline(
@@ -1762,337 +1461,6 @@ internal object EmbeddedSubtitleTimelineLoader {
             stats = stats,
             requireExactLength = true,
         )?.bytes
-    }
-
-    private suspend fun fetchSparseRanges(
-        sourceUrl: String,
-        sourceHeaders: Map<String, String>,
-        ranges: List<SparseRange>,
-        stats: RangeStats,
-    ): Map<Long, ByteArray>? {
-        if (ranges.isEmpty()) return emptyMap()
-
-        val unique = ranges
-            .filter { it.start >= 0L && it.length > 0 }
-            .distinctBy { it.start to it.length }
-            .sortedBy { it.start }
-        if (unique.size != ranges.distinctBy { it.start to it.length }.size) return null
-
-        val result = mutableMapOf<Long, ByteArray>()
-        for (batch in unique.chunked(PGS_MULTI_RANGE_BATCH)) {
-            val fetched = if (batch.size == 1) {
-                val range = batch.single()
-                val response = fetchRange(
-                    sourceUrl = sourceUrl,
-                    sourceHeaders = sourceHeaders,
-                    start = range.start,
-                    length = range.length,
-                    requirePartialContent = range.start > 0L,
-                    stats = stats,
-                    requireExactLength = true,
-                ) ?: return null
-                mapOf(range.start to response.bytes)
-            } else {
-                fetchSparseRangeBatchAdaptive(
-                    sourceUrl = sourceUrl,
-                    sourceHeaders = sourceHeaders,
-                    ranges = batch,
-                    stats = stats,
-                ) ?: return null
-            }
-
-            for (range in batch) {
-                val bytes = fetched[range.start] ?: return null
-                if (bytes.size != range.length) return null
-                result[range.start] = bytes
-            }
-        }
-        return result
-    }
-
-    private suspend fun fetchSparseRangeBatchAdaptive(
-        sourceUrl: String,
-        sourceHeaders: Map<String, String>,
-        ranges: List<SparseRange>,
-        stats: RangeStats,
-    ): Map<Long, ByteArray>? {
-        fetchSparseRangeBatch(
-            sourceUrl = sourceUrl,
-            sourceHeaders = sourceHeaders,
-            ranges = ranges,
-            stats = stats,
-        )?.let { return it }
-
-        if (ranges.size <= 16 ||
-            stats.remainingBudgetMs() <= 0L ||
-            stats.requests >= stats.maxRequests
-        ) {
-            return null
-        }
-
-        val midpoint = ranges.size / 2
-        val left = fetchSparseRangeBatchAdaptive(
-            sourceUrl = sourceUrl,
-            sourceHeaders = sourceHeaders,
-            ranges = ranges.subList(0, midpoint),
-            stats = stats,
-        ) ?: return null
-        val right = fetchSparseRangeBatchAdaptive(
-            sourceUrl = sourceUrl,
-            sourceHeaders = sourceHeaders,
-            ranges = ranges.subList(midpoint, ranges.size),
-            stats = stats,
-        ) ?: return null
-
-        return buildMap(left.size + right.size) {
-            putAll(left)
-            putAll(right)
-        }
-    }
-
-    private suspend fun fetchSparseRangeBatch(
-        sourceUrl: String,
-        sourceHeaders: Map<String, String>,
-        ranges: List<SparseRange>,
-        stats: RangeStats,
-    ): Map<Long, ByteArray>? {
-        if (ranges.size < 2 || stats.requests >= stats.maxRequests) return null
-
-        var expectedDataBytes = 0L
-        val rangeHeader = buildString {
-            append("bytes=")
-            ranges.forEachIndexed { index, range ->
-                if (range.start < 0L || range.length <= 0) return null
-                val end = range.start + range.length - 1L
-                if (end < range.start) return null
-                if (index > 0) append(',')
-                append(range.start)
-                append('-')
-                append(end)
-                expectedDataBytes += range.length.toLong()
-            }
-        }
-
-        val overheadAllowance = ranges.size.toLong() * 512L + 4_096L
-        val maxBodyBytes = (expectedDataBytes + overheadAllowance)
-            .coerceAtMost(stats.remainingByteBudget())
-        if (maxBodyBytes <= 0L || maxBodyBytes > Int.MAX_VALUE.toLong()) return null
-
-        val remainingBudgetMs = stats.remainingBudgetMs()
-        if (remainingBudgetMs <= 0L) return null
-
-        val requestBuilder = Request.Builder()
-            .url(sourceUrl)
-            .header("Range", rangeHeader)
-            .header("Accept-Encoding", "identity")
-        sourceHeaders.forEach { (name, value) ->
-            if (!name.equals("Range", ignoreCase = true) &&
-                !name.equals("Accept-Encoding", ignoreCase = true) &&
-                !name.equals("Content-Length", ignoreCase = true) &&
-                !name.equals("Host", ignoreCase = true)
-            ) {
-                requestBuilder.header(name, value)
-            }
-        }
-
-        stats.requests++
-        val call = httpClient.newCall(requestBuilder.build())
-        call.timeout().timeout(
-            minOf(remainingBudgetMs.coerceAtLeast(1L), 5_000L),
-            TimeUnit.MILLISECONDS,
-        )
-
-        return suspendCancellableCoroutine { continuation ->
-            continuation.invokeOnCancellation { call.cancel() }
-
-            call.enqueue(
-                object : Callback {
-                    override fun onFailure(call: Call, error: java.io.IOException) {
-                        if (!continuation.isActive) return
-                        if (call.isCanceled()) {
-                            continuation.resumeWith(
-                                Result.failure(
-                                    CancellationException(
-                                        "Cancelled PGS multi-range request",
-                                    ).also { it.initCause(error) },
-                                ),
-                            )
-                        } else {
-                            continuation.resumeWith(Result.success(null))
-                        }
-                    }
-
-                    override fun onResponse(call: Call, response: Response) {
-                        if (!continuation.isActive) {
-                            response.close()
-                            return
-                        }
-
-                        try {
-                            val result = response.use { current ->
-                                if (current.code != 206) return@use null
-
-                                val contentType = current.header("Content-Type").orEmpty()
-                                if (!contentType.contains(
-                                        "multipart/byteranges",
-                                        ignoreCase = true,
-                                    )
-                                ) {
-                                    return@use null
-                                }
-
-                                val boundary = contentType
-                                    .split(';')
-                                    .asSequence()
-                                    .map { it.trim() }
-                                    .firstOrNull { it.startsWith("boundary=", ignoreCase = true) }
-                                    ?.substringAfter('=')
-                                    ?.trim()
-                                    ?.trim('"')
-                                    ?.takeIf { it.isNotEmpty() }
-                                    ?: return@use null
-
-                                val declaredLength = current.body?.contentLength() ?: -1L
-                                if (declaredLength > maxBodyBytes) return@use null
-                                val body = current.body ?: return@use null
-                                val bytes = readBoundedResponseBody(
-                                    input = body.byteStream(),
-                                    maxBytes = maxBodyBytes.toInt(),
-                                    stats = stats,
-                                ) ?: return@use null
-
-                                parseMultipartByteRanges(
-                                    bytes = bytes,
-                                    boundary = boundary,
-                                )
-                            }
-
-                            if (continuation.isActive) {
-                                continuation.resumeWith(Result.success(result))
-                            }
-                        } catch (cancel: CancellationException) {
-                            if (continuation.isActive) {
-                                continuation.resumeWith(Result.failure(cancel))
-                            }
-                        } catch (_: Exception) {
-                            if (continuation.isActive) {
-                                continuation.resumeWith(Result.success(null))
-                            }
-                        }
-                    }
-                },
-            )
-        }
-    }
-
-    private fun readBoundedResponseBody(
-        input: java.io.InputStream,
-        maxBytes: Int,
-        stats: RangeStats,
-    ): ByteArray? {
-        if (maxBytes <= 0) return null
-        val output = ByteArrayOutputStream(minOf(maxBytes, 64 * 1024))
-        val buffer = ByteArray(8 * 1024)
-        var total = 0
-
-        while (true) {
-            if (stats.remainingBudgetMs() <= 0L || stats.remainingByteBudget() <= 0L) {
-                return null
-            }
-            val allowed = minOf(
-                buffer.size,
-                maxBytes - total,
-                stats.remainingByteBudget().coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
-            )
-            if (allowed <= 0) {
-                return if (input.read() < 0) output.toByteArray() else null
-            }
-            val read = input.read(buffer, 0, allowed)
-            if (read < 0) break
-            if (read == 0) continue
-            output.write(buffer, 0, read)
-            total += read
-            stats.bytesDownloaded += read.toLong()
-            if (total >= maxBytes) {
-                return if (input.read() < 0) output.toByteArray() else null
-            }
-        }
-
-        return output.toByteArray()
-    }
-
-    private fun parseMultipartByteRanges(
-        bytes: ByteArray,
-        boundary: String,
-    ): Map<Long, ByteArray>? {
-        val marker = "--$boundary".toByteArray(Charsets.ISO_8859_1)
-        val headerSeparator = byteArrayOf(13, 10, 13, 10)
-        val result = mutableMapOf<Long, ByteArray>()
-        var cursor = 0
-
-        while (true) {
-            val markerIndex = indexOfBytes(bytes, marker, cursor)
-            if (markerIndex < 0) break
-            var position = markerIndex + marker.size
-
-            if (position + 1 < bytes.size &&
-                bytes[position].toInt() == 45 &&
-                bytes[position + 1].toInt() == 45
-            ) {
-                break
-            }
-            if (position + 1 >= bytes.size ||
-                bytes[position].toInt() != 13 ||
-                bytes[position + 1].toInt() != 10
-            ) {
-                return null
-            }
-            position += 2
-
-            val headerEnd = indexOfBytes(bytes, headerSeparator, position)
-            if (headerEnd < 0) return null
-            val headers = bytes
-                .copyOfRange(position, headerEnd)
-                .toString(Charsets.ISO_8859_1)
-            val contentRangeValue = headers
-                .lineSequence()
-                .firstOrNull { it.startsWith("Content-Range:", ignoreCase = true) }
-                ?.substringAfter(':')
-                ?.trim()
-                ?: return null
-            val contentRange = parseContentRange(contentRangeValue) ?: return null
-            val start = contentRange.start ?: return null
-            val end = contentRange.end ?: return null
-            if (end < start || end - start + 1L > Int.MAX_VALUE.toLong()) return null
-
-            val dataStart = headerEnd + headerSeparator.size
-            val dataLength = (end - start + 1L).toInt()
-            val dataEnd = dataStart + dataLength
-            if (dataEnd < dataStart || dataEnd > bytes.size) return null
-
-            result[start] = bytes.copyOfRange(dataStart, dataEnd)
-            cursor = dataEnd
-        }
-
-        return result.takeIf { it.isNotEmpty() }
-    }
-
-    private fun indexOfBytes(
-        bytes: ByteArray,
-        needle: ByteArray,
-        start: Int,
-    ): Int {
-        if (needle.isEmpty()) return start.coerceIn(0, bytes.size)
-        if (bytes.size < needle.size) return -1
-        val first = start.coerceAtLeast(0)
-        val last = bytes.size - needle.size
-        outer@ for (index in first..last) {
-            for (offset in needle.indices) {
-                if (bytes[index + offset] != needle[offset]) continue@outer
-            }
-            return index
-        }
-        return -1
     }
 
     private suspend fun fetchRange(
@@ -2349,30 +1717,6 @@ internal object EmbeddedSubtitleTimelineLoader {
         return value
     }
 
-    private fun readFloat(bytes: ByteArray, element: EbmlElement): Double? {
-        val size = element.size ?: return null
-        if (size != 4L && size != 8L) return null
-        val end = element.dataStart + size.toInt()
-        if (end > bytes.size) return null
-        return when (size) {
-            4L -> {
-                var bits = 0
-                for (index in element.dataStart until end) {
-                    bits = (bits shl 8) or (bytes[index].toInt() and 0xFF)
-                }
-                Float.fromBits(bits).toDouble()
-            }
-            8L -> {
-                var bits = 0L
-                for (index in element.dataStart until end) {
-                    bits = (bits shl 8) or (bytes[index].toLong() and 0xFFL)
-                }
-                Double.fromBits(bits)
-            }
-            else -> null
-        }
-    }
-
     private fun readBinaryId(bytes: ByteArray, element: EbmlElement): Long? {
         val size = element.size ?: return null
         if (size !in 1L..4L) return null
@@ -2423,17 +1767,6 @@ internal object EmbeddedSubtitleTimelineLoader {
     private data class RangeResponse(
         val bytes: ByteArray,
         val totalLength: Long?,
-    )
-
-    private data class PgsBlockScanState(
-        var position: Long,
-        var seenBlocks: Long = 0L,
-        val resolved: MutableMap<Long, Long> = mutableMapOf(),
-    )
-
-    private data class SparseRange(
-        val start: Long,
-        val length: Int,
     )
 
     private data class RangeStats(
@@ -2498,45 +1831,26 @@ internal object EmbeddedSubtitleTimelineLoader {
         val visualImpaired: Boolean,
         val textDescriptions: Boolean,
         val commentary: Boolean,
-        val hasContentEncodings: Boolean,
-        val trackTimestampScale: Double,
-        val codecDelayNs: Long,
     )
 
     private data class CueTrackPosition(
         val trackNumber: Int,
         val durationTicks: Long?,
-        val clusterPosition: Long?,
-        val relativePosition: Long?,
-        val blockNumber: Long?,
     )
 
     private data class PendingIndexedCue(
         val startTimeMs: Long,
-        val cueTimeTicks: Long,
         val explicitDurationMs: Long?,
-        val clusterPosition: Long?,
-        val relativePosition: Long?,
-        val blockNumber: Long?,
-    )
-
-    private data class PendingCueIdentity(
-        val startTimeMs: Long,
-        val clusterPosition: Long?,
-        val relativePosition: Long?,
-        val blockNumber: Long?,
     )
 
     private data class IndexedSubtitleTimeline(
         val cues: List<SubtitleSyncCue>,
         val estimatedEndStartsMs: Set<Long>,
-        val rawEntries: List<PendingIndexedCue> = emptyList(),
     )
 }
 
 internal data class IndexedEmbeddedTimeline(
     val tracks: List<ReferenceTrack>,
-    val pgsReferences: List<IndexedPgsReference> = emptyList(),
     val source: String,
     val bytesDownloaded: Long,
     val rangeRequests: Int,

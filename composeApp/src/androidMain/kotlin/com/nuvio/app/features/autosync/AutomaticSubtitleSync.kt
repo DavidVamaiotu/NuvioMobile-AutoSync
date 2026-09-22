@@ -565,7 +565,6 @@ internal object AutomaticSubtitleSync {
             var forcedFallbackTracks: List<ReferenceTrack> = emptyList()
             var referenceSource: AutoSyncReferenceSource? = null
             var hadEligibleReferencesBeforeExclusion = false
-            var pgsResolutionAttempted = false
 
             AutoSyncDebugLog.section { "INDEXED EMBEDDED REFERENCE" }
             if (
@@ -574,57 +573,10 @@ internal object AutomaticSubtitleSync {
             ) {
                 AutoSyncDebugLog.info {
                     "source=${indexedTimeline.source} tracks=${indexedTimeline.tracks.size} " +
-                        "pgsPending=${indexedTimeline.pgsReferences.size} " +
                         "requests=${indexedTimeline.rangeRequests} bytes=${indexedTimeline.bytesDownloaded} " +
                         "load=${indexedTimeline.loadMs}ms"
                 }
-                var indexedTracks = indexedTimeline.tracks
-                val initialProfiles = indexedTracks.map(::buildReferenceProfile)
-                val pendingPgsProfiles = indexedTimeline.pgsReferences
-                    .map { reference -> reference to buildReferenceProfile(reference.previewTrack()) }
-                val pendingPgsBeforeExclusion = pendingPgsProfiles.filter { (_, profile) ->
-                    profile.fullDialogueCandidate &&
-                        profile.cueCount >= MIN_FULL_DIALOGUE_CUES &&
-                        profile.spanMs >= MIN_INDEXED_REFERENCE_SPAN_MS
-                }
-                val pendingPgs = pendingPgsBeforeExclusion
-                    .filterNot { (reference, _) -> reference.key in excludedReferenceKeys }
-                val hasPreferredReadyText = initialProfiles.any { profile ->
-                    profile.fullDialogue &&
-                        profile.cueCount >= MIN_FULL_DIALOGUE_CUES &&
-                        profile.spanMs >= MIN_INDEXED_REFERENCE_SPAN_MS &&
-                        profile.track.key !in excludedReferenceKeys
-                }
-
-                if (pendingPgs.isNotEmpty() &&
-                    (!hasPreferredReadyText || requiredReferenceSource == AutoSyncReferenceSource.INDEXED)
-                ) {
-                    pgsResolutionAttempted = true
-                    val orderedPendingPgs = pendingPgs
-                        .sortedWith(
-                            compareByDescending<Pair<IndexedPgsReference, ReferenceProfile>> {
-                                it.second.fullDialogue
-                            }.thenByDescending {
-                                it.second.rankingScore
-                            }.thenBy {
-                                isSdhReferenceTrack(it.second.track)
-                            }.thenBy {
-                                it.first.key
-                            },
-                        )
-                        .map { it.first }
-
-                    val resolvedPgs = EmbeddedSubtitleTimelineLoader.resolvePgsReferences(
-                        sourceUrl = sourceKey,
-                        sourceHeaders = sourceHeaders,
-                        references = orderedPendingPgs,
-                    )
-                    if (resolvedPgs.isNotEmpty()) {
-                        indexedTracks = indexedTracks + resolvedPgs
-                    }
-                }
-
-                val profiles = indexedTracks.map(::buildReferenceProfile)
+                val profiles = indexedTimeline.tracks.map(::buildReferenceProfile)
                 if (AutoSyncDebugLog.ENABLED) {
                     profiles.forEachIndexed { index, profile ->
                         val track = profile.track
@@ -643,8 +595,7 @@ internal object AutomaticSubtitleSync {
                         profile.spanMs >= MIN_INDEXED_REFERENCE_SPAN_MS
                 }
                 if (requiredReferenceSource == AutoSyncReferenceSource.INDEXED) {
-                    hadEligibleReferencesBeforeExclusion =
-                        allEligibleProfiles.isNotEmpty() || pendingPgsBeforeExclusion.isNotEmpty()
+                    hadEligibleReferencesBeforeExclusion = allEligibleProfiles.isNotEmpty()
                 }
                 val eligibleProfiles = allEligibleProfiles.filterNot { profile ->
                     profile.track.key in excludedReferenceKeys
@@ -692,9 +643,7 @@ internal object AutomaticSubtitleSync {
                     sourceKey = sourceKey,
                     preferredLanguage = preferredLanguage,
                     target = seedTarget,
-                    waitMs = if (
-                        indexedTimeline?.skipLiveFallbackWait == true || pgsResolutionAttempted
-                    ) {
+                    waitMs = if (indexedTimeline?.skipLiveFallbackWait == true) {
                         0L
                     } else {
                         LIVE_REFERENCE_WAIT_MS
