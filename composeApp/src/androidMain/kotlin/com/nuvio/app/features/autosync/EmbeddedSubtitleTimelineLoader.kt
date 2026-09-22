@@ -59,7 +59,6 @@ internal object EmbeddedSubtitleTimelineLoader {
     private const val PGS_RESOLUTION_MAX_REQUESTS = 64
     private const val PGS_CLUSTER_WINDOW_BYTES = 256
     private const val PGS_BLOCK_WINDOW_BYTES = 256
-    private const val PGS_END_WINDOW_BYTES = 13
     private const val PGS_MULTI_RANGE_BATCH = 128
     private const val MIN_INDEXED_CUES = 8
     private const val MIN_INDEXED_SPAN_MS = 30_000L
@@ -368,7 +367,7 @@ internal object EmbeddedSubtitleTimelineLoader {
             cacheable = false,
         )
 
-        val probes = ArrayList<PgsPresentationProbe>(reference.cues.size)
+        val probes = ArrayList<PgsSegmentProbe>(reference.cues.size)
         reference.cues.forEachIndexed { index, locator ->
             val clusterStart = reference.segmentDataStart + locator.clusterPosition
             val cluster = clusterByPosition[clusterStart]
@@ -382,7 +381,7 @@ internal object EmbeddedSubtitleTimelineLoader {
                     "incomplete-block-window-coverage",
                     cacheable = false,
                 )
-            val probe = PgsCueSemanticParser.parsePresentationWindow(
+            val probe = PgsCueSemanticParser.parseSegmentWindow(
                 reference = reference,
                 locator = locator,
                 cluster = cluster,
@@ -391,47 +390,11 @@ internal object EmbeddedSubtitleTimelineLoader {
                 cueIndex = index,
             ).getOrElse { error ->
                 return PgsReferenceResolution.Unavailable(
-                    error.message ?: "pgs-presentation-parse-failed",
+                    error.message ?: "pgs-segment-parse-failed",
                     cacheable = true,
                 )
             }
             probes += probe
-        }
-
-        val endStarts = probes.map { probe ->
-            if (probe.payloadEnd < PGS_END_WINDOW_BYTES) {
-                return PgsReferenceResolution.Unavailable(
-                    "invalid-pgs-payload-end",
-                    cacheable = true,
-                )
-            }
-            probe.payloadEnd - PGS_END_WINDOW_BYTES
-        }
-        val endRanges = endStarts
-            .distinct()
-            .map { start -> SparseRange(start = start, length = PGS_END_WINDOW_BYTES) }
-        val endWindows = fetchSparseRanges(
-            sourceUrl = sourceUrl,
-            sourceHeaders = sourceHeaders,
-            ranges = endRanges,
-            stats = stats,
-        ) ?: return PgsReferenceResolution.Unavailable(
-            "display-end-fetch-unavailable",
-            cacheable = false,
-        )
-
-        for (start in endStarts) {
-            val bytes = endWindows[start]
-                ?: return PgsReferenceResolution.Unavailable(
-                    "incomplete-display-end-coverage",
-                    cacheable = false,
-                )
-            if (!PgsCueSemanticParser.hasDisplayEnd(bytes)) {
-                return PgsReferenceResolution.Unavailable(
-                    "display-set-missing-end",
-                    cacheable = true,
-                )
-            }
         }
 
         return PgsCueSemanticParser.buildTimeline(
