@@ -461,6 +461,10 @@ internal object PgsCueSemanticParser {
                 return null
             }
 
+            if (presentation.paletteUpdate) {
+                return "palette-update-unsupported"
+            }
+
             val paletteVersion = paletteVersions[presentation.paletteId]
                 ?: return "missing-palette id=${presentation.paletteId}"
             val objectSignatures = ArrayList<ObjectSignature>(presentation.objects.size)
@@ -494,7 +498,7 @@ internal object PgsCueSemanticParser {
                 ?.let { duration -> timeMs + duration }
 
             val current = active
-            val forceReplacement = presentation.state != 0 || presentation.paletteUpdate
+            val forceReplacement = presentation.state != 0
             if (current != null && !forceReplacement && current.signature == signature) {
                 if (current.explicitEndMs != null && current.explicitEndMs < timeMs) {
                     closeActive(current.explicitEndMs)
