@@ -1200,13 +1200,34 @@ internal object EmbeddedSubtitleTimelineLoader {
         }
 
         val tracksByNumber = subtitleTracks.associateBy { it.number }
+        val peerDialogueCueCounts = subtitleTracks
+            .asSequence()
+            .filter { track ->
+                !track.codecId.equals(MATROSKA_PGS_CODEC_ID, ignoreCase = true) &&
+                    !track.forced &&
+                    !track.commentary
+            }
+            .mapNotNull { track ->
+                pendingByTrack[track.number]
+                    ?.size
+                    ?.takeIf { it >= MIN_INDEXED_CUES }
+            }
+            .sorted()
+            .toList()
+        val peerDialogueCueCount = peerDialogueCueCounts
+            .takeIf { it.isNotEmpty() }
+            ?.let { counts -> counts[counts.size / 2] }
+
         return pendingByTrack.mapValues { (trackNumber, pending) ->
             val sorted = pending
                 .sortedBy { it.startTimeMs }
                 .distinctBy { it.startTimeMs }
 
             if (tracksByNumber[trackNumber]?.codecId.equals(MATROSKA_PGS_CODEC_ID, ignoreCase = true)) {
-                buildPgsIndexedTimeline(sorted)
+                buildPgsIndexedTimeline(
+                    sorted = sorted,
+                    peerDialogueCueCount = peerDialogueCueCount,
+                )
             } else {
                 buildDefaultIndexedTimeline(sorted)
             }
@@ -1214,15 +1235,14 @@ internal object EmbeddedSubtitleTimelineLoader {
     }
 
     /**
-     * Matroska stores PGS display and clear frames as separate subtitle frames. The Cues index
-     * therefore contains roughly twice as many timestamps as the visible subtitle timeline.
-     *
-     * AutoSync only needs visibility intervals, not bitmap data: pair each display frame with its
-     * following clear frame and use the clear timestamp as the exact end. This stays O(n), performs
-     * no extra I/O or bitmap decoding, and keeps PGS-specific behavior entirely inside extraction.
+     * PGS commonly indexes both a visible display and the later clear display set. AutoSync only
+     * needs the resulting visibility interval, not the bitmap. Pair those events only when that
+     * interpretation is supported by peer text-track density (when available); otherwise preserve
+     * the original cue timeline. This keeps the fast O(n), zero-extra-I/O path conservative.
      */
     private fun buildPgsIndexedTimeline(
         sorted: List<PendingIndexedCue>,
+        peerDialogueCueCount: Int?,
     ): IndexedSubtitleTimeline {
         if (sorted.size < 2) {
             return IndexedSubtitleTimeline(
@@ -1231,7 +1251,38 @@ internal object EmbeddedSubtitleTimelineLoader {
             )
         }
 
-        val cues = ArrayList<SubtitleSyncCue>(sorted.size / 2)
+        val pairedCount = sorted.size / 2
+        val explicitDurationCount = sorted.count { (it.explicitDurationMs ?: 0L) > 0L }
+        val shouldPair = if (peerDialogueCueCount != null) {
+            val rawDelta = if (sorted.size >= peerDialogueCueCount) {
+                sorted.size - peerDialogueCueCount
+            } else {
+                peerDialogueCueCount - sorted.size
+            }
+            val pairedDelta = if (pairedCount >= peerDialogueCueCount) {
+                pairedCount - peerDialogueCueCount
+            } else {
+                peerDialogueCueCount - pairedCount
+            }
+
+            // Require a material improvement, not a marginal count coincidence.
+            pairedDelta.toLong() * 3L <= rawDelta.toLong() * 2L
+        } else {
+            // With no peer text track, explicit durations on most entries are evidence that the
+            // index already represents visible cues rather than alternating display/clear events.
+            explicitDurationCount.toLong() * 4L < sorted.size.toLong() * 3L
+        }
+
+        if (!shouldPair) {
+            AutoSyncDebugLog.verbose {
+                "PGS index kept raw=" + sorted.size +
+                    " peer=" + (peerDialogueCueCount ?: -1) +
+                    " explicitDurations=" + explicitDurationCount
+            }
+            return buildDefaultIndexedTimeline(sorted)
+        }
+
+        val cues = ArrayList<SubtitleSyncCue>(pairedCount)
         var index = 0
         while (index + 1 < sorted.size) {
             val display = sorted[index]
