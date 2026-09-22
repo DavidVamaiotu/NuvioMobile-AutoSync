@@ -406,7 +406,6 @@ internal object EmbeddedSubtitleTimelineLoader {
                 reference = reference,
                 locator = locator,
                 cluster = cluster,
-                blockPosition = blockPosition,
                 bytes = bytes,
                 cueIndex = index,
             ).getOrElse { error ->
