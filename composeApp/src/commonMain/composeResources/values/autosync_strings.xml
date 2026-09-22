@@ -8,4 +8,9 @@
     <string name="settings_playback_auto_sync_mode_passive_description">Faster, but accepts weaker subtitle matches sooner using lower acceptance thresholds.</string>
     <string name="settings_playback_auto_sync_debug_logs">Debug Logs for Auto Sync</string>
     <string name="settings_playback_auto_sync_debug_logs_description">Keep verbose Auto Sync logs and copy the report to the clipboard after each run.</string>
+    <string name="autosync_retry_action">AutoSync off? Try another reference</string>
+    <string name="autosync_retry_trying">Trying another reference…</string>
+    <string name="autosync_retry_updated">AutoSync updated. Try again if timing is still off.</string>
+    <string name="autosync_retry_exhausted">No more suitable references. Current timing kept.</string>
+    <string name="autosync_retry_failed">Couldn’t try another reference. Current timing kept.</string>
 </resources>
