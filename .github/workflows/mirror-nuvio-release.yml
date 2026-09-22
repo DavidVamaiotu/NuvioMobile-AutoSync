@@ -1,6 +1,6 @@
 name: AutoSync Release
 
-# Release trigger: conservative grouped reply timing repair
+# Release trigger: eliminate duplicate fallback wait
 
 
 on:
