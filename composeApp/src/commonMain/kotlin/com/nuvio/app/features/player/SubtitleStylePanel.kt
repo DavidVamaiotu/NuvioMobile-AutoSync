@@ -64,7 +64,6 @@ fun SubtitleStylePanel(
     subtitleDelayMs: Int,
     selectedAddonSubtitle: AddonSubtitle?,
     subtitleAutoSyncState: SubtitleAutoSyncUiState,
-    autoSyncRetryAction: @Composable (() -> Unit)? = null,
     isCompact: Boolean,
     showHeader: Boolean = true,
     onStyleChanged: (SubtitleStyleState) -> Unit,
@@ -187,7 +186,6 @@ fun SubtitleStylePanel(
         SubtitleAutoSyncSection(
             selectedAddonSubtitle = selectedAddonSubtitle,
             state = subtitleAutoSyncState,
-            autoSyncRetryAction = autoSyncRetryAction,
             onCapture = onAutoSyncCapture,
             onCueSelected = onAutoSyncCueSelected,
             onReload = onAutoSyncReload,
@@ -338,7 +336,6 @@ private fun SubtitleColorPicker(
 private fun SubtitleAutoSyncSection(
     selectedAddonSubtitle: AddonSubtitle?,
     state: SubtitleAutoSyncUiState,
-    autoSyncRetryAction: @Composable (() -> Unit)?,
     onCapture: () -> Unit,
     onCueSelected: (SubtitleSyncCue) -> Unit,
     onReload: () -> Unit,
@@ -363,7 +360,6 @@ private fun SubtitleAutoSyncSection(
                 enabled = selectedAddonSubtitle != null,
                 onClick = onCapture,
             )
-            autoSyncRetryAction?.invoke()
         }
 
         when {
