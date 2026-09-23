@@ -1,6 +1,6 @@
 name: AutoSync Release
 
-# Release trigger: publish latest AutoSync accuracy and prefetch improvements
+# Release trigger: publish current subtitle-autosync revision
 
 
 on:
