@@ -1062,6 +1062,8 @@
     <string name="settings_playback_duration_days">%1$d days</string>
     <string name="settings_playback_duration_hour_one">%1$d hour</string>
     <string name="settings_playback_duration_hours">%1$d hours</string>
+    <string name="settings_playback_audio_subtitle_sync">Sync subtitles to audio</string>
+    <string name="settings_playback_audio_subtitle_sync_description">Automatically aligns addon subtitles with the dialogue by listening to the audio as it buffers</string>
     <string name="settings_playback_enable_libass">Use libass for ASS/SSA subtitles</string>
     <string name="settings_playback_enable_libass_description">Experimental: advanced ASS/SSA rendering (styles, positioning, animations)</string>
     <string name="settings_playback_external_player">External Player</string>

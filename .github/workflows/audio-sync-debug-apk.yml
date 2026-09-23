@@ -1,0 +1,66 @@
+name: Audio Sync Debug APK
+
+on:
+  push:
+    branches: [audio-sync]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audio-sync-debug-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Test and build fullDebug APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Prepare runtime properties
+        env:
+          LOCAL_PROPERTIES_BASE64: ${{ secrets.NUVIO_LOCAL_PROPERTIES_BASE64 }}
+        run: |
+          if [ -n "$LOCAL_PROPERTIES_BASE64" ]; then
+            printf '%s' "$LOCAL_PROPERTIES_BASE64" | base64 --decode > local.properties
+            sed -i -E '/^[[:space:]]*(sdk\.dir|NUVIO_RELEASE_STORE_FILE)[[:space:]]*=/d' local.properties
+          else
+            cat > local.properties <<'PROPS'
+          SIMKL_CLIENT_ID=a0b848cdb58e2e743c8efbce94edc7ca5124cc66f6f793bb91ee1f0470948096
+          SIMKL_REDIRECT_URI=nuvio://auth/simkl
+          SIMKL_APP_NAME=nuvio
+          INTRODB_API_URL=https://api.introdb.app/
+          IMDB_RATINGS_API_BASE_URL=https://seriesgraph.com/
+          IMDB_TAPFRAME_API_BASE_URL=https://imdb.tapframe.space/
+          PROPS
+            sed -i 's/^[[:space:]]*//' local.properties
+          fi
+
+      - name: Run audio sync host tests
+        run: |
+          ./gradlew :composeApp:testAndroidHostTest -Pnuvio.android.distribution=full \
+            --tests "com.nuvio.app.features.player.audiosync.*" --stacktrace
+
+      - name: Build fullDebug APK
+        run: ./gradlew :androidApp:assembleFullDebug -Pnuvio.android.distribution=full -Pnuvio.ios.distribution=appstore --stacktrace
+
+      - name: Upload fullDebug APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: NuvioMobile-AudioSync-debug
+          path: androidApp/build/outputs/apk/full/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14

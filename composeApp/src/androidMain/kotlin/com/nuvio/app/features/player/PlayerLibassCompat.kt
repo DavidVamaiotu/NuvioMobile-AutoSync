@@ -31,13 +31,17 @@ internal fun ExoPlayer.Builder.buildWithAssSupportCompat(
     renderType: AssRenderType = AssRenderType.CUES,
     dataSourceFactory: DataSource.Factory = DefaultDataSource.Factory(context),
     extractorsFactory: ExtractorsFactory = DefaultExtractorsFactory(),
-    renderersFactory: RenderersFactory = DefaultRenderersFactory(context)
+    renderersFactory: RenderersFactory = DefaultRenderersFactory(context),
+    // Applied after the libass MKV extractor swap, which matches on the concrete extractor type.
+    extractorsFactoryWrapper: (ExtractorsFactory) -> ExtractorsFactory = { it },
 ): ExoPlayer {
     val assHandler = AssHandler(renderType)
     val assSubtitleParserFactory = CompatAssSubtitleParserFactory(assHandler)
-    val assExtractorsFactory = extractorsFactory.withAssMkvSupportCompat(
-        subtitleParserFactory = assSubtitleParserFactory,
-        assHandler = assHandler
+    val assExtractorsFactory = extractorsFactoryWrapper(
+        extractorsFactory.withAssMkvSupportCompat(
+            subtitleParserFactory = assSubtitleParserFactory,
+            assHandler = assHandler
+        )
     )
 
     val mediaSourceFactory = DefaultMediaSourceFactory(

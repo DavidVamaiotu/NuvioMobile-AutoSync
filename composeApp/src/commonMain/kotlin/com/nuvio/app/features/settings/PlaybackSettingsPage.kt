@@ -648,6 +648,14 @@ private fun PlaybackSettingsSection(
                 if (showLibassSettings) {
                     SettingsGroupDivider(isTablet = isTablet)
                     SettingsSwitchRow(
+                        title = stringResource(Res.string.settings_playback_audio_subtitle_sync),
+                        description = stringResource(Res.string.settings_playback_audio_subtitle_sync_description),
+                        checked = autoPlayPlayerSettings.audioSubtitleSyncEnabled,
+                        isTablet = isTablet,
+                        onCheckedChange = PlayerSettingsRepository::setAudioSubtitleSyncEnabled,
+                    )
+                    SettingsGroupDivider(isTablet = isTablet)
+                    SettingsSwitchRow(
                         title = stringResource(Res.string.settings_playback_enable_libass),
                         description = stringResource(Res.string.settings_playback_enable_libass_description),
                         checked = useLibass,

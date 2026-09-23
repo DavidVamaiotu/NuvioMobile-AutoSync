@@ -36,6 +36,7 @@ internal class SidecarSubtitleController(
     private val scope: CoroutineScope,
     private val getPlayer: () -> Player?,
     private val getSubtitleDelayMs: () -> Int = { 0 },
+    private val onCuesLoaded: (subtitleKey: String, cues: List<CuesWithTiming>) -> Unit = { _, _ -> },
 ) {
     private var sidecarSubtitleJob: Job? = null
     var activeSidecarSubtitleKey: String? = null
@@ -127,6 +128,7 @@ internal class SidecarSubtitleController(
                 }
 
                 sidecarTimedCues = parseResult.cues
+                onCuesLoaded(subtitleKey, parseResult.cues)
                 Log.d(
                     SIDECAR_TAG,
                     "Sidecar subtitle ready url=$url cues=${parseResult.cues.size} mime=${parseResult.effectiveMime} source=${parseResult.source} (buffer preserved)"

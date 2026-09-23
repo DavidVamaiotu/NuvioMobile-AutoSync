@@ -73,6 +73,9 @@ import `is`.xyz.mpv.Utils
 import io.github.peerless2012.ass.media.widget.AssSubtitleView
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.CoroutineScope
+import com.nuvio.app.features.addons.httpGetTextWithHeaders
+import com.nuvio.app.features.player.audiosync.AudioSubtitleSyncController
+import com.nuvio.app.features.player.audiosync.selectedAudioFormat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -260,6 +263,12 @@ private fun ExoPlayerSurface(
     var subtitleDelayMs by remember(playerSourceKey) { mutableStateOf(0) }
     var selectedExternalSubtitleMimeType by remember(playerSourceKey) { mutableStateOf<String?>(null) }
     val latestSubtitleDelayMs = rememberUpdatedState(subtitleDelayMs)
+    val audioSubtitleSync = remember {
+        AudioSubtitleSyncController(context) { latestSubtitleDelayMs.value }
+    }
+    DisposableEffect(audioSubtitleSync) {
+        onDispose { audioSubtitleSync.release() }
+    }
     val latestExternalSubtitleMimeType = rememberUpdatedState(selectedExternalSubtitleMimeType)
     var playerViewRef by remember { mutableStateOf<PlayerView?>(null) }
     var videoAspectRatio by remember(playerSourceKey) { mutableStateOf(0f) }
@@ -288,10 +297,13 @@ private fun ExoPlayerSurface(
     }
     var probeAttempted by remember(playerSourceKey) { mutableStateOf(false) }
 
-    val extractorsFactory = remember {
+    val baseExtractorsFactory = remember {
         DefaultExtractorsFactory()
             .setTsExtractorFlags(DefaultTsPayloadReaderFactory.FLAG_ENABLE_HDMV_DTS_AUDIO_STREAMS)
             .setTsExtractorTimestampSearchBytes(1500 * TsExtractor.TS_PACKET_SIZE)
+    }
+    val extractorsFactory = remember(baseExtractorsFactory, audioSubtitleSync) {
+        audioSubtitleSync.wrap(baseExtractorsFactory)
     }
     val dataSourceFactory = remember(
         context,
@@ -341,7 +353,9 @@ private fun ExoPlayerSurface(
     ) {
         val renderersFactory = SubtitleOffsetRenderersFactory(
             context = context,
-            subtitleDelayUsProvider = { latestSubtitleDelayMs.value.toLong() * 1_000L },
+            subtitleDelayUsProvider = {
+                (latestSubtitleDelayMs.value + audioSubtitleSync.autoDelayMs()).toLong() * 1_000L
+            },
             shouldNormalizeCuePositionProvider = {
                 latestExternalSubtitleMimeType.value == MimeTypes.TEXT_VTT
             },
@@ -400,8 +414,9 @@ private fun ExoPlayerSurface(
                     context = context,
                     renderType = libassRenderType.toAssRenderType(),
                     dataSourceFactory = dataSourceFactory,
-                    extractorsFactory = extractorsFactory,
-                    renderersFactory = renderersFactory
+                    extractorsFactory = baseExtractorsFactory,
+                    renderersFactory = renderersFactory,
+                    extractorsFactoryWrapper = audioSubtitleSync::wrap,
                 )
         } else {
             val mediaSourceFactory = DefaultMediaSourceFactory(
@@ -454,6 +469,11 @@ private fun ExoPlayerSurface(
         onDispose { nowPlayingController.release() }
     }
 
+    LaunchedEffect(audioSubtitleSync, playerSourceKey) {
+        audioSubtitleSync.enabled = playerSettings.audioSubtitleSyncEnabled
+        audioSubtitleSync.onSourceChanged()
+    }
+
     LaunchedEffect(exoPlayer, resolvedMediaItem, initialPositionRequestKey) {
         val mediaItem = resolvedMediaItem
         val requestedStartPositionMs = fallbackStartPositionMs
@@ -482,6 +502,7 @@ private fun ExoPlayerSurface(
     val pendingSubtitleTrackIndex = remember { mutableListOf<Int>() }
     val pendingAudioTrackSelection = remember { mutableListOf<TrackSelectionSnapshot>() }
     var subtitleSelectionJob by remember { mutableStateOf<Job?>(null) }
+    var selectedExternalSubtitleUrl by remember { mutableStateOf<String?>(null) }
     val isInPip = rememberIsInPictureInPicture()
     val pipSubtitleScale by rememberUpdatedState(if (isInPip) 0.4f else 1.0f)
 
@@ -489,7 +510,8 @@ private fun ExoPlayerSurface(
         SidecarSubtitleController(
             scope = coroutineScope,
             getPlayer = { exoPlayer },
-            getSubtitleDelayMs = { latestSubtitleDelayMs.value },
+            getSubtitleDelayMs = { latestSubtitleDelayMs.value + audioSubtitleSync.autoDelayMs() },
+            onCuesLoaded = audioSubtitleSync::startSession,
         )
     }
 
@@ -642,6 +664,7 @@ private fun ExoPlayerSurface(
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
                 Log.d(TAG, "onTracksChanged: ${tracks.groups.size} groups total")
                 exoPlayer.logCurrentTracks("onTracksChanged")
+                audioSubtitleSync.onAudioTrackSelected(tracks.selectedAudioFormat())
                 pendingAudioTrackSelection.firstOrNull()?.let { selection ->
                     if (tracks.groups.any { it.type == C.TRACK_TYPE_AUDIO }) {
                         pendingAudioTrackSelection.clear()
@@ -769,6 +792,8 @@ private fun ExoPlayerSurface(
 
                 override fun selectSubtitleTrack(index: Int) {
                     Log.d(TAG, "selectSubtitleTrack: index=$index")
+                    selectedExternalSubtitleUrl = null
+                    audioSubtitleSync.stopSession()
                     sidecarController.stopSidecarAddonSubtitle(clearView = true)
                     if (index < 0) {
                         Log.d(TAG, "selectSubtitleTrack: disabling text tracks")
@@ -790,6 +815,8 @@ private fun ExoPlayerSurface(
                 override fun setSubtitleUri(url: String) {
                     Log.d(TAG, "setSubtitleUri: url=$url")
                     subtitleSelectionJob?.cancel()
+                    audioSubtitleSync.stopSession()
+                    selectedExternalSubtitleUrl = url
                     if (sidecarController.canAttachAddonSubtitleViaSidecar(url, useLibass)) {
                         Log.d(TAG, "setSubtitleUri: using buffer-preserving sidecar for url=$url")
                         val headers = externalSubtitles.firstOrNull { it.url == url }?.headers.orEmpty()
@@ -804,6 +831,17 @@ private fun ExoPlayerSurface(
                                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                                 .build()
                             return
+                        }
+                    }
+                    val subtitleHeaders = externalSubtitles.firstOrNull { it.url == url }?.headers.orEmpty()
+                    coroutineScope.launch {
+                        val cues = withContext(Dispatchers.IO) {
+                            runCatching {
+                                parseSidecarTimedCuesRobust(httpGetTextWithHeaders(url = url, headers = subtitleHeaders), url).cues
+                            }.getOrDefault(emptyList())
+                        }
+                        if (cues.isNotEmpty() && selectedExternalSubtitleUrl == url) {
+                            audioSubtitleSync.startSession(url, cues)
                         }
                     }
                     subtitleSelectionJob = coroutineScope.launch {
@@ -847,6 +885,8 @@ private fun ExoPlayerSurface(
                 override fun clearExternalSubtitle() {
                     Log.d(TAG, "clearExternalSubtitle called")
                     subtitleSelectionJob?.cancel()
+                    selectedExternalSubtitleUrl = null
+                    audioSubtitleSync.stopSession()
                     sidecarController.stopSidecarAddonSubtitle(clearView = true)
                     selectedExternalSubtitleMimeType = null
                     val currentPosition = exoPlayer.currentPosition
@@ -869,6 +909,8 @@ private fun ExoPlayerSurface(
                 override fun clearExternalSubtitleAndSelect(trackIndex: Int) {
                     Log.d(TAG, "clearExternalSubtitleAndSelect: trackIndex=$trackIndex")
                     subtitleSelectionJob?.cancel()
+                    selectedExternalSubtitleUrl = null
+                    audioSubtitleSync.stopSession()
                     sidecarController.stopSidecarAddonSubtitle(clearView = true)
                     selectedExternalSubtitleMimeType = null
                     val currentPosition = exoPlayer.currentPosition
@@ -923,6 +965,7 @@ private fun ExoPlayerSurface(
     LaunchedEffect(exoPlayer) {
         while (isActive) {
             dispatchExoPlayerSnapshot()
+            audioSubtitleSync.onPlaybackPosition(exoPlayer.currentPosition)
             delay(250L)
         }
     }
