@@ -48,9 +48,9 @@ internal class AudioSyncTracker(
     data class ProvisionalPolicy(
         val enabled: Boolean = true,
         val minKnownSeconds: Double = 20.0,
-        val minCues: Int = 6,
+        val minCues: Int = 8,
         val minSpeechSeconds: Double = 5.0,
-        val minProminence: Double = 0.10,
+        val minProminence: Double = 0.15,
         val agreementMs: Double = 300.0,
         val minMovementMs: Double = 120.0,
         /** Consecutive runs that must agree before the estimate is applied. */
@@ -65,6 +65,21 @@ internal class AudioSyncTracker(
          * The agreeing streak must also span at least this much newly analysed audio.
          */
         val minEvidenceGrowthSeconds: Double = 20.0,
+        /**
+         * Most subtitle offsets are small. When the best match lies within this range, far fewer
+         * offsets could have matched by chance, so the looser "near" thresholds below apply and
+         * subtitles can move after only a few lines of dialogue.
+         */
+        val nearRangeMs: Double = 8_000.0,
+        val nearMinCues: Int = 5,
+        val nearMinProminence: Double = 0.08,
+        val nearRequiredRepeats: Int = 2,
+        val nearMinEvidenceGrowthSeconds: Double = 10.0,
+        /**
+         * An early estimate may use a frame-rate correction only when it beats the normal rate by
+         * this much correlation; negative disables it.
+         */
+        val nearRateMargin: Double = -1.0,
     )
 
     /** Confirmed mapping, or null while still searching. */
@@ -77,6 +92,10 @@ internal class AudioSyncTracker(
 
     private var previousCandidate: SubtitleAudioAligner.Estimate? = null
     private var agreeingRuns = 0
+    private var disagreeingRuns = 0
+
+    /** After a retraction only a confirmed lock may move subtitles again. */
+    private var provisionalBlocked = false
     private var streakStartAnalysedSeconds = 0.0
 
     var lastEstimate: SubtitleAudioAligner.Estimate? = null
@@ -89,6 +108,9 @@ internal class AudioSyncTracker(
         data object NotEnoughEvidence : Outcome
         data class Searching(val estimate: SubtitleAudioAligner.Estimate?) : Outcome
         data class Provisional(val model: SubtitleSyncModel, val estimate: SubtitleAudioAligner.Estimate) : Outcome
+
+        /** The early estimate lost its support and was withdrawn; subtitles go back to file timing. */
+        data class Retracted(val estimate: SubtitleAudioAligner.Estimate) : Outcome
         data class Locked(val model: SubtitleSyncModel, val estimate: SubtitleAudioAligner.Estimate) : Outcome
         data class Refined(val model: SubtitleSyncModel, val estimate: SubtitleAudioAligner.Estimate) : Outcome
         data class Jumped(val model: SubtitleSyncModel, val estimate: SubtitleAudioAligner.Estimate) : Outcome
@@ -143,7 +165,33 @@ internal class AudioSyncTracker(
                 maxShiftMs = MAX_SHIFT_MS,
             ) ?: return Outcome.Searching(estimate)
         }
-        return provisional(candidate) ?: Outcome.Searching(estimate)
+        val nearUnit = SubtitleAudioAligner.estimate(
+            probabilities = probabilities,
+            fromFrame = from,
+            track = track,
+            scales = doubleArrayOf(1.0),
+            minShiftMs = -provisionalPolicy.nearRangeMs,
+            maxShiftMs = provisionalPolicy.nearRangeMs,
+        )
+        val nearRated = if (provisionalPolicy.nearRateMargin >= 0 && nearUnit != null) {
+            SubtitleAudioAligner.estimate(
+                probabilities = probabilities,
+                fromFrame = from,
+                track = track,
+                scales = NON_UNIT_SCALES,
+                minShiftMs = -provisionalPolicy.nearRangeMs,
+                maxShiftMs = provisionalPolicy.nearRangeMs,
+            )?.takeIf { !it.atSearchEdge && it.peak >= nearUnit.peak + provisionalPolicy.nearRateMargin }
+        } else {
+            null
+        }
+        val near = nearRated ?: nearUnit
+        val useNear = near != null && !near.atSearchEdge &&
+            (abs(candidate.shiftMs) <= provisionalPolicy.nearRangeMs || near.peak >= candidate.peak - NEAR_PEAK_TOLERANCE)
+        val best = if (useNear) near!! else candidate
+        retraction(best, estimate)?.let { return it }
+        if (provisionalBlocked) return Outcome.Searching(estimate)
+        return provisional(best, near = useNear) ?: Outcome.Searching(estimate)
     }
 
     /**
@@ -151,18 +199,19 @@ internal class AudioSyncTracker(
      * within the first minute instead of waiting for the full confirmation. It keeps being updated
      * as evidence grows and is replaced by the confirmed lock.
      */
-    private fun provisional(estimate: SubtitleAudioAligner.Estimate): Outcome? {
+    private fun provisional(estimate: SubtitleAudioAligner.Estimate, near: Boolean): Outcome? {
         val policy = provisionalPolicy
         val previous = previousCandidate
         previousCandidate = estimate
         if (!policy.enabled) return null
+        val minProminence = if (near) policy.nearMinProminence else policy.minProminence
         val requiredProminence = if (isStandardRate(estimate.scale)) {
-            policy.minProminence
+            minProminence
         } else {
-            policy.minProminence + NON_STANDARD_RATE_PENALTY
+            minProminence + NON_STANDARD_RATE_PENALTY
         }
         val credible = !estimate.atSearchEdge &&
-            estimate.cueCount >= policy.minCues &&
+            estimate.cueCount >= (if (near) policy.nearMinCues else policy.minCues) &&
             estimate.speechSeconds >= policy.minSpeechSeconds &&
             estimate.prominence >= requiredProminence
         val agrees = previous != null && previous.scale == estimate.scale &&
@@ -173,8 +222,10 @@ internal class AudioSyncTracker(
             else -> 1
         }
         if (agreeingRuns == 1) streakStartAnalysedSeconds = estimate.analysedSeconds
-        if (agreeingRuns < policy.requiredRepeats) return null
-        if (estimate.analysedSeconds - streakStartAnalysedSeconds < policy.minEvidenceGrowthSeconds) return null
+        val repeats = if (near) policy.nearRequiredRepeats else policy.requiredRepeats
+        val growth = if (near) policy.nearMinEvidenceGrowthSeconds else policy.minEvidenceGrowthSeconds
+        if (agreeingRuns < repeats) return null
+        if (estimate.analysedSeconds - streakStartAnalysedSeconds < growth) return null
         val current = provisionalModel?.segments?.first()
         if (current != null && current.scale == estimate.scale &&
             abs(current.shiftMs - estimate.shiftMs) < policy.minMovementMs
@@ -184,6 +235,26 @@ internal class AudioSyncTracker(
         val updated = SubtitleSyncModel(listOf(SubtitleSyncSegment(0L, estimate.scale, estimate.shiftMs)))
         provisionalModel = updated
         return Outcome.Provisional(updated, estimate)
+    }
+
+    /**
+     * A real match is confirmed after roughly 20-25 dialogue lines. An early estimate that is still
+     * unconfirmed well past that, or that newer audio keeps contradicting, was most likely chance:
+     * withdraw it rather than leave subtitles at a wrong offset.
+     */
+    private fun retraction(
+        best: SubtitleAudioAligner.Estimate,
+        global: SubtitleAudioAligner.Estimate,
+    ): Outcome? {
+        val applied = provisionalModel?.segments?.first() ?: return null
+        disagreeingRuns = if (abs(best.shiftMs - applied.shiftMs) > RETRACT_DISAGREEMENT_MS) disagreeingRuns + 1 else 0
+        val stale = global.cueCount >= RETRACT_AFTER_CUES
+        if (!stale && disagreeingRuns < RETRACT_DISAGREEING_RUNS) return null
+        provisionalModel = null
+        provisionalBlocked = stale
+        agreeingRuns = 0
+        disagreeingRuns = 0
+        return Outcome.Retracted(best)
     }
 
     /**
@@ -411,5 +482,10 @@ internal class AudioSyncTracker(
         private const val REFINE_MIN_PROMINENCE = 0.05
         private const val REFINE_MIN_MOVEMENT_MS = 40.0
         private const val MIN_SEGMENT_MS = 30_000L
+        private const val NEAR_PEAK_TOLERANCE = 0.01
+        private const val RETRACT_AFTER_CUES = 35
+        private const val RETRACT_DISAGREEMENT_MS = 1_000.0
+        private const val RETRACT_DISAGREEING_RUNS = 3
+        private val NON_UNIT_SCALES = SubtitleAudioAligner.CANDIDATE_SCALES.filter { it != 1.0 }.toDoubleArray()
     }
 }

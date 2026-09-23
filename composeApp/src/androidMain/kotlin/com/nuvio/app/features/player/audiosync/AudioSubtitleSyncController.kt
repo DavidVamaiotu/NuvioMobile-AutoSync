@@ -248,6 +248,7 @@ internal class AudioSubtitleSyncController(
         val liveAnalyzer = SpeechAnalyzer(SileroVad(weights), timeline)
         return AudioSyncDecoder(analyzer, liveAnalyzer) { mime ->
             Log.i(TAG, "look-ahead capture unavailable for $mime; syncing from playback audio instead")
+            if (session != null) notify(AudioSyncStatus.LiveOnly(mime))
         }.also { decoder = it }
     }
 
@@ -299,6 +300,11 @@ internal class AudioSubtitleSyncController(
                         ),
                     )
                 }
+            }
+            is AudioSyncTracker.Outcome.Retracted -> {
+                model = null
+                Log.i(TAG, "early estimate withdrawn ${describe(outcome.estimate)}")
+                notify(AudioSyncStatus.Withdrawn)
             }
             is AudioSyncTracker.Outcome.Locked -> {
                 if (model == null) manualDelayAtLockMs = manualDelayMs()
@@ -386,6 +392,12 @@ internal class AudioSubtitleSyncController(
 internal sealed interface AudioSyncStatus {
     /** A subtitle was picked and the audio is being analysed. */
     data object Listening : AudioSyncStatus
+
+    /** No second decoder for this codec: syncing uses the playing audio only, without look-ahead. */
+    data class LiveOnly(val mimeType: String) : AudioSyncStatus
+
+    /** The early estimate could not be confirmed; subtitles are back on the file's own timing. */
+    data object Withdrawn : AudioSyncStatus
 
     /** An early, unconfirmed estimate was applied; it keeps adjusting until confirmed. */
     data class Estimated(val offsetMs: Long) : AudioSyncStatus

@@ -100,12 +100,44 @@ class AudioSubtitleSyncTest {
     }
 
     @Test
+    fun trackerAppliesEarlyEstimateWithinFirstMinute() {
+        val cues = syntheticCues(Random(41), durationMs = 10 * 60_000L)
+        val truth = SubtitleSyncSegment(0L, 1.0, 2_600.0)
+        val full = speechFor(cues, truth, Random(42))
+        val tracker = AudioSyncTracker(SubtitleSpeechTrack.fromCues(cues))
+        val all = full.snapshot(0, full.knownRange()!!.last + 1)
+        val live = SpeechTimeline()
+        var copied = 0
+        var positionMs = 0L
+        var firstMoveMs: Long? = null
+        while (positionMs <= 120_000L && firstMoveMs == null) {
+            val horizon = minOf(all.size, ((positionMs + 60_000L) / SpeechTimeline.FRAME_DURATION_MS).toInt())
+            while (copied < horizon) {
+                if (!all[copied].isNaN()) live.record(copied, all[copied])
+                copied++
+            }
+            tracker.update(live, positionMs)
+            val applied = tracker.model ?: tracker.provisionalModel
+            if (applied != null) {
+                firstMoveMs = positionMs
+                val delayMs = applied.delayUsAt(positionMs * 1_000L) / 1_000.0
+                assertTrue(abs(delayMs - truth.shiftMs) < 150.0, "early delay $delayMs")
+            }
+            positionMs += 3_000L
+        }
+        val moved = assertNotNull(firstMoveMs, "no early estimate within two minutes")
+        assertTrue(moved <= 60_000L, "first estimate only at ${moved}ms")
+    }
+
+    @Test
     fun trackerNeverLocksOntoUnrelatedSubtitles() {
         repeat(6) { seed ->
             val spoken = syntheticCues(Random(100 + seed), durationMs = 20 * 60_000L)
             val unrelated = syntheticCues(Random(200 + seed), durationMs = 20 * 60_000L)
             val timeline = speechFor(spoken, SubtitleSyncSegment(0L, 1.0, 0.0), Random(300 + seed))
-            assertNull(replay(timeline, unrelated), "false lock with seed $seed")
+            val tracker = AudioSyncTracker(SubtitleSpeechTrack.fromCues(unrelated))
+            assertNull(replay(timeline, unrelated, tracker), "false lock with seed $seed")
+            assertNull(tracker.provisionalModel, "false early estimate with seed $seed")
         }
     }
 
@@ -176,8 +208,11 @@ class AudioSubtitleSyncTest {
     }
 
     /** Plays [full] back with a 60 s look-ahead, updating the tracker every 10 s. */
-    private fun replay(full: SpeechTimeline, cues: List<Triple<Long, Long, String>>): SubtitleSyncModel? {
-        val tracker = AudioSyncTracker(SubtitleSpeechTrack.fromCues(cues))
+    private fun replay(
+        full: SpeechTimeline,
+        cues: List<Triple<Long, Long, String>>,
+        tracker: AudioSyncTracker = AudioSyncTracker(SubtitleSpeechTrack.fromCues(cues)),
+    ): SubtitleSyncModel? {
         val range = full.knownRange()!!
         val all = full.snapshot(0, range.last + 1)
         val live = SpeechTimeline()
