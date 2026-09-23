@@ -17,20 +17,23 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * Decodes the copied compressed audio on its own low-priority thread with a private software
- * [MediaCodec] and feeds mono PCM to a [SpeechAnalyzer].
+ * Decodes the copied compressed audio on its own low-priority thread with a private [MediaCodec]
+ * and feeds mono PCM to [analyzer]. The same thread also analyses the player's own decoded audio
+ * handed over by [PlaybackAudioTap] (see [offerPlaybackPcm]) with a separate [liveAnalyzer].
  *
- * Only software decoders are used so the player's hardware or DSP decoder is never contended.
- * Formats without a usable software decoder (often DTS or TrueHD) are skipped. The queue is bounded;
- * if analysis falls behind, samples are dropped and the gap is simply left unknown.
+ * Decoders that cannot run a second instance next to the player's are never used, so playback is
+ * never starved of its decoder. Formats without a usable decoder fall back to the playback tap. The
+ * queues are bounded; if analysis falls behind, input is dropped and the gap is left unknown.
  */
 internal class AudioSyncDecoder(
     private val analyzer: SpeechAnalyzer,
-    /** Called once per audio format that has no usable software decoder. */
+    private val liveAnalyzer: SpeechAnalyzer,
+    /** Called once per audio format that has no usable decoder. */
     private val onUnsupportedFormat: (mimeType: String) -> Unit = {},
 ) {
     private sealed interface Item {
         class Sample(val format: Format, val timeUs: Long, val data: ByteArray) : Item
+        class Pcm(val samples: FloatArray, val sampleRate: Int, val timeUs: Long) : Item
         data object Discontinuity : Item
     }
 
@@ -74,6 +77,19 @@ internal class AudioSyncDecoder(
         return true
     }
 
+    /** Called on the playback thread with the player's decoded audio, already mixed to mono. */
+    fun offerPlaybackPcm(mono: FloatArray, frames: Int, sampleRate: Int, timeUs: Long) {
+        synchronized(lock) {
+            if (released) return
+            val bytes = frames * 4
+            if (queuedBytes + bytes > MAX_QUEUED_BYTES) return
+            queue.addLast(Item.Pcm(mono.copyOf(frames), sampleRate, timeUs))
+            queuedBytes += bytes
+            ensureThread()
+            lock.notifyAll()
+        }
+    }
+
     fun discontinuity() {
         synchronized(lock) {
             if (released) return
@@ -111,7 +127,13 @@ internal class AudioSyncDecoder(
                 val item = synchronized(lock) {
                     while (queue.isEmpty() && !released) lock.wait()
                     if (released) return
-                    queue.removeFirst().also { if (it is Item.Sample) queuedBytes -= it.data.size }
+                    queue.removeFirst().also { item ->
+                        when (item) {
+                            is Item.Sample -> queuedBytes -= item.data.size
+                            is Item.Pcm -> queuedBytes -= item.samples.size * 4
+                            Item.Discontinuity -> Unit
+                        }
+                    }
                 }
                 when (item) {
                     is Item.Discontinuity -> {
@@ -119,6 +141,7 @@ internal class AudioSyncDecoder(
                         analyzer.reset()
                     }
                     is Item.Sample -> decode(item)
+                    is Item.Pcm -> liveAnalyzer.accept(item.samples, item.samples.size, item.sampleRate, item.timeUs)
                 }
             }
         } catch (_: InterruptedException) {
@@ -195,34 +218,16 @@ internal class AudioSyncDecoder(
         }
     }
 
-    /** Downmixes to mono, weighting the centre channel where dialogue normally lives. */
     private fun deliverPcm(buffer: ByteBuffer, timeUs: Long) {
         val channels = outputChannels
         val rate = outputRate
         if (channels <= 0 || rate <= 0) return
-        val bytesPerSample = if (outputFloat) 4 else 2
-        val frames = buffer.remaining() / (bytesPerSample * channels)
+        val frames = buffer.remaining() / ((if (outputFloat) 4 else 2) * channels)
         if (frames <= 0) return
         if (mono.size < frames) mono = FloatArray(frames)
-        val center = centerIndex
-        for (frame in 0 until frames) {
-            val base = frame * channels
-            if (center >= 0) {
-                val left = sampleAt(buffer, base, bytesPerSample)
-                val right = sampleAt(buffer, base + 1, bytesPerSample)
-                val middle = sampleAt(buffer, base + center, bytesPerSample)
-                mono[frame] = CENTER_WEIGHT * middle + SIDE_WEIGHT * (left + right)
-            } else {
-                var sum = 0f
-                for (c in 0 until channels) sum += sampleAt(buffer, base + c, bytesPerSample)
-                mono[frame] = sum / channels
-            }
-        }
+        PcmDownmix.toMono(buffer, buffer.position(), frames, channels, outputFloat, centerIndex, mono)
         analyzer.accept(mono, frames, rate, timeUs)
     }
-
-    private fun sampleAt(buffer: ByteBuffer, index: Int, bytesPerSample: Int): Float =
-        if (bytesPerSample == 4) buffer.getFloat(index * 4) else buffer.getShort(index * 2) / 32_768f
 
     private fun codecFor(format: Format): MediaCodec? {
         val current = codec
@@ -237,7 +242,7 @@ internal class AudioSyncDecoder(
         if (created == null) {
             unsupportedMimes += mime
             unsupportedMimesSnapshot = unsupportedMimes.toSet()
-            Log.i(TAG, "audio sync unavailable for $mime (no software decoder)")
+            Log.i(TAG, "no usable decoder for $mime; relying on the playback tap")
             runCatching { onUnsupportedFormat(mime) }
             return null
         }
@@ -258,7 +263,7 @@ internal class AudioSyncDecoder(
             if (mime == MimeTypes.AUDIO_E_AC3_JOC) add(MimeTypes.AUDIO_E_AC3)
         }
         for (candidate in candidates) {
-            val name = findSoftwareDecoder(candidate) ?: continue
+            val name = findDecoder(candidate) ?: continue
             val mediaFormat = MediaFormatUtil.createMediaFormatFromFormat(format)
             mediaFormat.setString(MediaFormat.KEY_MIME, candidate)
             val codec = MediaCodec.createByCodecName(name)
@@ -274,11 +279,26 @@ internal class AudioSyncDecoder(
         return null
     }
 
-    private fun findSoftwareDecoder(mime: String): String? {
+    /**
+     * Prefers platform software decoders. Otherwise accepts a vendor decoder (Dolby AC3/E-AC3 on many
+     * phones) as long as it is not hardware-backed and supports more than one instance, so opening
+     * a second one next to the player's is safe.
+     */
+    private fun findDecoder(mime: String): String? {
         val infos = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.filter { info ->
             !info.isEncoder && info.supportedTypes.any { it.equals(mime, ignoreCase = true) }
         }
-        return infos.firstOrNull { it.isSoftwareOnlyCompat() }?.name
+        infos.forEach { info ->
+            Log.d(
+                TAG,
+                "decoder candidate ${info.name} for $mime: software=${info.isSoftwareOnlyCompat()} " +
+                    "hardware=${info.isHardwareAcceleratedCompat()} instances=${info.maxInstances(mime)}",
+            )
+        }
+        infos.firstOrNull { it.isSoftwareOnlyCompat() }?.let { return it.name }
+        return infos.firstOrNull { info ->
+            info.isHardwareAcceleratedCompat() != true && info.maxInstances(mime) >= 2
+        }?.name
     }
 
     private fun MediaCodecInfo.isSoftwareOnlyCompat(): Boolean {
@@ -287,6 +307,13 @@ internal class AudioSyncDecoder(
         return lower.startsWith("omx.google.") || lower.startsWith("c2.android.") ||
             lower.startsWith("omx.ffmpeg.") || lower.startsWith("c2.ffmpeg.")
     }
+
+    /** Null when the platform cannot tell (before Android 10). */
+    private fun MediaCodecInfo.isHardwareAcceleratedCompat(): Boolean? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) isHardwareAccelerated else null
+
+    private fun MediaCodecInfo.maxInstances(mime: String): Int =
+        runCatching { getCapabilitiesForType(mime).maxSupportedInstances }.getOrDefault(0)
 
     private fun Format?.isSameStream(other: Format): Boolean =
         this != null && sampleMimeType == other.sampleMimeType && sampleRate == other.sampleRate &&
@@ -321,7 +348,5 @@ internal class AudioSyncDecoder(
         private const val MAX_QUEUED_BYTES = 8 * 1024 * 1024
         private const val INPUT_TIMEOUT_US = 5_000L
         private const val MAX_INPUT_ATTEMPTS = 40
-        private const val CENTER_WEIGHT = 0.7f
-        private const val SIDE_WEIGHT = 0.15f
     }
 }

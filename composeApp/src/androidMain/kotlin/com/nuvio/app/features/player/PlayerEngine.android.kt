@@ -51,6 +51,7 @@ import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.TransferListener
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.ForwardingRenderer
 import androidx.media3.exoplayer.Renderer
@@ -365,6 +366,7 @@ private fun ExoPlayerSurface(
     ) {
         val renderersFactory = SubtitleOffsetRenderersFactory(
             context = context,
+            audioSinkWrapper = audioSubtitleSync::wrapAudioSink,
             subtitleDelayUsProvider = {
                 (latestSubtitleDelayMs.value + audioSubtitleSync.autoDelayMs()).toLong() * 1_000L
             },
@@ -2207,11 +2209,19 @@ private fun PlayerView.videoBoundsFraction(aspectRatio: Float): RectF? {
 @androidx.annotation.OptIn(UnstableApi::class)
 private class SubtitleOffsetRenderersFactory(
     context: Context,
+    private val audioSinkWrapper: (AudioSink) -> AudioSink,
     private val subtitleDelayUsProvider: () -> Long,
     private val shouldNormalizeCuePositionProvider: () -> Boolean,
     private val shouldStripSdhProvider: () -> Boolean,
     private val videoBoundsFractionProvider: () -> RectF?,
 ) : DefaultRenderersFactory(context) {
+    override fun buildAudioSink(
+        context: Context,
+        enableFloatOutput: Boolean,
+        enableAudioTrackPlaybackParams: Boolean,
+    ): AudioSink? = super.buildAudioSink(context, enableFloatOutput, enableAudioTrackPlaybackParams)
+        ?.let(audioSinkWrapper)
+
     override fun buildTextRenderers(
         context: Context,
         output: TextOutput,
@@ -2359,10 +2369,6 @@ private suspend fun AudioSyncStatus.toastMessage(): String? = when (this) {
         formatSyncOffset(offsetMs),
     )
     is AudioSyncStatus.Adjusted -> getString(Res.string.player_audio_sync_adjusted, formatSyncOffset(offsetMs))
-    is AudioSyncStatus.Unsupported -> getString(
-        Res.string.player_audio_sync_unsupported,
-        mimeType.substringAfter('/').uppercase(),
-    )
 }
 
 private fun formatSyncOffset(offsetMs: Long): String {

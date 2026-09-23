@@ -9,6 +9,7 @@ import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.Tracks
+import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.extractor.ExtractorsFactory
 import androidx.media3.extractor.text.CuesWithTiming
 import com.nuvio.app.R
@@ -32,7 +33,7 @@ internal class AudioSubtitleSyncController(
     private val manualDelayMs: () -> Int,
     /** User-visible progress, called from background threads. */
     private val onStatus: (AudioSyncStatus) -> Unit = {},
-) : AudioSampleSink {
+) : AudioSampleSink, PlaybackPcmListener {
     private val appContext = context.applicationContext
     private val timeline = SpeechTimeline()
     private val aligner: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
@@ -91,6 +92,9 @@ internal class AudioSubtitleSyncController(
 
     /** Wraps [factory] so audio is tapped while it is demuxed. */
     fun wrap(factory: ExtractorsFactory): ExtractorsFactory = AudioSyncExtractorsFactory(factory, this)
+
+    /** Wraps the player's audio output so its decoded audio can be used when demux-time capture can't. */
+    fun wrapAudioSink(sink: AudioSink): AudioSink = PlaybackAudioTap(sink, this)
 
     /** Extra delay to add to the user's subtitle delay at the current playback position. */
     fun autoDelayMs(): Int {
@@ -201,6 +205,22 @@ internal class AudioSubtitleSyncController(
     }
 
     /**
+     * Playback audio is only analysed where the look-ahead capture left the timeline unknown: codecs
+     * without a usable second decoder, HLS/DASH streams, or gaps. Otherwise it is skipped cheaply.
+     */
+    override fun wantsPlaybackPcm(mediaTimeUs: Long, durationUs: Long): Boolean {
+        if (!enabled || released || session == null || decoder == null) return false
+        if (mediaTimeUs < 0 || !inDutyWindow(mediaTimeUs)) return false
+        val from = SpeechTimeline.frameForTimeUs(mediaTimeUs)
+        val to = SpeechTimeline.frameForTimeUs(mediaTimeUs + durationUs) + 1
+        return timeline.knownFramesIn(from, to) < to - from - 1
+    }
+
+    override fun onPlaybackPcm(mono: FloatArray, frames: Int, sampleRate: Int, mediaTimeUs: Long) {
+        decoder?.offerPlaybackPcm(mono, frames, sampleRate, mediaTimeUs)
+    }
+
+    /**
      * Once a lock has been refined over a long stretch, analyse one minute in three: enough to follow
      * later jumps while saving most of the CPU.
      */
@@ -222,8 +242,9 @@ internal class AudioSubtitleSyncController(
             return null
         }
         val analyzer = SpeechAnalyzer(SileroVad(weights), timeline)
-        return AudioSyncDecoder(analyzer) { mime ->
-            if (session != null) notify(AudioSyncStatus.Unsupported(mime))
+        val liveAnalyzer = SpeechAnalyzer(SileroVad(weights), timeline)
+        return AudioSyncDecoder(analyzer, liveAnalyzer) { mime ->
+            Log.i(TAG, "look-ahead capture unavailable for $mime; syncing from playback audio instead")
         }.also { decoder = it }
     }
 
@@ -352,9 +373,6 @@ internal sealed interface AudioSyncStatus {
 
     /** The subtitle timing changed partway through (a different cut). */
     data class Adjusted(val offsetMs: Long) : AudioSyncStatus
-
-    /** The audio codec cannot be decoded on this device, so syncing is off for this stream. */
-    data class Unsupported(val mimeType: String) : AudioSyncStatus
 }
 
 /** Format of the audio track the player currently has selected, if any. */

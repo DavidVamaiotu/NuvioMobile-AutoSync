@@ -1,6 +1,6 @@
 name: Audio Sync Release
 
-# Release trigger: toast feedback for audio subtitle sync
+# Release trigger: AC3/E-AC3 vendor decoders and playback-audio fallback
 
 on:
   workflow_dispatch:
