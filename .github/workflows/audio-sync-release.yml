@@ -1,6 +1,6 @@
 name: Audio Sync Release
 
-# Release trigger: AC3/E-AC3 vendor decoders and playback-audio fallback
+# Release trigger: early look-ahead sync with retraction
 
 on:
   workflow_dispatch:
