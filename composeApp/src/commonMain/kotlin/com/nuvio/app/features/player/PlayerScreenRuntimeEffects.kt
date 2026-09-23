@@ -191,7 +191,8 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
     }
 
     LaunchedEffect(playerController, activeAddonSubtitleType, activeVideoId) {
-        playerController?.setSubtitleSyncContent(activeAddonSubtitleType, activeVideoId)
+        val videoId = activeVideoId ?: return@LaunchedEffect
+        playerController?.setSubtitleSyncContent(activeAddonSubtitleType, videoId)
     }
 
     LaunchedEffect(selectedAddonSubtitleId, useCustomSubtitles, activeSourceUrl) {
