@@ -200,23 +200,6 @@ internal object AutomaticSubtitleSync {
         var cleanupSelectedPending = false
 
         val result = supervisorScope {
-            fun broadCandidateOrder(
-                candidates: List<AutoSyncSubtitleCandidate>,
-            ): List<AutoSyncSubtitleCandidate> {
-                if (candidates.size < 3) return candidates
-
-                val ordered = ArrayList<AutoSyncSubtitleCandidate>(candidates.size)
-                var front = 0
-                var back = candidates.lastIndex
-                while (front <= back) {
-                    ordered += candidates[front++]
-                    if (front <= back) {
-                        ordered += candidates[back--]
-                    }
-                }
-                return ordered
-            }
-
             val indexedTimelineDeferred = async {
                 if (requiredReferenceSource == AutoSyncReferenceSource.LIVE) {
                     null
@@ -274,20 +257,18 @@ internal object AutomaticSubtitleSync {
                         ?.takeIf { it.isNotBlank() }
                         ?: preferredLanguage?.takeIf { it.isNotBlank() }
 
-                return broadCandidateOrder(
-                    snapshot
-                        .asSequence()
-                        .filter { it.url.isNotBlank() && it.url != selectedSubtitleUrl }
-                        .filter { candidate ->
-                            language.isNullOrBlank() ||
-                                SubtitleLanguageMatching.matchesLanguageCode(
-                                    candidate.language,
-                                    language,
-                                )
-                        }
-                        .distinctBy { it.url }
-                        .toList(),
-                )
+                return snapshot
+                    .asSequence()
+                    .filter { it.url.isNotBlank() && it.url != selectedSubtitleUrl }
+                    .filter { candidate ->
+                        language.isNullOrBlank() ||
+                            SubtitleLanguageMatching.matchesLanguageCode(
+                                candidate.language,
+                                language,
+                            )
+                    }
+                    .distinctBy { it.url }
+                    .toList()
             }
 
             fun fillPrefetchSlots() {
@@ -500,7 +481,7 @@ internal object AutomaticSubtitleSync {
                     pendingSeedLoads.keys.none { it != selectedSubtitleUrl } &&
                     alternatives.isNotEmpty()
                 ) {
-                    val candidate = broadCandidateOrder(alternatives)
+                    val candidate = alternatives
                         .firstOrNull { it.url !in prefetchedAlternativeLoads }
                     if (candidate != null) {
                         val job = async {
@@ -813,9 +794,7 @@ internal object AutomaticSubtitleSync {
 
             fun scheduleMoreLoads() {
                 refreshCandidatePool()
-                val candidatesToSchedule = broadCandidateOrder(
-                    candidateByUrl.values.toList(),
-                ).filter { candidate ->
+                val candidatesToSchedule = candidateByUrl.values.filter { candidate ->
                     candidate.url !in scheduledUrls &&
                         candidate.url !in loadedByUrl
                 }
