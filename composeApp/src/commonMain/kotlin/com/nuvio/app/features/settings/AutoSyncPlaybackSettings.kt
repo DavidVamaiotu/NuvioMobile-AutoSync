@@ -14,6 +14,10 @@ import nuvio.composeapp.generated.resources.settings_playback_auto_sync_mode_agg
 import nuvio.composeapp.generated.resources.settings_playback_auto_sync_mode_aggressive_description
 import nuvio.composeapp.generated.resources.settings_playback_auto_sync_mode_passive
 import nuvio.composeapp.generated.resources.settings_playback_auto_sync_mode_passive_description
+import nuvio.composeapp.generated.resources.settings_playback_auto_sync_tolerance
+import nuvio.composeapp.generated.resources.settings_playback_auto_sync_tolerance_description
+import nuvio.composeapp.generated.resources.settings_playback_auto_sync_tolerance_off
+import nuvio.composeapp.generated.resources.settings_playback_auto_sync_tolerance_value
 import nuvio.composeapp.generated.resources.settings_playback_subtitle_auto_sync
 import nuvio.composeapp.generated.resources.settings_playback_subtitle_auto_sync_description
 import org.jetbrains.compose.resources.stringResource
@@ -35,6 +39,10 @@ internal fun AutoSyncPlaybackSettingsRows(
     val debugLogsEnabled by remember {
         AutoSyncPreferencesRepository.ensureLoaded()
         AutoSyncPreferencesRepository.debugLogsEnabled
+    }.collectAsStateWithLifecycle()
+    val syncToleranceMs by remember {
+        AutoSyncPreferencesRepository.ensureLoaded()
+        AutoSyncPreferencesRepository.syncToleranceMs
     }.collectAsStateWithLifecycle()
 
     if (isIos) return
@@ -75,6 +83,27 @@ internal fun AutoSyncPlaybackSettingsRows(
         enabled = enabled,
         isTablet = isTablet,
         onCheckedChange = AutoSyncPreferencesRepository::setAggressiveMode,
+    )
+    SettingsGroupDivider(isTablet = isTablet)
+    SettingsNavigationRow(
+        title = stringResource(
+            Res.string.settings_playback_auto_sync_tolerance,
+            if (syncToleranceMs > 0) {
+                stringResource(Res.string.settings_playback_auto_sync_tolerance_value, syncToleranceMs)
+            } else {
+                stringResource(Res.string.settings_playback_auto_sync_tolerance_off)
+            },
+        ),
+        description = stringResource(
+            Res.string.settings_playback_auto_sync_tolerance_description,
+        ),
+        enabled = enabled,
+        isTablet = isTablet,
+        onClick = {
+            val options = AutoSyncPreferencesRepository.syncToleranceOptionsMs
+            val next = options[(options.indexOf(syncToleranceMs) + 1) % options.size]
+            AutoSyncPreferencesRepository.setSyncToleranceMs(next)
+        },
     )
     SettingsGroupDivider(isTablet = isTablet)
     SettingsSwitchRow(

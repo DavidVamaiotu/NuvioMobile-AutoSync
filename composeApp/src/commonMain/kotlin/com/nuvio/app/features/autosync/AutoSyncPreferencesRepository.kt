@@ -22,6 +22,11 @@ internal object AutoSyncPreferencesRepository {
     private val _debugLogsEnabled = MutableStateFlow(false)
     val debugLogsEnabled: StateFlow<Boolean> = _debugLogsEnabled.asStateFlow()
 
+    /** Keep the original timing when the needed correction is at most this; 0 disables it. */
+    val syncToleranceOptionsMs = listOf(0, 100, 200, 300, 400, 500)
+    private val _syncToleranceMs = MutableStateFlow(0)
+    val syncToleranceMs: StateFlow<Int> = _syncToleranceMs.asStateFlow()
+
     private var loadedProfileId: Int? = null
     private var loadPersistedValue: (() -> Boolean?)? = null
     private var savePersistedValue: ((Boolean) -> Unit)? = null
@@ -29,6 +34,8 @@ internal object AutoSyncPreferencesRepository {
     private var saveAggressiveModePersistedValue: ((Boolean) -> Unit)? = null
     private var loadDebugLogsPersistedValue: (() -> Boolean?)? = null
     private var saveDebugLogsPersistedValue: ((Boolean) -> Unit)? = null
+    private var loadSyncTolerancePersistedValue: (() -> Int?)? = null
+    private var saveSyncTolerancePersistedValue: ((Int) -> Unit)? = null
     private var lastStartupSessionKey: Int? = null
     private var lastStartupPlaybackKey: String? = null
 
@@ -39,6 +46,8 @@ internal object AutoSyncPreferencesRepository {
         saveAggressiveMode: (Boolean) -> Unit = {},
         loadDebugLogs: () -> Boolean? = { null },
         saveDebugLogs: (Boolean) -> Unit = {},
+        loadSyncToleranceMs: () -> Int? = { null },
+        saveSyncToleranceMs: (Int) -> Unit = {},
     ) {
         loadPersistedValue = load
         savePersistedValue = save
@@ -46,6 +55,8 @@ internal object AutoSyncPreferencesRepository {
         saveAggressiveModePersistedValue = saveAggressiveMode
         loadDebugLogsPersistedValue = loadDebugLogs
         saveDebugLogsPersistedValue = saveDebugLogs
+        loadSyncTolerancePersistedValue = loadSyncToleranceMs
+        saveSyncTolerancePersistedValue = saveSyncToleranceMs
         loadedProfileId = null
     }
 
@@ -56,6 +67,8 @@ internal object AutoSyncPreferencesRepository {
         _preferredSubtitleAutoSyncOnStart.value = loadPersistedValue?.invoke() ?: false
         _aggressiveMode.value = loadAggressiveModePersistedValue?.invoke() ?: true
         _debugLogsEnabled.value = loadDebugLogsPersistedValue?.invoke() ?: false
+        _syncToleranceMs.value = loadSyncTolerancePersistedValue?.invoke()
+            ?.takeIf { it in syncToleranceOptionsMs } ?: 0
         loadedProfileId = profileId
         lastStartupSessionKey = null
         lastStartupPlaybackKey = null
@@ -80,6 +93,13 @@ internal object AutoSyncPreferencesRepository {
         if (_debugLogsEnabled.value == enabled) return
         _debugLogsEnabled.value = enabled
         saveDebugLogsPersistedValue?.invoke(enabled)
+    }
+
+    fun setSyncToleranceMs(toleranceMs: Int) {
+        ensureLoaded()
+        if (toleranceMs !in syncToleranceOptionsMs || _syncToleranceMs.value == toleranceMs) return
+        _syncToleranceMs.value = toleranceMs
+        saveSyncTolerancePersistedValue?.invoke(toleranceMs)
     }
 
     fun claimStartupRun(sessionKey: Int, playbackKey: String): Boolean {

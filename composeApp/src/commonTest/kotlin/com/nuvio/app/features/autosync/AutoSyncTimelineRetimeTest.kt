@@ -715,6 +715,21 @@ class AutoSyncTimelineRetimeTest {
     }
 
     @Test
+    fun maxAlignmentShiftCoversTheWholeSubtitleSpan() {
+        val reference = irregularTimeline(220)
+        val delayed = assertNotNull(
+            AutoSyncTimelineRetimer.retime(reference, shift(reference, -400L), 1.0, 0.0, true),
+        )
+        assertTrue(abs(delayed.maxAlignmentShiftMs() - abs(delayed.alignmentInterceptMs)) < 0.001)
+
+        // No shift at the start, but drift adds up to ~1.3 s by the end: never "within tolerance".
+        val drifting = delayed.copy(alignmentScale = 1.002, alignmentInterceptMs = 0.0)
+        val lastStartMs = drifting.cues.last().originalStartTimeMs
+        assertTrue(abs(drifting.maxAlignmentShiftMs() - lastStartMs * 0.002) < 0.001)
+        assertTrue(drifting.maxAlignmentShiftMs() > 500.0)
+    }
+
+    @Test
     fun rejectedResultReportsFailedGates() {
         val reference = irregularTimeline(240)
         val target = reference.mapIndexed { index, cue ->

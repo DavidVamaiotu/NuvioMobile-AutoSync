@@ -442,7 +442,15 @@ internal class AutoSyncPlayerCoordinator(
 
             val chosenUrl = resolved.subtitleUrl
             val timeline = resolved.timeline
-            val applied = if (chosenUrl == url) {
+            // A confident match whose whole-film correction is within the user's tolerance keeps
+            // the selected subtitle's original timing instead of retiming it.
+            val toleranceMs = AutoSyncPreferencesRepository.syncToleranceMs.value
+            val withinToleranceMs = toleranceMs.takeIf {
+                it > 0 && chosenUrl == url && timeline.maxAlignmentShiftMs() <= it
+            }
+            val applied = if (withinToleranceMs != null) {
+                sidecar.activeSidecarSubtitleKey == url
+            } else if (chosenUrl == url) {
                 applyAutoSyncSidecarTimeline(
                     sidecar = sidecar,
                     url = url,
@@ -527,15 +535,22 @@ internal class AutoSyncPlayerCoordinator(
                     "externalChanged=${chosenUrl != url} groups=${timeline.groups.size} " +
                     "alignment=${timeline.alignmentSource} " +
                     "targetCoverage=${"%.4f".format(timeline.targetCoverage)} " +
-                    "referenceCoverage=${"%.4f".format(timeline.referenceCoverage)} finalDelay=0ms"
+                    "referenceCoverage=${"%.4f".format(timeline.referenceCoverage)} finalDelay=0ms " +
+                    "maxShift=${"%.1f".format(timeline.maxAlignmentShiftMs())}ms " +
+                    "withinTolerance=${withinToleranceMs != null} toleranceMs=$toleranceMs"
             }
             if (AutoSyncDebugLog.ENABLED) {
                 AutoSyncDebugLog.finishAndCopy(
                     context = context,
                     decision =
-                        "APPLIED V2 sidecar timeline bufferPreserved=true " +
-                            "externalChanged=${chosenUrl != url} url=$chosenUrl " +
-                            "alignment=${timeline.alignmentSource}",
+                        if (withinToleranceMs != null) {
+                            "WITHIN TOLERANCE ${withinToleranceMs}ms - original timing kept " +
+                                "url=$chosenUrl alignment=${timeline.alignmentSource}"
+                        } else {
+                            "APPLIED V2 sidecar timeline bufferPreserved=true " +
+                                "externalChanged=${chosenUrl != url} url=$chosenUrl " +
+                                "alignment=${timeline.alignmentSource}"
+                        },
                 )
             }
 
@@ -554,6 +569,7 @@ internal class AutoSyncPlayerCoordinator(
                     interceptMs = timeline.alignmentInterceptMs,
                     assessment = resolved.assessment,
                     localizedMismatchIgnored = timeline.localizedMismatchIgnored,
+                    withinToleranceMs = withinToleranceMs,
                 ),
                 Toast.LENGTH_SHORT,
             ).show()
@@ -580,6 +596,7 @@ private fun buildAutoSyncSuccessToast(
     interceptMs: Double,
     assessment: AutoSyncMatchAssessment,
     localizedMismatchIgnored: Boolean,
+    withinToleranceMs: Int?,
 ): String {
     val prefix =
         "Auto Sync • ${assessment.strength.displayName} match " +
@@ -587,6 +604,7 @@ private fun buildAutoSyncSuccessToast(
     val driftCorrected = abs(scale - 1.0) >= 0.0005
 
     return when {
+        withinToleranceMs != null -> "$prefix • in sync (within $withinToleranceMs ms tolerance)"
         localizedMismatchIgnored -> "$prefix • localized mismatch ignored"
         replacedSubtitle -> "$prefix • subtitle replaced"
         driftCorrected -> "$prefix • drift corrected"

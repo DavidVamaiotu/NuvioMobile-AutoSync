@@ -9,6 +9,7 @@ internal object AutoSyncPreferencesAndroid {
         "preferred_subtitle_auto_sync_on_start"
     private const val aggressiveModeKey = "auto_sync_aggressive_mode"
     private const val debugLogsEnabledKey = "auto_sync_debug_logs_enabled"
+    private const val syncToleranceMsKey = "auto_sync_tolerance_ms"
 
     fun initialize(context: Context) {
         val preferences = context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
@@ -53,6 +54,16 @@ internal object AutoSyncPreferencesAndroid {
                 preferences
                     .edit()
                     .putBoolean(ProfileScopedKey.of(debugLogsEnabledKey), enabled)
+                    .apply()
+            },
+            loadSyncToleranceMs = {
+                val key = ProfileScopedKey.of(syncToleranceMsKey)
+                if (preferences.contains(key)) preferences.getInt(key, 0) else null
+            },
+            saveSyncToleranceMs = { toleranceMs ->
+                preferences
+                    .edit()
+                    .putInt(ProfileScopedKey.of(syncToleranceMsKey), toleranceMs)
                     .apply()
             },
         )
