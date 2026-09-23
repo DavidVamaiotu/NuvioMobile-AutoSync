@@ -34,12 +34,12 @@ data class SubtitleSyncDiagnostics(
     val notice: String? = null,
     /** Why syncing is slower or not possible, when known. */
     val problem: String? = null,
-)
-
-/** Asks the player screen to select the addon subtitle at [url]; [id] makes repeated requests distinct. */
-data class SubtitleSwitchRequest(val url: String, val id: Long) {
+) {
     enum class Phase { Listening, Estimated, Synced, Unavailable }
 }
+
+/** Asks the player screen to select the addon subtitle at [url]; [id] makes repeated requests distinct. */
+data class SubtitleSwitchRequest(val url: String, val id: Long)
 
 /**
  * Bridge between the Android audio sync (which owns the model and analysis) and shared UI.
