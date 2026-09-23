@@ -1063,6 +1063,8 @@
     <string name="settings_playback_duration_hour_one">%1$d hour</string>
     <string name="settings_playback_duration_hours">%1$d hours</string>
     <string name="player_audio_sync_listening">Listening to the audio to sync subtitles…</string>
+    <string name="player_audio_sync_model_downloading">Downloading speech recognition model (%1$s MB) for faster subtitle sync…</string>
+    <string name="player_audio_sync_model_needs_wifi">Connect to Wi-Fi once to download the %1$s MB speech model for faster subtitle sync</string>
     <string name="player_audio_sync_live_only">No look-ahead for %1$s audio on this device, syncing from live audio (slower)</string>
     <string name="player_audio_sync_withdrawn">Couldn't confirm subtitle sync, restored original timing</string>
     <string name="player_audio_sync_estimated">Syncing subtitles to audio (%1$s), fine-tuning…</string>

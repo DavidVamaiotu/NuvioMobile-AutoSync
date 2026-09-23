@@ -29,6 +29,8 @@ interface PlayerEngineController {
         useCustomSubtitles: Boolean = false,
     ) {}
     fun setSubtitleDelayMs(delayMs: Int) {}
+    /** Subtitles available for this stream; used as references by automatic subtitle sync. */
+    fun setSubtitleSyncReferences(subtitles: List<AddonSubtitle>) {}
     fun configureIosVideoOutput(settings: PlayerSettingsUiState) {}
     fun updateNowPlayingMetadata(info: PlayerNowPlayingInfo) {}
     fun clearNowPlayingInfo() {}

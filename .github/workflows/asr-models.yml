@@ -1,0 +1,42 @@
+name: Publish ASR Models
+
+# Mirrors the int8 speech recognition model used by audio subtitle sync into this repository's
+# "asr-models" release, so the app downloads ~74 MB instead of the 310 MB upstream archive.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [audio-sync]
+    paths:
+      - ".github/workflows/asr-models.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download and extract model
+        run: |
+          set -euo pipefail
+          NAME=sherpa-onnx-zipformer-gigaspeech-2023-12-12
+          curl -sSfL "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$NAME.tar.bz2" | tar xj
+          mkdir out
+          cp "$NAME/encoder-epoch-30-avg-1.int8.onnx" out/gigaspeech-encoder.int8.onnx
+          cp "$NAME/decoder-epoch-30-avg-1.int8.onnx" out/gigaspeech-decoder.int8.onnx
+          cp "$NAME/joiner-epoch-30-avg-1.int8.onnx" out/gigaspeech-joiner.int8.onnx
+          cp "$NAME/tokens.txt" out/gigaspeech-tokens.txt
+          ls -l out
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh release view asr-models --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create asr-models --repo "$GITHUB_REPOSITORY" --prerelease --latest=false \
+              --title "Speech recognition models" \
+              --notes "Model files downloaded on demand by audio subtitle sync. sherpa-onnx Zipformer (GigaSpeech), Apache-2.0."
+          fi
+          gh release upload asr-models out/* --repo "$GITHUB_REPOSITORY" --clobber

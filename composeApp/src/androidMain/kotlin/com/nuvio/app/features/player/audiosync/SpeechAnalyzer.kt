@@ -18,6 +18,17 @@ internal class SpeechAnalyzer(
     private val vad: SileroVad,
     private val timeline: SpeechTimeline,
 ) {
+    /** Receives every analysed 16 kHz chunk (after warm-up) with its frame and speech probability. */
+    interface ChunkListener {
+        fun onChunk(frame: Int, chunk: FloatArray, probability: Float)
+
+        /** Audio continuity was lost (seek, dropped input); partial state must be discarded. */
+        fun onReset()
+    }
+
+    @Volatile
+    var chunkListener: ChunkListener? = null
+
     private var sourceRate = 0
     private var kernel: ResampleKernel? = null
 
@@ -45,6 +56,7 @@ internal class SpeechAnalyzer(
         chunkFill = 0
         historyLength = 0
         vad.reset()
+        chunkListener?.onReset()
     }
 
     /** Feeds [count] mono samples starting at media time [timeUs]. */
@@ -68,6 +80,7 @@ internal class SpeechAnalyzer(
         }
         running = true
         vad.reset()
+        chunkListener?.onReset()
         chunkFill = 0
         historyLength = 0
         historyStart = 0L
@@ -109,6 +122,7 @@ internal class SpeechAnalyzer(
                     warmupChunks--
                 } else {
                     timeline.record(frame, probability)
+                    chunkListener?.onChunk(frame, chunk, probability)
                 }
             }
         }

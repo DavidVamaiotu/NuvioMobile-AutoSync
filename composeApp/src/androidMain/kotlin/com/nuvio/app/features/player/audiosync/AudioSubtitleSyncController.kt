@@ -13,6 +13,18 @@ import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.extractor.ExtractorsFactory
 import androidx.media3.extractor.text.CuesWithTiming
 import com.nuvio.app.R
+import com.nuvio.app.features.addons.httpGetTextWithHeaders
+import com.nuvio.app.features.player.parseSidecarTimedCuesRobust
+import com.nuvio.app.features.player.audiosync.asr.AsrLock
+import com.nuvio.app.features.player.audiosync.asr.AsrModel
+import com.nuvio.app.features.player.audiosync.asr.AsrSyncEngine
+import com.nuvio.app.features.player.audiosync.asr.ReferenceSubtitle
+import com.nuvio.app.features.player.audiosync.asr.SherpaSpeechToText
+import com.nuvio.app.features.player.audiosync.asr.SpeechSegmenter
+import com.nuvio.app.features.player.audiosync.asr.SubtitleBridge
+import com.nuvio.app.features.player.audiosync.asr.WordAnchorMatcher
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.runBlocking
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -51,9 +63,41 @@ internal class AudioSubtitleSyncController(
     @Volatile
     private var decoderUnavailable = false
 
-    private class Session(val key: String, val track: SubtitleSpeechTrack) {
+    private class Session(
+        val key: String,
+        val track: SubtitleSpeechTrack,
+        val dialogue: List<Triple<Long, Long, String>>,
+    ) {
         val tracker = AudioSyncTracker(track)
     }
+
+    /** An addon or stream subtitle that could serve as the English reference. */
+    data class ReferenceCandidate(val url: String, val language: String, val headers: Map<String, String>)
+
+    private val fetchPool: ExecutorService = Executors.newFixedThreadPool(3) { runnable ->
+        Thread({
+            Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+            runnable.run()
+        }, "NuvioAudioSyncFetch").apply { isDaemon = true }
+    }
+
+    @Volatile
+    private var candidates: List<ReferenceCandidate> = emptyList()
+
+    /** Parsed dialogue of reference subtitles by url; empty list = failed. */
+    private val parsedReferences = ConcurrentHashMap<String, List<Triple<Long, Long, String>>>()
+    private val pendingReferenceFetches = ConcurrentHashMap.newKeySet<String>()
+
+    @Volatile
+    private var asr: AsrSyncEngine? = null
+
+    @Volatile
+    private var recognizer: SherpaSpeechToText? = null
+    private val recognizerLoading = AtomicBoolean(false)
+
+    @Volatile
+    private var sourceKey: String = ""
+    private val preferences by lazy { appContext.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE) }
 
     @Volatile
     private var session: Session? = null
@@ -107,15 +151,18 @@ internal class AudioSubtitleSyncController(
     /** Called on the main thread from the player's periodic snapshot. */
     fun onPlaybackPosition(positionMs: Long) {
         playbackPositionMs = positionMs.coerceAtLeast(0L)
+        asr?.onPlayhead(playbackPositionMs)
         scheduleAlignment()
     }
 
-    fun onSourceChanged() {
+    fun onSourceChanged(newSourceKey: String) {
+        sourceKey = newSourceKey
         timeline.clear()
         decoder?.discontinuity()
+        asr?.clear()
         selectedAudioFormat = null
         provisionalAudioFormat = null
-        session?.let { current -> session = Session(current.key, current.track) }
+        session?.let { current -> session = Session(current.key, current.track, current.dialogue) }
         model = null
         lockedAtElapsedMs = 0L
         lastAlignVersion = -1L
@@ -139,7 +186,8 @@ internal class AudioSubtitleSyncController(
         lockedAtElapsedMs = 0L
         try {
             aligner.execute {
-                val track = buildTrack(cues)
+                val dialogue = dialogueOf(cues)
+                val track = SubtitleSpeechTrack.fromCues(dialogue)
                 if (sessionRequest.get() != request || released) return@execute
                 if (track.size < MIN_TRACK_CUES) {
                     Log.i(TAG, "subtitle $key has only ${track.size} dialogue cues; audio sync skipped")
@@ -147,17 +195,20 @@ internal class AudioSubtitleSyncController(
                 }
                 createDecoder()
                 if (sessionRequest.get() != request) return@execute
-                session = Session(key, track)
+                val started = Session(key, track, dialogue)
+                session = started
                 Log.i(TAG, "sync session started for $key with ${track.size} dialogue cues")
-                if (enabled) notify(AudioSyncStatus.Listening)
+                if (!enabled) return@execute
+                if (!applyRemembered(started)) notify(AudioSyncStatus.Listening)
+                startRecognition(started)
             }
         } catch (_: Exception) {
             // Executor already shut down: the surface is being released.
         }
     }
 
-    private fun buildTrack(cues: List<CuesWithTiming>): SubtitleSpeechTrack {
-        val dialogue = cues.mapNotNull { entry ->
+    private fun dialogueOf(cues: List<CuesWithTiming>): List<Triple<Long, Long, String>> =
+        cues.mapNotNull { entry ->
             val startUs = entry.startTimeUs
             if (startUs == C.TIME_UNSET) return@mapNotNull null
             val endUs = when {
@@ -168,12 +219,11 @@ internal class AudioSubtitleSyncController(
             val text = entry.cues.joinToString("\n") { it.text?.toString().orEmpty() }
             Triple(startUs / 1_000L, endUs / 1_000L, text)
         }
-        return SubtitleSpeechTrack.fromCues(dialogue)
-    }
 
     fun stopSession() {
         sessionRequest.incrementAndGet()
         lockedAtElapsedMs = 0L
+        asr?.stopSession()
         if (session != null) Log.i(TAG, "sync session stopped")
         session = null
         model = null
@@ -186,11 +236,164 @@ internal class AudioSubtitleSyncController(
         session = null
         model = null
         decoder?.release()
+        asr?.release()
         aligner.shutdownNow()
+        fetchPool.shutdownNow()
+        val loaded = recognizer
+        recognizer = null
+        if (loaded != null) {
+            // The worker may be mid-decode; release once it has had time to finish.
+            Thread({
+                Thread.sleep(RECOGNIZER_RELEASE_DELAY_MS)
+                runCatching { loaded.close() }
+            }, "NuvioAsrRelease").apply { isDaemon = true }.start()
+        }
     }
 
+    /** Subtitles the user could pick; English ones become recognition references. */
+    fun setReferenceSubtitles(list: List<ReferenceCandidate>) {
+        candidates = list
+        // Download the likeliest English references now so a later pick is instant.
+        englishCandidates().take(PREFETCH_REFERENCES).forEach { fetchReference(it, onReady = null) }
+    }
+
+    private fun englishCandidates(): List<ReferenceCandidate> =
+        candidates.filter { isEnglish(it.language) }.distinctBy { it.url }
+
+    private fun fetchReference(candidate: ReferenceCandidate, onReady: ((List<Triple<Long, Long, String>>) -> Unit)?) {
+        parsedReferences[candidate.url]?.let { cached ->
+            if (cached.isNotEmpty()) onReady?.invoke(cached)
+            return
+        }
+        if (!pendingReferenceFetches.add(candidate.url) && onReady == null) return
+        try {
+            fetchPool.execute {
+                val dialogue = parsedReferences[candidate.url] ?: runCatching {
+                    val raw = runBlocking { httpGetTextWithHeaders(url = candidate.url, headers = candidate.headers) }
+                    dialogueOf(parseSidecarTimedCuesRobust(raw, candidate.url).cues)
+                }.getOrElse {
+                    Log.w(TAG, "reference download failed for ${candidate.url}: ${it.message}")
+                    emptyList()
+                }
+                parsedReferences[candidate.url] = dialogue
+                pendingReferenceFetches.remove(candidate.url)
+                if (dialogue.isNotEmpty()) onReady?.invoke(dialogue)
+            }
+        } catch (_: Exception) {
+            // Released.
+        }
+    }
+
+    /**
+     * Speech recognition: English words heard in the dialogue are matched against an English
+     * subtitle (the target itself, or a reference bridged to the target by timing pattern).
+     */
+    private fun startRecognition(current: Session) {
+        val engine = asr ?: return
+        ensureRecognizer()
+        val english = isEnglish(candidates.firstOrNull { it.url == current.key }?.language) ||
+            looksEnglish(current.dialogue)
+        if (english) {
+            engine.startSession(current.track, listOf(ReferenceSubtitle(current.key, current.dialogue, null)))
+            return
+        }
+        engine.startSession(current.track, emptyList())
+        val references = englishCandidates().take(MAX_REFERENCES)
+        if (references.isEmpty()) Log.i(TAG, "no English reference subtitle available; recognition idle")
+        for (candidate in references) {
+            fetchReference(candidate) { dialogue ->
+                if (session !== current) return@fetchReference
+                val referenceTrack = SubtitleSpeechTrack.fromCues(dialogue)
+                val bridge = SubtitleBridge.align(current.track, referenceTrack)
+                Log.i(TAG, "reference ${candidate.url}: bridge=$bridge")
+                if (bridge != null) engine.addReference(ReferenceSubtitle(candidate.url, dialogue, bridge))
+            }
+        }
+    }
+
+    private fun ensureRecognizer() {
+        if (recognizer != null || released) return
+        if (!recognizerLoading.compareAndSet(false, true)) return
+        try {
+            fetchPool.execute {
+                try {
+                    if (!AsrModel.isReady(appContext)) {
+                        if (!AsrModel.isUnmetered(appContext)) {
+                            notify(AudioSyncStatus.ModelNeedsWifi(AsrModel.DOWNLOAD_MB))
+                            return@execute
+                        }
+                        notify(AudioSyncStatus.ModelDownloading(AsrModel.DOWNLOAD_MB))
+                        if (!AsrModel.download(appContext)) {
+                            Log.w(TAG, "speech model download failed; using speech detection only")
+                            return@execute
+                        }
+                    }
+                    val loaded = SherpaSpeechToText(AsrModel.directory(appContext), RECOGNIZER_THREADS)
+                    if (released) {
+                        loaded.close()
+                        return@execute
+                    }
+                    recognizer = loaded
+                    asr?.setRecognizer(loaded)
+                    Log.i(TAG, "speech recognizer ready")
+                } catch (error: Throwable) {
+                    Log.w(TAG, "speech recognizer unavailable: ${error.message}")
+                } finally {
+                    recognizerLoading.set(false)
+                }
+            }
+        } catch (_: Exception) {
+            recognizerLoading.set(false)
+        }
+    }
+
+    private fun onAsrLock(result: AsrLock) {
+        val current = session ?: return
+        if (!enabled || released) return
+        val adopted = SubtitleSyncModel(listOf(SubtitleSyncSegment(0L, result.scale, result.shiftMs)))
+        val previous = model
+        if (previous == null) manualDelayAtLockMs = manualDelayMs()
+        current.tracker.adopt(adopted)
+        model = adopted
+        if (result.final) lockedAtElapsedMs = SystemClock.elapsedRealtime()
+        remember(current.key, adopted)
+        val offsetMs = adopted.delayUsAt(playbackPositionMs * 1_000L) / 1_000L
+        Log.i(TAG, "RECOGNITION LOCK $adopted via ${result.referenceKey} fine=${result.fineTuned} final=${result.final}")
+        val previousOffsetMs = previous?.delayUsAt(playbackPositionMs * 1_000L)?.div(1_000L)
+        if (previousOffsetMs == null || kotlin.math.abs(previousOffsetMs - offsetMs) >= NOTIFY_CHANGE_MS) {
+            notify(AudioSyncStatus.Synced(offsetMs = offsetMs, rateCorrected = result.scale != 1.0))
+        }
+    }
+
+    private fun rememberKey(subtitleKey: String): String = "${sourceKey.hashCode()}:${subtitleKey.hashCode()}"
+
+    private fun remember(subtitleKey: String, synced: SubtitleSyncModel) {
+        val segment = synced.segments.firstOrNull() ?: return
+        runCatching {
+            preferences.edit().putString(rememberKey(subtitleKey), "${segment.scale};${segment.shiftMs}").apply()
+        }
+    }
+
+    /** Applies the mapping found the last time this subtitle played on this stream. */
+    private fun applyRemembered(current: Session): Boolean {
+        val stored = runCatching { preferences.getString(rememberKey(current.key), null) }.getOrNull() ?: return false
+        val parts = stored.split(';')
+        val scale = parts.getOrNull(0)?.toDoubleOrNull() ?: return false
+        val shiftMs = parts.getOrNull(1)?.toDoubleOrNull() ?: return false
+        val restored = SubtitleSyncModel(listOf(SubtitleSyncSegment(0L, scale, shiftMs)))
+        manualDelayAtLockMs = manualDelayMs()
+        current.tracker.adopt(restored)
+        model = restored
+        Log.i(TAG, "restored remembered sync $restored")
+        notify(AudioSyncStatus.Synced(offsetMs = restored.delayUsAt(playbackPositionMs * 1_000L) / 1_000L, rateCorrected = scale != 1.0))
+        return true
+    }
+
+    /** Before any subtitle is picked, listen to the first minutes so a pick can sync at once. */
+    private fun listening(): Boolean = session != null || timeline.knownFrameCount() < PRE_SESSION_FRAMES
+
     override fun wantsSamples(format: Format): Boolean {
-        if (!enabled || released || session == null || decoderUnavailable) return false
+        if (!enabled || released || decoderUnavailable || !listening()) return false
         val selected = selectedAudioFormat
         if (selected != null) return matches(format, selected)
         val provisional = provisionalAudioFormat ?: format.also { provisionalAudioFormat = it }
@@ -212,7 +415,7 @@ internal class AudioSubtitleSyncController(
      * without a usable second decoder, HLS/DASH streams, or gaps. Otherwise it is skipped cheaply.
      */
     override fun wantsPlaybackPcm(mediaTimeUs: Long, durationUs: Long): Boolean {
-        if (!enabled || released || session == null || decoder == null) return false
+        if (!enabled || released || decoder == null || !listening()) return false
         if (mediaTimeUs < 0 || !inDutyWindow(mediaTimeUs)) return false
         val from = SpeechTimeline.frameForTimeUs(mediaTimeUs)
         val to = SpeechTimeline.frameForTimeUs(mediaTimeUs + durationUs) + 1
@@ -246,6 +449,16 @@ internal class AudioSubtitleSyncController(
         }
         val analyzer = SpeechAnalyzer(SileroVad(weights), timeline)
         val liveAnalyzer = SpeechAnalyzer(SileroVad(weights), timeline)
+        val engine = AsrSyncEngine(
+            timeline = timeline,
+            onLock = ::onAsrLock,
+            log = { Log.i(TAG, it) },
+            workerSetup = { Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND) },
+        )
+        recognizer?.let(engine::setRecognizer)
+        asr = engine
+        analyzer.chunkListener = SpeechSegmenter(engine::offerSegment)
+        liveAnalyzer.chunkListener = SpeechSegmenter(engine::offerSegment)
         return AudioSyncDecoder(analyzer, liveAnalyzer) { mime ->
             Log.i(TAG, "look-ahead capture unavailable for $mime; syncing from playback audio instead")
             if (session != null) notify(AudioSyncStatus.LiveOnly(mime))
@@ -355,6 +568,29 @@ internal class AudioSubtitleSyncController(
         private const val MIN_TRACK_CUES = 20
         private const val ALIGN_INTERVAL_MS = 8_000L
         private const val SEARCH_INTERVAL_MS = 3_000L
+        private const val PREFERENCES = "nuvio_audio_sync"
+        private const val PREFETCH_REFERENCES = 2
+        private const val MAX_REFERENCES = 3
+        private const val RECOGNIZER_THREADS = 2
+        private const val RECOGNIZER_RELEASE_DELAY_MS = 3_000L
+        private const val NOTIFY_CHANGE_MS = 1_000L
+        /** 10 minutes of audio analysed before any subtitle is chosen. */
+        private val PRE_SESSION_FRAMES = (10 * 60 * 1_000 / SpeechTimeline.FRAME_DURATION_MS).toInt()
+
+        private val englishStopWords = setOf("the", "and", "you", "to", "is", "it", "that", "of", "what", "this", "don't", "we", "your", "are", "have")
+
+        private fun isEnglish(language: String?): Boolean {
+            val value = language?.trim()?.lowercase() ?: return false
+            return value == "en" || value == "eng" || value.startsWith("en-") || value.startsWith("en_") ||
+                value.contains("english")
+        }
+
+        /** True when a good share of the words are common English function words. */
+        private fun looksEnglish(dialogue: List<Triple<Long, Long, String>>): Boolean {
+            val words = dialogue.asSequence().flatMap { WordAnchorMatcher.tokenize(it.third) }.take(2_000).toList()
+            if (words.size < 50) return false
+            return words.count { it in englishStopWords } >= words.size * 0.15
+        }
         private const val FULL_ANALYSIS_AFTER_LOCK_MS = 10 * 60_000L
         private const val DUTY_WINDOW_US = 60_000_000L
         private const val DUTY_CYCLE = 3L
@@ -392,6 +628,12 @@ internal class AudioSubtitleSyncController(
 internal sealed interface AudioSyncStatus {
     /** A subtitle was picked and the audio is being analysed. */
     data object Listening : AudioSyncStatus
+
+    /** The speech model is being downloaded (once). */
+    data class ModelDownloading(val megabytes: Int) : AudioSyncStatus
+
+    /** The speech model is missing and the connection is metered; syncing uses speech detection only. */
+    data class ModelNeedsWifi(val megabytes: Int) : AudioSyncStatus
 
     /** No second decoder for this codec: syncing uses the playing audio only, without look-ahead. */
     data class LiveOnly(val mimeType: String) : AudioSyncStatus

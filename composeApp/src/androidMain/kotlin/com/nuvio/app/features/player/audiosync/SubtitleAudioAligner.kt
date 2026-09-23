@@ -63,12 +63,14 @@ internal object SubtitleAudioAligner {
         scales: DoubleArray = CANDIDATE_SCALES,
         minShiftMs: Double,
         maxShiftMs: Double,
+        /** Latency of the speech detector; 0 when [probabilities] is not detector output. */
+        detectorBiasMs: Double = DETECTOR_BIAS_MS,
     ): Estimate? {
         val n = probabilities.size
         if (n < 2 || track.size == 0) return null
         val frameMs = SpeechTimeline.FRAME_DURATION_MS
-        val minLag = Math.floorDiv((minShiftMs + DETECTOR_BIAS_MS).roundToInt(), frameMs.toInt())
-        val maxLag = Math.floorDiv((maxShiftMs + DETECTOR_BIAS_MS).roundToInt(), frameMs.toInt()) + 1
+        val minLag = Math.floorDiv((minShiftMs + detectorBiasMs).roundToInt(), frameMs.toInt())
+        val maxLag = Math.floorDiv((maxShiftMs + detectorBiasMs).roundToInt(), frameMs.toInt()) + 1
         val lagCount = maxLag - minLag + 1
 
         // Centre the known probabilities; unknown frames get weight zero.
@@ -113,7 +115,7 @@ internal object SubtitleAudioAligner {
         for (scale in scales) {
             val g = track.render(fromFrame - maxLag, fromFrame - maxLag + gLength, scale)
             val estimate = correlate(
-                fft, audioRe, audioIm, g, n, count, norm, minLag, maxLag, scale, frameMs,
+                fft, audioRe, audioIm, g, n, count, norm, minLag, maxLag, scale, frameMs, detectorBiasMs,
             ) ?: continue
             val cues = track.countCuesIn(
                 fromMs = fromFrame * frameMs,
@@ -155,6 +157,7 @@ internal object SubtitleAudioAligner {
         maxLag: Int,
         scale: Double,
         frameMs: Double,
+        detectorBiasMs: Double,
     ): Estimate? {
         val size = fft.size
         // Subtitle side, packed as (g + i * g^2).
@@ -235,7 +238,7 @@ internal object SubtitleAudioAligner {
         val edgeFrames = (EDGE_MARGIN_MS / frameMs).toInt()
         return Estimate(
             scale = scale,
-            shiftMs = lagFrames * frameMs - DETECTOR_BIAS_MS,
+            shiftMs = lagFrames * frameMs - detectorBiasMs,
             peak = peak,
             prominence = if (runnerUp.isFinite()) peak - runnerUp else peak,
             analysedSeconds = n * frameMs / 1_000.0,

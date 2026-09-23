@@ -186,6 +186,10 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
         playerController?.setSubtitleDelayMs(subtitleDelayMs)
     }
 
+    LaunchedEffect(playerController, addonSubtitles) {
+        playerController?.setSubtitleSyncReferences(addonSubtitles)
+    }
+
     LaunchedEffect(selectedAddonSubtitleId, useCustomSubtitles, activeSourceUrl) {
         subtitleAutoSyncState = SubtitleAutoSyncUiState()
     }

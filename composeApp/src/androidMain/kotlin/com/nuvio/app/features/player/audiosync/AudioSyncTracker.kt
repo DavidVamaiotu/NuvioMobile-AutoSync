@@ -117,6 +117,18 @@ internal class AudioSyncTracker(
         data class Unchanged(val estimate: SubtitleAudioAligner.Estimate?) : Outcome
     }
 
+    /**
+     * Takes a mapping found elsewhere (speech recognition, a remembered result) as the confirmed
+     * lock; from here on this tracker only refines it and watches for jumps.
+     */
+    fun adopt(adopted: SubtitleSyncModel) {
+        model = adopted
+        provisionalModel = null
+        pendingJump = null
+        agreeingRuns = 0
+        disagreeingRuns = 0
+    }
+
     fun update(timeline: SpeechTimeline, playbackPositionMs: Long): Outcome {
         val known = timeline.knownRange() ?: return Outcome.NotEnoughEvidence
         val current = model

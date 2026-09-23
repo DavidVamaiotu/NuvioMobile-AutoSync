@@ -485,7 +485,7 @@ private fun ExoPlayerSurface(
 
     LaunchedEffect(audioSubtitleSync, playerSourceKey) {
         audioSubtitleSync.enabled = playerSettings.audioSubtitleSyncEnabled
-        audioSubtitleSync.onSourceChanged()
+        audioSubtitleSync.onSourceChanged(sourceUrl)
     }
 
     LaunchedEffect(exoPlayer, resolvedMediaItem, initialPositionRequestKey) {
@@ -971,6 +971,18 @@ private fun ExoPlayerSurface(
 
                 override fun setSubtitleDelayMs(delayMs: Int) {
                     subtitleDelayMs = delayMs.coerceIn(SUBTITLE_DELAY_MIN_MS, SUBTITLE_DELAY_MAX_MS)
+                }
+
+                override fun setSubtitleSyncReferences(subtitles: List<AddonSubtitle>) {
+                    audioSubtitleSync.setReferenceSubtitles(
+                        subtitles.map { subtitle ->
+                            AudioSubtitleSyncController.ReferenceCandidate(
+                                url = subtitle.url,
+                                language = subtitle.language,
+                                headers = externalSubtitles.firstOrNull { it.url == subtitle.url }?.headers.orEmpty(),
+                            )
+                        },
+                    )
                 }
             }
         )
@@ -2365,6 +2377,8 @@ private class SubtitleOffsetRenderer(
 private suspend fun AudioSyncStatus.toastMessage(): String? = when (this) {
     AudioSyncStatus.Listening -> getString(Res.string.player_audio_sync_listening)
     AudioSyncStatus.Withdrawn -> getString(Res.string.player_audio_sync_withdrawn)
+    is AudioSyncStatus.ModelDownloading -> getString(Res.string.player_audio_sync_model_downloading, megabytes)
+    is AudioSyncStatus.ModelNeedsWifi -> getString(Res.string.player_audio_sync_model_needs_wifi, megabytes)
     is AudioSyncStatus.LiveOnly -> getString(
         Res.string.player_audio_sync_live_only,
         mimeType.substringAfter('/').uppercase(),
