@@ -1,6 +1,6 @@
 name: AutoSync Release
 
-# Release trigger: restore first working SDH PGS timing path
+# Release trigger: publish latest AutoSync accuracy and prefetch improvements
 
 
 on:
