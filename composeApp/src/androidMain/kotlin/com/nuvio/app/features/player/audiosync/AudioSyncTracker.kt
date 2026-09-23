@@ -37,9 +37,47 @@ internal class SubtitleSyncModel(val segments: List<SubtitleSyncSegment>) {
  * Pure logic so it can be replayed off-device; [update] is called periodically from a background
  * thread with the growing [SpeechTimeline].
  */
-internal class AudioSyncTracker(private val track: SubtitleSpeechTrack) {
+internal class AudioSyncTracker(
+    private val track: SubtitleSpeechTrack,
+    private val provisionalPolicy: ProvisionalPolicy = ProvisionalPolicy(),
+) {
+    /**
+     * Thresholds for the early, unconfirmed estimate shown while evidence is still thin. Looser
+     * than the lock, but it must repeat on two consecutive runs before it is applied.
+     */
+    data class ProvisionalPolicy(
+        val enabled: Boolean = true,
+        val minKnownSeconds: Double = 20.0,
+        val minCues: Int = 6,
+        val minSpeechSeconds: Double = 5.0,
+        val minProminence: Double = 0.10,
+        val agreementMs: Double = 300.0,
+        val minMovementMs: Double = 120.0,
+        /** Consecutive runs that must agree before the estimate is applied. */
+        val requiredRepeats: Int = 3,
+        /**
+         * Frame-rate mismatches are rare and easy to confuse on little evidence, so early estimates
+         * assume the normal rate; the confirmed lock still detects them.
+         */
+        val unitScaleOnly: Boolean = true,
+        /**
+         * Runs a few seconds apart share almost all their audio, so agreement alone proves little.
+         * The agreeing streak must also span at least this much newly analysed audio.
+         */
+        val minEvidenceGrowthSeconds: Double = 20.0,
+    )
+
+    /** Confirmed mapping, or null while still searching. */
     var model: SubtitleSyncModel? = null
         private set
+
+    /** Best unconfirmed mapping so far; superseded by [model] once confirmed. */
+    var provisionalModel: SubtitleSyncModel? = null
+        private set
+
+    private var previousCandidate: SubtitleAudioAligner.Estimate? = null
+    private var agreeingRuns = 0
+    private var streakStartAnalysedSeconds = 0.0
 
     var lastEstimate: SubtitleAudioAligner.Estimate? = null
         private set
@@ -50,6 +88,7 @@ internal class AudioSyncTracker(private val track: SubtitleSpeechTrack) {
     sealed interface Outcome {
         data object NotEnoughEvidence : Outcome
         data class Searching(val estimate: SubtitleAudioAligner.Estimate?) : Outcome
+        data class Provisional(val model: SubtitleSyncModel, val estimate: SubtitleAudioAligner.Estimate) : Outcome
         data class Locked(val model: SubtitleSyncModel, val estimate: SubtitleAudioAligner.Estimate) : Outcome
         data class Refined(val model: SubtitleSyncModel, val estimate: SubtitleAudioAligner.Estimate) : Outcome
         data class Jumped(val model: SubtitleSyncModel, val estimate: SubtitleAudioAligner.Estimate) : Outcome
@@ -65,7 +104,10 @@ internal class AudioSyncTracker(private val track: SubtitleSpeechTrack) {
     private fun search(timeline: SpeechTimeline, known: IntRange): Outcome {
         val to = known.last + 1
         val from = maxOf(known.first, to - MAX_ANALYSIS_FRAMES)
-        if (timeline.knownFramesIn(from, to) < MIN_KNOWN_FRAMES) return Outcome.NotEnoughEvidence
+        val knownFrames = timeline.knownFramesIn(from, to)
+        val provisionalFrames = (provisionalPolicy.minKnownSeconds * FRAMES_PER_SECOND).toInt()
+        val minFrames = if (provisionalPolicy.enabled) minOf(MIN_KNOWN_FRAMES, provisionalFrames) else MIN_KNOWN_FRAMES
+        if (knownFrames < minFrames) return Outcome.NotEnoughEvidence
         val probabilities = timeline.snapshot(from, to)
         val estimate = SubtitleAudioAligner.estimate(
             probabilities = probabilities,
@@ -80,13 +122,68 @@ internal class AudioSyncTracker(private val track: SubtitleSpeechTrack) {
         } else {
             ACCEPT_PROMINENCE + NON_STANDARD_RATE_PENALTY
         }
-        if (!hasEnoughEvidence(estimate) || estimate.atSearchEdge || estimate.prominence < requiredProminence) {
-            return Outcome.Searching(estimate)
+        val lockable = knownFrames >= MIN_KNOWN_FRAMES && hasEnoughEvidence(estimate) &&
+            !estimate.atSearchEdge && estimate.prominence >= requiredProminence &&
+            confirmedByBothHalves(probabilities, from, estimate)
+        if (lockable) {
+            val locked = SubtitleSyncModel(listOf(SubtitleSyncSegment(0L, estimate.scale, estimate.shiftMs)))
+            model = locked
+            provisionalModel = null
+            return Outcome.Locked(locked, estimate)
         }
-        if (!confirmedByBothHalves(probabilities, from, estimate)) return Outcome.Searching(estimate)
-        val locked = SubtitleSyncModel(listOf(SubtitleSyncSegment(0L, estimate.scale, estimate.shiftMs)))
-        model = locked
-        return Outcome.Locked(locked, estimate)
+        val candidate = if (!provisionalPolicy.unitScaleOnly || estimate.scale == 1.0) {
+            estimate
+        } else {
+            SubtitleAudioAligner.estimate(
+                probabilities = probabilities,
+                fromFrame = from,
+                track = track,
+                scales = doubleArrayOf(1.0),
+                minShiftMs = -MAX_SHIFT_MS,
+                maxShiftMs = MAX_SHIFT_MS,
+            ) ?: return Outcome.Searching(estimate)
+        }
+        return provisional(candidate) ?: Outcome.Searching(estimate)
+    }
+
+    /**
+     * Applies the current best guess early when it repeats on consecutive runs, so subtitles move
+     * within the first minute instead of waiting for the full confirmation. It keeps being updated
+     * as evidence grows and is replaced by the confirmed lock.
+     */
+    private fun provisional(estimate: SubtitleAudioAligner.Estimate): Outcome? {
+        val policy = provisionalPolicy
+        val previous = previousCandidate
+        previousCandidate = estimate
+        if (!policy.enabled) return null
+        val requiredProminence = if (isStandardRate(estimate.scale)) {
+            policy.minProminence
+        } else {
+            policy.minProminence + NON_STANDARD_RATE_PENALTY
+        }
+        val credible = !estimate.atSearchEdge &&
+            estimate.cueCount >= policy.minCues &&
+            estimate.speechSeconds >= policy.minSpeechSeconds &&
+            estimate.prominence >= requiredProminence
+        val agrees = previous != null && previous.scale == estimate.scale &&
+            abs(previous.shiftMs - estimate.shiftMs) <= policy.agreementMs
+        agreeingRuns = when {
+            !credible -> 0
+            agrees -> agreeingRuns + 1
+            else -> 1
+        }
+        if (agreeingRuns == 1) streakStartAnalysedSeconds = estimate.analysedSeconds
+        if (agreeingRuns < policy.requiredRepeats) return null
+        if (estimate.analysedSeconds - streakStartAnalysedSeconds < policy.minEvidenceGrowthSeconds) return null
+        val current = provisionalModel?.segments?.first()
+        if (current != null && current.scale == estimate.scale &&
+            abs(current.shiftMs - estimate.shiftMs) < policy.minMovementMs
+        ) {
+            return null
+        }
+        val updated = SubtitleSyncModel(listOf(SubtitleSyncSegment(0L, estimate.scale, estimate.shiftMs)))
+        provisionalModel = updated
+        return Outcome.Provisional(updated, estimate)
     }
 
     /**

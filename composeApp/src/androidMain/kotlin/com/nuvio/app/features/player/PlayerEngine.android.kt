@@ -2364,6 +2364,7 @@ private class SubtitleOffsetRenderer(
 
 private suspend fun AudioSyncStatus.toastMessage(): String? = when (this) {
     AudioSyncStatus.Listening -> getString(Res.string.player_audio_sync_listening)
+    is AudioSyncStatus.Estimated -> getString(Res.string.player_audio_sync_estimated, formatSyncOffset(offsetMs))
     is AudioSyncStatus.Synced -> getString(
         if (rateCorrected) Res.string.player_audio_sync_synced_rate else Res.string.player_audio_sync_synced,
         formatSyncOffset(offsetMs),

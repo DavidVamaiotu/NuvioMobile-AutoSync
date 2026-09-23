@@ -117,6 +117,7 @@ internal class AudioSubtitleSyncController(
         provisionalAudioFormat = null
         session?.let { current -> session = Session(current.key, current.track) }
         model = null
+        lockedAtElapsedMs = 0L
         lastAlignVersion = -1L
     }
 
@@ -135,6 +136,7 @@ internal class AudioSubtitleSyncController(
         val request = sessionRequest.incrementAndGet()
         session = null
         model = null
+        lockedAtElapsedMs = 0L
         try {
             aligner.execute {
                 val track = buildTrack(cues)
@@ -171,6 +173,7 @@ internal class AudioSubtitleSyncController(
 
     fun stopSession() {
         sessionRequest.incrementAndGet()
+        lockedAtElapsedMs = 0L
         if (session != null) Log.i(TAG, "sync session stopped")
         session = null
         model = null
@@ -225,7 +228,7 @@ internal class AudioSubtitleSyncController(
      * later jumps while saving most of the CPU.
      */
     private fun inDutyWindow(timeUs: Long): Boolean {
-        if (model == null || lockedAtElapsedMs == 0L) return true
+        if (session?.tracker?.model == null || lockedAtElapsedMs == 0L) return true
         if (SystemClock.elapsedRealtime() - lockedAtElapsedMs < FULL_ANALYSIS_AFTER_LOCK_MS) return true
         return (timeUs / DUTY_WINDOW_US) % DUTY_CYCLE == 0L
     }
@@ -253,7 +256,9 @@ internal class AudioSubtitleSyncController(
         if (!enabled || released) return
         val now = SystemClock.elapsedRealtime()
         val version = timeline.version
-        if (current === lastAlignedSession && (version == lastAlignVersion || now - lastAlignAtMs < ALIGN_INTERVAL_MS)) {
+        // Check often while searching so an early estimate lands quickly; relax once confirmed.
+        val interval = if (current.tracker.model == null) SEARCH_INTERVAL_MS else ALIGN_INTERVAL_MS
+        if (current === lastAlignedSession && (version == lastAlignVersion || now - lastAlignAtMs < interval)) {
             return
         }
         if (!alignRunning.compareAndSet(false, true)) return
@@ -282,8 +287,21 @@ internal class AudioSubtitleSyncController(
         if (session !== current) return
         val elapsed = SystemClock.elapsedRealtime() - startedAt
         when (outcome) {
+            is AudioSyncTracker.Outcome.Provisional -> {
+                val first = model == null
+                if (first) manualDelayAtLockMs = manualDelayMs()
+                model = outcome.model
+                Log.i(TAG, "provisional ${outcome.model} ${describe(outcome.estimate)} in ${elapsed}ms")
+                if (first) {
+                    notify(
+                        AudioSyncStatus.Estimated(
+                            offsetMs = outcome.model.delayUsAt(positionMs * 1_000L) / 1_000L,
+                        ),
+                    )
+                }
+            }
             is AudioSyncTracker.Outcome.Locked -> {
-                manualDelayAtLockMs = manualDelayMs()
+                if (model == null) manualDelayAtLockMs = manualDelayMs()
                 lockedAtElapsedMs = SystemClock.elapsedRealtime()
                 model = outcome.model
                 Log.i(TAG, "LOCKED ${outcome.model} ${describe(outcome.estimate)} in ${elapsed}ms")
@@ -330,6 +348,7 @@ internal class AudioSubtitleSyncController(
         private const val TAG = "NuvioAudioSync"
         private const val MIN_TRACK_CUES = 20
         private const val ALIGN_INTERVAL_MS = 8_000L
+        private const val SEARCH_INTERVAL_MS = 3_000L
         private const val FULL_ANALYSIS_AFTER_LOCK_MS = 10 * 60_000L
         private const val DUTY_WINDOW_US = 60_000_000L
         private const val DUTY_CYCLE = 3L
@@ -367,6 +386,9 @@ internal class AudioSubtitleSyncController(
 internal sealed interface AudioSyncStatus {
     /** A subtitle was picked and the audio is being analysed. */
     data object Listening : AudioSyncStatus
+
+    /** An early, unconfirmed estimate was applied; it keeps adjusting until confirmed. */
+    data class Estimated(val offsetMs: Long) : AudioSyncStatus
 
     /** Subtitles now follow the audio; [offsetMs] is the applied delay at the playhead. */
     data class Synced(val offsetMs: Long, val rateCorrected: Boolean) : AudioSyncStatus
