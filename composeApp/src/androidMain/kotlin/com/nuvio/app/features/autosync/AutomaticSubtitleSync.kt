@@ -1192,6 +1192,26 @@ internal object AutomaticSubtitleSync {
                     bestMatch = familyBest
                     bestFamily = family
                 }
+
+                if (
+                    !family.abandoned &&
+                    familyBest?.timeline?.confident != true &&
+                    AutoSyncNoFitTracker.isNoFit(pairMatch?.timeline)
+                ) {
+                    val referenceActivity = preparedReferenceActivity(
+                        completed.hypothesis.rankedReference.track,
+                        referenceActivityCache,
+                    )
+                    if (referenceActivity != null && family.noFit.recordNoFit(referenceActivity)) {
+                        family.abandoned = true
+                        val skippedPairs = queuedPairs.count { it.family === family }
+                        queuedPairs.removeAll { it.family === family }
+                        AutoSyncDebugLog.info {
+                            "GLOBAL scheduler abandoned candidate=${family.representative.index} " +
+                                "noFitSources=${family.noFit.sourceCount} skippedPairs=$skippedPairs"
+                        }
+                    }
+                }
             }
 
             suspend fun drainCompletedPairs() {
@@ -2487,6 +2507,8 @@ internal object AutomaticSubtitleSync {
         var completedUsableAttempts: Int = 0,
         var best: TimelineRetimeMatch? = null,
         var bestSchedulingScore: Double = Double.NEGATIVE_INFINITY,
+        val noFit: AutoSyncNoFitTracker = AutoSyncNoFitTracker(),
+        var abandoned: Boolean = false,
     )
     private data class PairHypothesis(
         val family: CandidateTimingFamilyState,

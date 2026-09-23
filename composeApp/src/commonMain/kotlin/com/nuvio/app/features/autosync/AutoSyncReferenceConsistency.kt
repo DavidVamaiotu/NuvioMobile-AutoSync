@@ -32,8 +32,7 @@ internal object AutoSyncReferenceConsistency {
         val sources = mutableListOf<MutableList<Reference>>()
         for (reference in references.take(MAX_CHECKED_REFERENCES)) {
             val sameSource = sources.firstOrNull { source ->
-                fineActivityOverlap(source.first().activity, reference.activity) >=
-                    SAME_SOURCE_MIN_OVERLAP
+                isSameSource(source.first().activity, reference.activity)
             }
             if (sameSource != null) sameSource += reference else sources += mutableListOf(reference)
         }
@@ -71,6 +70,12 @@ internal object AutoSyncReferenceConsistency {
         ) ?: return false
         return abs(alignment.offsetMs) <= MAX_AGREEING_OFFSET_MS
     }
+
+    /** Near-identical timing (e.g. CHS / CHT / bilingual variants of one source). */
+    internal fun isSameSource(
+        first: AutoSyncTimelineRetimer.PreparedActivity,
+        second: AutoSyncTimelineRetimer.PreparedActivity,
+    ): Boolean = fineActivityOverlap(first, second) >= SAME_SOURCE_MIN_OVERLAP
 
     /** Jaccard overlap of the 100 ms activity bins at zero offset. */
     private fun fineActivityOverlap(
