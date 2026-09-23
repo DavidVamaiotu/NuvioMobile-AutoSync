@@ -1,0 +1,221 @@
+name: Update AutoSync release notes
+
+on:
+  push:
+    branches:
+      - subtitle-autosync
+    paths:
+      - ".github/workflows/update-autosync-release-notes.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  update-release-notes:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update existing release descriptions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > /tmp/release-391639166.md <<'REL_391639166'
+AutoSync build based on official Nuvio 0.4.24-beta.
+
+## Initial AutoSync release
+- Added Android automatic subtitle synchronization.
+- Matches subtitle timing rather than subtitle text, allowing different subtitle languages to synchronize against embedded references.
+- Uses indexed Matroska subtitle cues when available, with Media3 live subtitle capture as fallback.
+- Added constant-offset estimation plus timeline scale/drift estimation.
+- Added match validation using participation, residual error, spacing/pattern agreement, consecutive matches and offset confidence.
+- Added embedded-reference classification to prefer full-dialogue tracks and de-prioritize SDH-style references.
+- Deduplicates embedded subtitle tracks with equivalent timing.
+- Added candidate/reference caching, parallel subtitle downloads and cancellation for faster fallback searches.
+- Added manual AutoSync and optional AutoSync-on-start behavior.
+- Added optional verbose AutoSync debug logging.
+- Added fork-specific update, upstream-sync and release-mirroring workflows.
+
+This is the original pre-V2 AutoSync implementation.
+REL_391639166
+          jq -n --rawfile body /tmp/release-391639166.md '{body:$body}' \
+            | gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/391639166" --input -
+
+          cat > /tmp/release-392137651.md <<'REL_392137651'
+AutoSync build based on official Nuvio 0.4.25-beta.
+
+## What changed
+- Updated the fork to official Nuvio 0.4.25-beta while preserving the existing AutoSync implementation.
+- Changed upstream synchronization to preserve the fork's AutoSync-specific GitHub Actions workflows.
+- Fixed upstream-sync workflow permissions and release mirroring reliability.
+
+## Upstream Nuvio 0.4.25
+Includes Infuse playback callbacks/progress, shared Simkl fixes, home hero fixes, UI/style changes and translation updates.
+
+AutoSync matching itself remained essentially unchanged from the previous release.
+REL_392137651
+          jq -n --rawfile body /tmp/release-392137651.md '{body:$body}' \
+            | gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/392137651" --input -
+
+          cat > /tmp/release-392671862.md <<'REL_392671862'
+AutoSync build based on official Nuvio 0.4.25-beta.
+
+## AutoSync V2
+This release replaced the original matcher with the V2 timeline-based architecture.
+
+- Added subtitle activity-correlation matching across the whole movie.
+- Added affine scale/intercept estimation for progressive drift and FPS-style timing differences.
+- Added a fast delay-only path for constant offsets, with V2 structural validation.
+- Added cue/group dynamic-programming matching for 1:1, 1:2, 2:1, 1:3, 3:1 and 2:2 segmentation.
+- Improved merged/split subtitle handling and overlap prevention.
+- Added stability guards so near-unit drift is not accepted from weak local evidence.
+- Added indexed subtitle timelines for Matroska and MP4/MOV.
+- Added a global delay preflight and best-first candidate/reference scheduler.
+- Ranked references by suitability and timing affinity.
+- Reused parsed subtitles, activity preparation and correlation evidence to reduce duplicate work.
+- Added bounded parallel downloads/parsing/matching plus aggressive cancellation of obsolete work.
+- Added Aggressive and Passive AutoSync modes.
+- Separated startup search behavior from manual selected-subtitle synchronization.
+- Isolated AutoSync behind minimal player hooks and added dedicated integration/matcher tests.
+
+This is the release where the current AutoSync architecture was established.
+REL_392671862
+          jq -n --rawfile body /tmp/release-392671862.md '{body:$body}' \
+            | gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/392671862" --input -
+
+          cat > /tmp/release-392980234.md <<'REL_392980234'
+AutoSync build based on official Nuvio 0.4.26-beta.
+
+## AutoSync changes
+- Added definitive detection for containers that contain no subtitle tracks.
+- Matroska with no subtitle tracks and MP4 with no text tracks now return an explicit no-subtitles result.
+- Skips the unnecessary Media3 fallback wait when the container is known to have no embedded subtitles.
+- Added a dedicated **No subtitles in tracks** user notification instead of reporting a generic unreliable match.
+
+## Upstream Nuvio 0.4.26
+Includes the official stream/addon filtering changes and translation updates.
+REL_392980234
+          jq -n --rawfile body /tmp/release-392980234.md '{body:$body}' \
+            | gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/392980234" --input -
+
+          cat > /tmp/release-393082184.md <<'REL_393082184'
+AutoSync build based on official Nuvio 0.4.26-beta.
+
+## What changed
+- Improved embedded reference selection so usable normal full-dialogue tracks are always preferred.
+- Forced subtitle tracks are treated as fallback references rather than first-choice references.
+- Fixed an edge case where the mere presence of a non-forced track could block a usable forced fallback even when that normal track was not suitable.
+- Applied the same selection logic to indexed references and Media3 live references.
+
+This reduced accidental synchronization against short forced-only tracks.
+REL_393082184
+          jq -n --rawfile body /tmp/release-393082184.md '{body:$body}' \
+            | gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/393082184" --input -
+
+          cat > /tmp/release-393159638.md <<'REL_393159638'
+AutoSync build based on official Nuvio 0.4.26-beta.
+
+## What changed
+- Added a true second-stage forced-subtitle fallback.
+- Normal full-dialogue embedded references are evaluated first.
+- Only when all usable normal references fail to produce a confident V2 match are forced references evaluated.
+- Forced references go through the same preflight, ranking, V2 matching and confidence validation as normal references.
+- Final winner handling was hardened so fallback selection cannot replace a better confident normal result.
+
+This expands compatibility without making forced subtitles compete with normal dialogue tracks by default.
+REL_393159638
+          jq -n --rawfile body /tmp/release-393159638.md '{body:$body}' \
+            | gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/393159638" --input -
+
+          cat > /tmp/release-393215031.md <<'REL_393215031'
+AutoSync build based on official Nuvio 0.4.26-beta.
+
+## What changed
+- Fixed the Simkl client ID used by AutoSync Mobile builds.
+- Added the TMDB API key to both debug and release build environments.
+- Restored the normal AutoSync Mobile release trigger.
+
+No AutoSync matching or retiming thresholds were changed in this release.
+REL_393215031
+          jq -n --rawfile body /tmp/release-393215031.md '{body:$body}' \
+            | gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/393215031" --input -
+
+          cat > /tmp/release-393365173.md <<'REL_393365173'
+AutoSync build based on official Nuvio 0.4.26-beta.
+
+## What changed
+- Delay-only synchronization now applies one **uniform validated offset** to the entire external subtitle.
+- V2 still uses structural DP matching as the safety/validation gate.
+- Once a delay-only match is accepted, DP no longer introduces small per-cue timing variations.
+- Drift/affine matches still use full timeline retiming.
+
+Example: a validated +4.0 s delay now means every cue receives exactly +4000 ms.
+REL_393365173
+          jq -n --rawfile body /tmp/release-393365173.md '{body:$body}' \
+            | gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/393365173" --input -
+
+          cat > /tmp/release-393396040.md <<'REL_393396040'
+AutoSync build based on official Nuvio 0.4.26-beta.
+
+## What changed
+- Added a conservative grouped-reply timing refinement for confident drift-corrected matches.
+- Targets 2:2 dialogue groups where the second subtitle starts too early but ends at the correct speech boundary.
+- Can move only the second cue start while preserving its end.
+- Requires a real reference gap, bounded correction, valid cue duration and supporting simple groups on both sides.
+- Ambiguous/overlapping reference gaps and estimated reference ends are ignored.
+- This is output-only: it does not change candidate scoring, confidence or reference selection.
+
+Designed to improve chained dialogue without affecting ordinary one-line matches.
+REL_393396040
+          jq -n --rawfile body /tmp/release-393396040.md '{body:$body}' \
+            | gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/393396040" --input -
+
+          cat > /tmp/release-393407487.md <<'REL_393407487'
+AutoSync build based on official Nuvio 0.4.26-beta.
+
+## What changed
+- Removed a duplicate fallback wait in the AutoSync pipeline.
+- AutoSync now checks the selected subtitle load state directly instead of waiting through the same alternative-subtitle fallback path twice.
+- Matching behavior and confidence rules were unchanged.
+
+Result: faster failure/fallback handling when subtitle candidates are slow to load.
+REL_393407487
+          jq -n --rawfile body /tmp/release-393407487.md '{body:$body}' \
+            | gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/393407487" --input -
+
+          cat > /tmp/release-394021077.md <<'REL_394021077'
+AutoSync build based on official Nuvio 0.5.0-beta.
+
+## AutoSync changes
+- Added PGS reference support for Matroska subtitles.
+- Added semantic PGS display-set parsing and lazy range-based resolution.
+- Reconstructed subtitle visibility from PGS presentation/clear state rather than OCR or bitmap decoding.
+- Added sparse/batched PGS range reads and conservative handling of unsupported or ambiguous PGS metadata.
+- Added tests for PGS display-set assembly, epoch resets, repeated compositions, partial coverage and visibility.
+- Added **Retry AutoSync with another reference**: the already-used embedded reference is excluded and AutoSync searches another suitable reference.
+- A failed retry keeps the current synchronization unchanged.
+- Moved the retry action into the subtitle menu.
+
+## Upstream Nuvio 0.5.0
+Includes the official Nuvio 0.5.0 changes such as MDBList tracking/library support, per-episode subtitle restoration, tracking UI updates, TMDB fixes, custom poster URL patterns and player fixes.
+REL_394021077
+          jq -n --rawfile body /tmp/release-394021077.md '{body:$body}' \
+            | gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/394021077" --input -
+
+          cat > /tmp/release-394092640.md <<'REL_394092640'
+AutoSync build based on official Nuvio 0.5.0-beta.
+
+## What changed
+- Restored the first working lightweight SDH/PGS timing path after regressions in the expanded semantic PGS resolver.
+- Removed the complex semantic PGS display-set resolver and its extra range-resolution path.
+- Kept PGS handling O(n) and zero-extra-I/O by using indexed Matroska cue timing.
+- PGS display/clear pairs are collapsed into visible subtitle intervals only when peer subtitle density supports that interpretation.
+- If pairing is not well supported, the original indexed PGS timeline is kept instead of guessing.
+- Restored normal Media3 PGS capture behavior.
+
+This release intentionally prioritizes the simpler PGS implementation that proved reliable with SDH tracks.
+REL_394092640
+          jq -n --rawfile body /tmp/release-394092640.md '{body:$body}' \
+            | gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/394092640" --input -
+
