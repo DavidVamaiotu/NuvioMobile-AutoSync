@@ -50,16 +50,10 @@ internal object AutoSyncDelayPreflight {
 
         for (track in referenceTracks) {
             cancellationCheck?.invoke()
-            val preparedReference = synchronized(referenceActivityCache) {
-                if (referenceActivityCache.containsKey(track.key)) {
-                    referenceActivityCache[track.key]
-                } else {
-                    val prepared =
-                        AutoSyncTimelineRetimer.prepareUnitActivity(track.cues)
-                    referenceActivityCache[track.key] = prepared
-                    prepared
-                }
-            } ?: continue
+            val preparedReference = AutomaticSubtitleSync.preparedReferenceActivity(
+                track = track,
+                cache = referenceActivityCache,
+            ) ?: continue
 
             val searchEvidence =
                 AutoSyncTimelineRetimer.prepareDelayOnlySearchEvidence(
@@ -69,11 +63,11 @@ internal object AutoSyncDelayPreflight {
                 ) ?: continue
 
             // Match the exact delay-margin relaxation used by authoritative V2.
-            val overSegmentedReference =
-                track.cues.size.toLong() * 2L >= target.size.toLong() * 3L
-            val relaxDelayMargin =
-                AutomaticSubtitleSync.isSdhReferenceTrack(track) ||
-                    overSegmentedReference
+            val relaxDelayMargin = AutoSyncTimelineRetimer.shouldRelaxDelayOnlyMargin(
+                sdhReference = AutomaticSubtitleSync.isSdhReferenceTrack(track),
+                referenceSize = track.cues.size,
+                targetSize = target.size,
+            )
 
             val alignment =
                 AutoSyncTimelineRetimer.findDelayOnlyAlignmentPrepared(

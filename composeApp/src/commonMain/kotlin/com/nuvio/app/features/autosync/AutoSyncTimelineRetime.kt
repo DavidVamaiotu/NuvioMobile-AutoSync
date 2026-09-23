@@ -46,6 +46,13 @@ internal object AutoSyncTimelineRetimer {
     // it, so its offset search covers the whole reference instead of only ACTIVITY_MAX_OFFSET_MS.
     private const val PARTIAL_TARGET_SPAN_RATIO = 0.75
 
+    // Each matched group is anchored to its reference start unless its shift differs from the
+    // median of its neighbours by more than LOCAL_SHIFT_MAX_DEVIATION_MS. Genuine per-line
+    // corrections survive; a mis-paired group takes the local median instead of snapping a line
+    // up to a full match tolerance away.
+    private const val LOCAL_SHIFT_RADIUS_GROUPS = 3
+    private const val LOCAL_SHIFT_MAX_DEVIATION_MS = 250L
+
     // Whole-timeline subtitle activity correlation. This is deliberately global:
     // mid-film cuts/splits are rejected rather than growing another piecewise synchronization layer.
     private const val ACTIVITY_COARSE_BIN_MS = 500L
@@ -128,6 +135,16 @@ internal object AutoSyncTimelineRetimer {
         }
         return normalized
     }
+
+    /**
+     * SDH and over-segmented references (1.5x the target's cues or more) legitimately produce
+     * ambiguous delay-only margins, so the margin gate is relaxed for them.
+     */
+    internal fun shouldRelaxDelayOnlyMargin(
+        sdhReference: Boolean,
+        referenceSize: Int,
+        targetSize: Int,
+    ): Boolean = sdhReference || referenceSize.toLong() * 2L >= targetSize.toLong() * 3L
 
     internal fun prepareUnitActivity(
         cues: List<SubtitleSyncCue>,
@@ -627,14 +644,22 @@ internal object AutoSyncTimelineRetimer {
             )
         }.toMutableList()
 
-        groups.forEach { group ->
+        // Target ranges of groups are disjoint, so every shift can be read before any is applied.
+        val groupShifts = rejectLocalShiftOutliers(
+            LongArray(groups.size) { groupIndex ->
+                val group = groups[groupIndex]
+                reference[group.referenceStartIndex].startTimeMs -
+                    retimed[group.targetStartIndex].startTimeMs
+            },
+        )
+        groups.forEachIndexed { groupIndex, group ->
             for (index in group.targetStartIndex until group.targetStartIndex + group.targetCount) {
                 matchedTarget[index] = true
             }
             for (index in group.referenceStartIndex until group.referenceStartIndex + group.referenceCount) {
                 matchedReference[index] = true
             }
-            transplantGroupTiming(reference, target, group, retimed)
+            transplantGroupTiming(group, retimed, groupShifts[groupIndex])
         }
 
         // Keep the output monotonic even when malformed source cues overlap backwards.
@@ -1758,21 +1783,38 @@ internal object AutoSyncTimelineRetimer {
     private fun isValidRetimedCue(cue: AutoSyncRetimedCue): Boolean =
         cue.startTimeMs >= 0L && cue.endTimeMs > cue.startTimeMs
 
+    /**
+     * Replaces each group shift further than [LOCAL_SHIFT_MAX_DEVIATION_MS] from the median shift
+     * of the groups within [LOCAL_SHIFT_RADIUS_GROUPS] on either side with that median.
+     * O(groups) with a tiny window.
+     */
+    private fun rejectLocalShiftOutliers(shifts: LongArray): LongArray {
+        val windowSize = LOCAL_SHIFT_RADIUS_GROUPS * 2 + 1
+        if (shifts.size < windowSize) return shifts
+
+        val window = LongArray(windowSize)
+        return LongArray(shifts.size) { index ->
+            val from = max(0, index - LOCAL_SHIFT_RADIUS_GROUPS)
+            val to = min(shifts.lastIndex, index + LOCAL_SHIFT_RADIUS_GROUPS)
+            val count = to - from + 1
+            shifts.copyInto(window, 0, from, to + 1)
+            window.sort(0, count)
+            val median = window[count / 2]
+            if (abs(shifts[index] - median) <= LOCAL_SHIFT_MAX_DEVIATION_MS) shifts[index] else median
+        }
+    }
+
     private fun transplantGroupTiming(
-        reference: List<SubtitleSyncCue>,
-        target: List<SubtitleSyncCue>,
         group: AutoSyncCueGroup,
         output: MutableList<AutoSyncRetimedCue>,
+        groupShiftMs: Long,
     ) {
         val targetStartIndex = group.targetStartIndex
         val targetEndIndex = group.targetStartIndex + group.targetCount - 1
-        val referenceStart = reference[group.referenceStartIndex].startTimeMs
 
         // The affine pass already preserves each external cue's duration (including FPS scaling).
-        // Move the matched group as one unit so its first cue starts with the embedded reference,
-        // but never inherit a foreign-language or estimated reference end time.
-        val groupShiftMs = referenceStart - output[targetStartIndex].startTimeMs
-
+        // Move the matched group as one unit toward its embedded reference start, but never
+        // inherit a foreign-language or estimated reference end time.
         for (index in targetStartIndex..targetEndIndex) {
             val cue = output[index]
             val durationMs = (cue.endTimeMs - cue.startTimeMs).coerceAtLeast(1L)

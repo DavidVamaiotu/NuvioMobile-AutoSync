@@ -696,6 +696,25 @@ class AutoSyncTimelineRetimeTest {
     }
 
     @Test
+    fun mismatchedGroupTakesLocalMedianShiftButSmallCorrectionsSurvive() {
+        val target = irregularTimeline(60)
+        val reference = target.mapIndexed { index, cue ->
+            val deltaMs = when (index) {
+                20 -> 150L // genuine per-line correction
+                30 -> 900L // mis-timed reference line, still inside the match tolerance
+                else -> 0L
+            }
+            cue.copy(startTimeMs = cue.startTimeMs + deltaMs, endTimeMs = cue.endTimeMs + deltaMs)
+        }
+
+        val result = assertNotNull(AutoSyncTimelineRetimer.retime(reference, target, 1.0, 0.0))
+
+        assertTrue(result.confident, result.rejectReason)
+        assertEquals(target[20].startTimeMs + 150L, result.cues[20].startTimeMs)
+        assertEquals(target[30].startTimeMs, result.cues[30].startTimeMs)
+    }
+
+    @Test
     fun rejectedResultReportsFailedGates() {
         val reference = irregularTimeline(240)
         val target = reference.mapIndexed { index, cue ->

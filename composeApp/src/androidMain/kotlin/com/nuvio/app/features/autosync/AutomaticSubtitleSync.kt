@@ -717,6 +717,33 @@ internal object AutomaticSubtitleSync {
             val referenceActivityCache =
                 mutableMapOf<String, AutoSyncTimelineRetimer.PreparedActivity?>()
 
+            if (referenceTracks.size >= 3) {
+                val consistencyStarted = SystemClock.elapsedRealtime()
+                val consistencyContext = currentCoroutineContext()
+                val outliers = withContext(Dispatchers.Default) {
+                    AutoSyncReferenceConsistency.findOutliers(
+                        references = referenceTracks.mapNotNull { track ->
+                            preparedReferenceActivity(track, referenceActivityCache)?.let {
+                                AutoSyncReferenceConsistency.Reference(
+                                    key = track.key,
+                                    activity = it,
+                                    cueCount = track.cues.size,
+                                )
+                            }
+                        },
+                        cancellationCheck = { consistencyContext.ensureActive() },
+                    )
+                }
+                AutoSyncDebugLog.info {
+                    "REFERENCE_CONSISTENCY references=${referenceTracks.size} " +
+                        "dropped=${outliers.sorted().joinToString(",").ifEmpty { "<none>" }} " +
+                        "time=${SystemClock.elapsedRealtime() - consistencyStarted}ms"
+                }
+                if (outliers.isNotEmpty()) {
+                    referenceTracks = referenceTracks.filterNot { it.key in outliers }
+                }
+            }
+
             // The Nuvio-selected subtitle is usually automatic, so treat it as one timing
             // candidate rather than giving it expensive V2 priority. Consume any completion
             // that occurred while reference preparation was running before refreshing providers.
@@ -851,6 +878,7 @@ internal object AutomaticSubtitleSync {
             ) {
                 loadedByUrl[candidate.url] = loaded
                 val index = candidateOrder[candidate.url] ?: return
+                AutoSyncDebugLog.timing(label = "target:$index", cues = loaded.cues)
                 val alternative = LoadedAlternative(
                     index = index,
                     candidate = candidate,
@@ -1472,6 +1500,12 @@ internal object AutomaticSubtitleSync {
         val targetActivity =
             preparedTargetActivity ?: AutoSyncTimelineRetimer.prepareUnitActivity(target)
         val track = rankedReference.track
+        AutoSyncDebugLog.timing(
+            label = "ref:${track.key}",
+            cues = track.cues,
+            estimatedEndStartsMs = track.estimatedEndStartsMs,
+            sdh = isSdhReferenceTrack(track),
+        )
 
         preflightHint?.let { hint ->
             AutoSyncDebugLog.info {
@@ -1490,15 +1524,7 @@ internal object AutomaticSubtitleSync {
                 "cheapAffinity=${fmt(rankedReference.cheapAffinity)}"
         }
 
-        val preparedReference = synchronized(referenceActivityCache) {
-            if (referenceActivityCache.containsKey(track.key)) {
-                referenceActivityCache[track.key]
-            } else {
-                val prepared = AutoSyncTimelineRetimer.prepareUnitActivity(track.cues)
-                referenceActivityCache[track.key] = prepared
-                prepared
-            }
-        }
+        val preparedReference = preparedReferenceActivity(track, referenceActivityCache)
 
         val pairStarted = SystemClock.elapsedRealtime()
         val timeline = buildTimelineRetimeResult(
@@ -1572,6 +1598,18 @@ internal object AutomaticSubtitleSync {
         }
 
         PairEvaluation(match = match)
+    }
+
+    /** Unit-scale activity for [track], prepared once per run and shared across workers. */
+    internal fun preparedReferenceActivity(
+        track: ReferenceTrack,
+        cache: MutableMap<String, AutoSyncTimelineRetimer.PreparedActivity?>,
+    ): AutoSyncTimelineRetimer.PreparedActivity? = synchronized(cache) {
+        if (cache.containsKey(track.key)) {
+            cache[track.key]
+        } else {
+            AutoSyncTimelineRetimer.prepareUnitActivity(track.cues).also { cache[track.key] = it }
+        }
     }
 
     private fun logLoadedExternalSubtitle(
@@ -2369,10 +2407,11 @@ internal object AutomaticSubtitleSync {
         cancellationCheck: (() -> Unit)? = null,
         timingObserver: ((AutoSyncRetimePhaseTimings) -> Unit)? = null,
     ): AutoSyncTimelineRetimeResult? {
-        val overSegmentedReference =
-            track.cues.size.toLong() * 2L >= target.size.toLong() * 3L
-        val relaxDelayMargin =
-            isSdhReferenceTrack(track) || overSegmentedReference
+        val relaxDelayMargin = AutoSyncTimelineRetimer.shouldRelaxDelayOnlyMargin(
+            sdhReference = isSdhReferenceTrack(track),
+            referenceSize = track.cues.size,
+            targetSize = target.size,
+        )
 
         if (relaxDelayMargin) {
             AutoSyncDebugLog.info {
