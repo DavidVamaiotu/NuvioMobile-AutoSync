@@ -46,6 +46,15 @@ internal class AutoSyncPlayerCoordinator(
     private val _retryState = MutableStateFlow(AutoSyncRetryUiState())
     val retryState: StateFlow<AutoSyncRetryUiState> = _retryState.asStateFlow()
 
+    init {
+        // The coordinator is created when the stream opens. Start the embedded index download
+        // now so it overlaps player startup instead of beginning when a subtitle is selected.
+        AutoSyncPreferencesRepository.ensureLoaded()
+        if (AutoSyncPreferencesRepository.preferredSubtitleAutoSyncOnStart.value) {
+            EmbeddedSubtitleTimelineLoader.prefetch(scope, sourceUrl, sourceHeaders)
+        }
+    }
+
     fun setCandidates(value: List<AutoSyncSubtitleCandidate>) {
         candidates = value.distinctBy { it.url }
     }

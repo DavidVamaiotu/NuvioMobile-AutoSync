@@ -10,8 +10,13 @@ import androidx.media3.extractor.mp4.BoxParser
 import androidx.media3.extractor.mp4.TrackSampleTable
 import com.nuvio.app.features.player.SubtitleSyncCue
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -119,6 +124,19 @@ internal object EmbeddedSubtitleTimelineLoader {
             eldest: MutableMap.MutableEntry<String, CachedLoadResult>?,
         ): Boolean = size > MAX_CACHE_ENTRIES
     }
+    private val inFlight = mutableMapOf<String, CompletableDeferred<IndexedEmbeddedTimeline?>>()
+
+    /**
+     * Starts loading the index in [scope] so a later [load] finds it cached or joins the
+     * in-flight download instead of starting from zero when AutoSync runs.
+     */
+    fun prefetch(
+        scope: CoroutineScope,
+        sourceUrl: String,
+        sourceHeaders: Map<String, String> = emptyMap(),
+    ) {
+        scope.launch { load(sourceUrl, sourceHeaders) }
+    }
 
     suspend fun load(
         sourceUrl: String,
@@ -132,7 +150,8 @@ internal object EmbeddedSubtitleTimelineLoader {
 
         val cacheKey = "$sourceUrl#${sourceHeaders.hashCode()}"
         val nowNs = System.nanoTime()
-        synchronized(cacheLock) {
+        val ownedLoad = CompletableDeferred<IndexedEmbeddedTimeline?>()
+        val activeLoad = synchronized(cacheLock) {
             val cached = cache[cacheKey]
             if (cached != null) {
                 if (cached.timeline != null) return cached.timeline
@@ -140,8 +159,36 @@ internal object EmbeddedSubtitleTimelineLoader {
                 if (ageMs < NEGATIVE_CACHE_TTL_MS) return null
                 cache.remove(cacheKey)
             }
+            inFlight.getOrPut(cacheKey) { ownedLoad }
         }
 
+        if (activeLoad !== ownedLoad) {
+            return try {
+                activeLoad.await()
+            } catch (cancel: CancellationException) {
+                // The owning load was cancelled (e.g. its player closed). Load for this caller
+                // unless this caller itself is the one being cancelled.
+                currentCoroutineContext().ensureActive()
+                load(sourceUrl, sourceHeaders)
+            }
+        }
+
+        try {
+            return loadAndCache(cacheKey, sourceUrl, sourceHeaders)
+                .also(ownedLoad::complete)
+        } finally {
+            ownedLoad.cancel()
+            synchronized(cacheLock) {
+                if (inFlight[cacheKey] === ownedLoad) inFlight.remove(cacheKey)
+            }
+        }
+    }
+
+    private suspend fun loadAndCache(
+        cacheKey: String,
+        sourceUrl: String,
+        sourceHeaders: Map<String, String>,
+    ): IndexedEmbeddedTimeline? {
         return try {
             val loaded = try {
                 withTimeout(TOTAL_TIMEOUT_MS) {
