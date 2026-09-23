@@ -1071,6 +1071,11 @@
     <string name="player_audio_sync_synced">Subtitle sync confirmed (%1$s)</string>
     <string name="player_audio_sync_synced_rate">Subtitle sync confirmed (%1$s, frame rate corrected)</string>
     <string name="player_audio_sync_adjusted">Subtitle timing changed, re-synced (%1$s)</string>
+    <string name="settings_playback_speech_model">Speech recognition model (%1$s MB)</string>
+    <string name="settings_playback_speech_model_missing">Not downloaded. Tap to download for much faster and more precise sync of English-audio content</string>
+    <string name="settings_playback_speech_model_downloading">Downloading… %1$s%%</string>
+    <string name="settings_playback_speech_model_ready">Downloaded and ready. Tap to delete</string>
+    <string name="settings_playback_speech_model_failed">Download failed (%1$s). Tap to retry</string>
     <string name="settings_playback_audio_subtitle_sync">Sync subtitles to audio</string>
     <string name="settings_playback_audio_subtitle_sync_description">Automatically aligns addon subtitles with the dialogue by listening to the audio as it buffers</string>
     <string name="settings_playback_enable_libass">Use libass for ASS/SSA subtitles</string>

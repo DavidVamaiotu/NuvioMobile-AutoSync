@@ -60,6 +60,7 @@ import com.nuvio.app.features.player.AudioLanguageOption
 import com.nuvio.app.features.player.AvailableLanguageOptions
 import com.nuvio.app.features.player.ExternalPlayerApp
 import com.nuvio.app.features.player.ExternalPlayerPlatform
+import com.nuvio.app.features.player.SubtitleSyncStatus
 import com.nuvio.app.features.player.IosAudioOutputMode
 import com.nuvio.app.features.player.IosHardwareDecoderMode
 import com.nuvio.app.features.player.localizedLabel
@@ -654,6 +655,31 @@ private fun PlaybackSettingsSection(
                         isTablet = isTablet,
                         onCheckedChange = PlayerSettingsRepository::setAudioSubtitleSyncEnabled,
                     )
+                    val speechModel by SubtitleSyncStatus.speechModel.collectAsStateWithLifecycle()
+                    if (speechModel.supported) {
+                        SettingsGroupDivider(isTablet = isTablet)
+                        SettingsNavigationRow(
+                            title = stringResource(Res.string.settings_playback_speech_model, speechModel.sizeMb),
+                            description = when {
+                                speechModel.downloading -> stringResource(
+                                    Res.string.settings_playback_speech_model_downloading,
+                                    (speechModel.progress * 100).toInt(),
+                                )
+                                speechModel.downloaded -> stringResource(Res.string.settings_playback_speech_model_ready)
+                                speechModel.error != null -> stringResource(
+                                    Res.string.settings_playback_speech_model_failed,
+                                    speechModel.error.orEmpty(),
+                                )
+                                else -> stringResource(Res.string.settings_playback_speech_model_missing)
+                            },
+                            enabled = autoPlayPlayerSettings.audioSubtitleSyncEnabled && !speechModel.downloading,
+                            isTablet = isTablet,
+                            onClick = {
+                                val actions = SubtitleSyncStatus.modelActions
+                                if (speechModel.downloaded) actions?.delete() else actions?.download()
+                            },
+                        )
+                    }
                     SettingsGroupDivider(isTablet = isTablet)
                     SettingsSwitchRow(
                         title = stringResource(Res.string.settings_playback_enable_libass),

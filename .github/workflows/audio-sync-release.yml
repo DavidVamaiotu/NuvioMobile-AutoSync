@@ -1,6 +1,6 @@
 name: Audio Sync Release
 
-# Release trigger: layer 2 speech recognition sync
+# Release trigger: speech model download in settings and on-screen sync status
 
 on:
   workflow_dispatch:

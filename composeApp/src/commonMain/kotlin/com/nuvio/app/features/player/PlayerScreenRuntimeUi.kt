@@ -9,6 +9,9 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.layout.onSizeChanged
 import com.nuvio.app.features.p2p.P2pStreamingState
 import com.nuvio.app.features.p2p.formatP2pMegabytes
@@ -207,6 +210,12 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi() {
                 modifier = Modifier.fillMaxSize(),
             )
         }
+
+        SubtitleSyncStatusOverlay(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(start = horizontalSafePadding + 16.dp, top = 16.dp),
+        )
 
         RenderPlayerControls(displayedPositionMs = displayedPositionMs, isEpisode = isEpisode)
         RenderPlaybackOverlays(
