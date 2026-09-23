@@ -973,6 +973,10 @@ private fun ExoPlayerSurface(
                     subtitleDelayMs = delayMs.coerceIn(SUBTITLE_DELAY_MIN_MS, SUBTITLE_DELAY_MAX_MS)
                 }
 
+                override fun setSubtitleSyncContent(type: String, videoId: String) {
+                    audioSubtitleSync.setContent(type, videoId)
+                }
+
                 override fun setSubtitleSyncReferences(subtitles: List<AddonSubtitle>) {
                     audioSubtitleSync.setReferenceSubtitles(
                         subtitles.map { subtitle ->

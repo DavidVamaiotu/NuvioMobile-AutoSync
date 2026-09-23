@@ -31,6 +31,8 @@ interface PlayerEngineController {
     fun setSubtitleDelayMs(delayMs: Int) {}
     /** Subtitles available for this stream; used as references by automatic subtitle sync. */
     fun setSubtitleSyncReferences(subtitles: List<AddonSubtitle>) {}
+    /** The title being played, so subtitle sync can look up an English reference itself. */
+    fun setSubtitleSyncContent(type: String, videoId: String) {}
     fun configureIosVideoOutput(settings: PlayerSettingsUiState) {}
     fun updateNowPlayingMetadata(info: PlayerNowPlayingInfo) {}
     fun clearNowPlayingInfo() {}

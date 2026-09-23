@@ -340,7 +340,64 @@ internal class AudioSubtitleSyncController(
     }
 
     private fun englishCandidates(): List<ReferenceCandidate> =
-        candidates.filter { isEnglish(it.language) }.distinctBy { it.url }
+        (candidates.filter { isEnglish(it.language) } + fallbackCandidates).distinctBy { it.url }
+
+    @Volatile
+    private var contentKey: String? = null
+
+    /** English subtitles from the public OpenSubtitles service, independent of addon language settings. */
+    @Volatile
+    private var fallbackCandidates: List<ReferenceCandidate> = emptyList()
+
+    @Volatile
+    private var fallbackState = FallbackState.Idle
+    private val fallbackListeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
+
+    private enum class FallbackState { Idle, Loading, Done }
+
+    /** The title being played, used to look up English references when the addons return none. */
+    fun setContent(type: String?, videoId: String?) {
+        val key = if (type.isNullOrBlank() || videoId.isNullOrBlank()) null else "$type|$videoId"
+        if (key == contentKey) return
+        contentKey = key
+        fallbackCandidates = emptyList()
+        fallbackState = FallbackState.Idle
+        fallbackListeners.clear()
+        if (key != null && enabled) loadFallbackCandidates(key, type!!, videoId!!)
+    }
+
+    private fun loadFallbackCandidates(key: String, type: String, videoId: String) {
+        fallbackState = FallbackState.Loading
+        try {
+            fetchPool.execute {
+                val canonicalType = if (type.equals("tv", ignoreCase = true)) "series" else type.lowercase()
+                val url = "$OPEN_SUBTITLES_FALLBACK/subtitles/$canonicalType/$videoId.json"
+                val found = runCatching {
+                    val body = runBlocking { httpGetTextWithHeaders(url = url, headers = emptyMap()) }
+                    val array = org.json.JSONObject(body).optJSONArray("subtitles") ?: org.json.JSONArray()
+                    (0 until array.length()).mapNotNull { index ->
+                        val item = array.optJSONObject(index) ?: return@mapNotNull null
+                        val subtitleUrl = item.optString("url").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                        val language = item.optString("lang")
+                        if (!isEnglish(language)) return@mapNotNull null
+                        ReferenceCandidate(subtitleUrl, language, emptyMap())
+                    }.take(MAX_FALLBACK_REFERENCES)
+                }.getOrElse {
+                    Log.w(TAG, "English reference lookup failed for $videoId: ${it.message}")
+                    emptyList()
+                }
+                if (contentKey != key) return@execute
+                Log.i(TAG, "English reference lookup for $videoId found ${found.size}")
+                fallbackCandidates = found
+                fallbackState = FallbackState.Done
+                found.take(PREFETCH_REFERENCES).forEach { fetchReference(it, onReady = null) }
+                fallbackListeners.forEach { runCatching(it) }
+                fallbackListeners.clear()
+            }
+        } catch (_: Exception) {
+            fallbackState = FallbackState.Done
+        }
+    }
 
     private fun fetchReference(candidate: ReferenceCandidate, onReady: ((List<Triple<Long, Long, String>>) -> Unit)?) {
         parsedReferences[candidate.url]?.let { cached ->
@@ -383,11 +440,27 @@ internal class AudioSubtitleSyncController(
         engine.startSession(current.track, emptyList())
         val references = englishCandidates().take(MAX_REFERENCES)
         if (references.isEmpty()) {
+            if (fallbackState == FallbackState.Loading) {
+                referenceStatus = "looking up English subtitles…"
+                fallbackListeners += { if (session === current) bridgeReferences(current, engine) }
+                return
+            }
             Log.i(TAG, "no English reference subtitle available; recognition idle")
             referenceStatus = "none available"
-            problem = "No English subtitle in the list to compare with, using speech detection (slower)"
+            problem = "No English subtitle found for this title, using speech detection (slower)"
             return
         }
+        bridgeReferences(current, engine)
+    }
+
+    private fun bridgeReferences(current: Session, engine: AsrSyncEngine) {
+        val references = englishCandidates().take(MAX_REFERENCES)
+        if (references.isEmpty()) {
+            referenceStatus = "none available"
+            problem = "No English subtitle found for this title, using speech detection (slower)"
+            return
+        }
+        problem = null
         referenceStatus = "downloading ${references.size}…"
         val matched = java.util.concurrent.atomic.AtomicInteger(0)
         val finished = java.util.concurrent.atomic.AtomicInteger(0)
@@ -691,7 +764,9 @@ internal class AudioSubtitleSyncController(
         private const val DIAGNOSTICS_INTERVAL_MS = 1_000L
         private const val PREFERENCES = "nuvio_audio_sync"
         private const val PREFETCH_REFERENCES = 2
-        private const val MAX_REFERENCES = 3
+        private const val MAX_REFERENCES = 4
+        private const val MAX_FALLBACK_REFERENCES = 6
+        private const val OPEN_SUBTITLES_FALLBACK = "https://opensubtitles-v3.strem.io"
         private const val RECOGNIZER_THREADS = 2
         private const val RECOGNIZER_RELEASE_DELAY_MS = 3_000L
         private const val NOTIFY_CHANGE_MS = 1_000L

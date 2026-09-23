@@ -190,6 +190,10 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
         playerController?.setSubtitleSyncReferences(addonSubtitles)
     }
 
+    LaunchedEffect(playerController, activeAddonSubtitleType, activeVideoId) {
+        playerController?.setSubtitleSyncContent(activeAddonSubtitleType, activeVideoId)
+    }
+
     LaunchedEffect(selectedAddonSubtitleId, useCustomSubtitles, activeSourceUrl) {
         subtitleAutoSyncState = SubtitleAutoSyncUiState()
     }

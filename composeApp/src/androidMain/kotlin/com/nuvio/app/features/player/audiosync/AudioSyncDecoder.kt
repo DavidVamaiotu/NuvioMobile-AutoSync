@@ -13,6 +13,7 @@ import android.util.Log
 import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.MediaFormatUtil
+import androidx.media3.decoder.ffmpeg.AudioSyncFfmpegDecoder
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -22,7 +23,8 @@ import java.nio.ByteOrder
  * handed over by [PlaybackAudioTap] (see [offerPlaybackPcm]) with a separate [liveAnalyzer].
  *
  * Decoders that cannot run a second instance next to the player's are never used, so playback is
- * never starved of its decoder. Formats without a usable decoder fall back to the playback tap. The
+ * never starved of its decoder; in that case the bundled FFmpeg software decoder is used instead, and
+ * only formats neither can decode fall back to the playback tap. The
  * queues are bounded; if analysis falls behind, input is dropped and the gap is left unknown.
  */
 internal class AudioSyncDecoder(
@@ -46,6 +48,7 @@ internal class AudioSyncDecoder(
 
     // Decoder-thread state.
     private var codec: MediaCodec? = null
+    private var ffmpeg: AudioSyncFfmpegDecoder? = null
     private var codecFormat: Format? = null
     private var outputChannels = 0
     private var outputRate = 0
@@ -153,7 +156,9 @@ internal class AudioSyncDecoder(
     }
 
     private fun decode(sample: Item.Sample) {
-        val codec = codecFor(sample.format) ?: return
+        if (!prepareDecoder(sample.format)) return
+        ffmpeg?.let { decodeWithFfmpeg(it, sample); return }
+        val codec = codec ?: return
         try {
             var inputIndex = codec.dequeueInputBuffer(INPUT_TIMEOUT_US)
             var attempts = 0
@@ -176,6 +181,33 @@ internal class AudioSyncDecoder(
             Log.w(TAG, "decode failed for ${sample.format.sampleMimeType}: ${error.message}")
             releaseCodec()
             analyzer.reset()
+        }
+    }
+
+    private fun decodeWithFfmpeg(decoder: AudioSyncFfmpegDecoder, sample: Item.Sample) {
+        try {
+            var attempts = 0
+            while (!decoder.queue(sample.data, sample.timeUs)) {
+                drainFfmpeg(decoder)
+                if (++attempts > MAX_INPUT_ATTEMPTS) return
+                Thread.sleep(2)
+            }
+            drainFfmpeg(decoder)
+        } catch (error: InterruptedException) {
+            throw error
+        } catch (error: Exception) {
+            Log.w(TAG, "ffmpeg decode failed for ${sample.format.sampleMimeType}: ${error.message}")
+            releaseCodec()
+            analyzer.reset()
+        }
+    }
+
+    private fun drainFfmpeg(decoder: AudioSyncFfmpegDecoder) {
+        decoder.drain { data, timeUs ->
+            outputChannels = decoder.channelCount
+            outputRate = decoder.sampleRate
+            centerIndex = if (outputChannels >= 3) 2 else -1
+            deliverPcm(data.order(ByteOrder.nativeOrder()), timeUs)
         }
     }
 
@@ -229,31 +261,46 @@ internal class AudioSyncDecoder(
         analyzer.accept(mono, frames, rate, timeUs)
     }
 
-    private fun codecFor(format: Format): MediaCodec? {
-        val current = codec
-        if (current != null && codecFormat.isSameStream(format)) return current
+    /** Opens a decoder for [format] unless the current one already fits. False when none is usable. */
+    private fun prepareDecoder(format: Format): Boolean {
+        if ((codec != null || ffmpeg != null) && codecFormat.isSameStream(format)) return true
         releaseCodec()
         analyzer.reset()
-        val mime = format.sampleMimeType ?: return null
-        if (mime in unsupportedMimes) return null
-        val created = runCatching { createCodec(format) }.onFailure {
-            Log.w(TAG, "no usable decoder for $mime: ${it.message}")
-        }.getOrNull()
-        if (created == null) {
-            unsupportedMimes += mime
-            unsupportedMimesSnapshot = unsupportedMimes.toSet()
-            Log.i(TAG, "no usable decoder for $mime; relying on the playback tap")
-            runCatching { onUnsupportedFormat(mime) }
-            return null
-        }
-        codec = created
-        codecFormat = format
+        val mime = format.sampleMimeType ?: return false
+        if (mime in unsupportedMimes) return false
         outputChannels = format.channelCount
         outputRate = format.sampleRate
         outputFloat = false
         centerIndex = if (format.channelCount >= 3) 2 else -1
-        Log.i(TAG, "decoding $mime ${format.channelCount}ch ${format.sampleRate}Hz with ${created.name}")
-        return created
+        val created = runCatching { createCodec(format) }.onFailure {
+            Log.w(TAG, "no usable MediaCodec for $mime: ${it.message}")
+        }.getOrNull()
+        if (created != null) {
+            codec = created
+            codecFormat = format
+            Log.i(TAG, "decoding $mime ${format.channelCount}ch ${format.sampleRate}Hz with ${created.name}")
+            return true
+        }
+        val software = if (AudioSyncFfmpegDecoder.supports(mime)) {
+            runCatching { AudioSyncFfmpegDecoder(format) }.onFailure {
+                Log.w(TAG, "ffmpeg decoder failed for $mime: ${it.message}")
+            }.getOrNull()
+        } else {
+            null
+        }
+        if (software != null) {
+            ffmpeg = software
+            codecFormat = format
+            // FFmpeg emits float PCM in its native layout, where the centre is the third channel.
+            outputFloat = true
+            Log.i(TAG, "decoding $mime ${format.channelCount}ch ${format.sampleRate}Hz with ${software.name}")
+            return true
+        }
+        unsupportedMimes += mime
+        unsupportedMimesSnapshot = unsupportedMimes.toSet()
+        Log.i(TAG, "no usable decoder for $mime; relying on the playback tap")
+        runCatching { onUnsupportedFormat(mime) }
+        return false
     }
 
     private fun createCodec(format: Format): MediaCodec? {
@@ -321,6 +368,10 @@ internal class AudioSyncDecoder(
             initializationData.indices.all { initializationData[it].contentEquals(other.initializationData[it]) }
 
     private fun flushCodec() {
+        ffmpeg?.let { decoder ->
+            runCatching { decoder.flush() }.onFailure { releaseCodec() }
+            return
+        }
         val current = codec ?: return
         try {
             current.flush()
@@ -330,6 +381,11 @@ internal class AudioSyncDecoder(
     }
 
     private fun releaseCodec() {
+        ffmpeg?.let { decoder ->
+            ffmpeg = null
+            codecFormat = null
+            runCatching { decoder.release() }
+        }
         val current = codec ?: return
         codec = null
         codecFormat = null

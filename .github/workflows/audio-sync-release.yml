@@ -1,6 +1,6 @@
 name: Audio Sync Release
 
-# Release trigger: speech model download in settings and on-screen sync status
+# Release trigger: fix speech recognition in release builds, FFmpeg look-ahead, English reference lookup
 
 on:
   workflow_dispatch:
