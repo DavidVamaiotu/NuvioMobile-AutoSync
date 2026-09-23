@@ -64,29 +64,35 @@ jobs:
           fi
 
           RELEASE_SUFFIX="${{ inputs.release_suffix }}"
+          PREFIX="${UPSTREAM_TAG}-autosync."
+          BASE_TAG="${UPSTREAM_TAG}-autosync"
+          MAX_REVISION=0
+          BASE_EXISTS=false
+
+          while IFS= read -r TAG; do
+            if [[ "$TAG" == "$BASE_TAG" ]]; then
+              BASE_EXISTS=true
+            elif [[ "$TAG" == "$PREFIX"* ]]; then
+              REVISION="${TAG#"$PREFIX"}"
+              if [[ "$REVISION" =~ ^[0-9]+$ ]] && (( REVISION > MAX_REVISION )); then
+                MAX_REVISION="$REVISION"
+              fi
+            fi
+          done < <(
+            gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name'
+          )
+
+          PREVIOUS_TAG=""
+          if (( MAX_REVISION > 0 )); then
+            PREVIOUS_TAG="${PREFIX}${MAX_REVISION}"
+          elif [[ "$BASE_EXISTS" == "true" ]]; then
+            PREVIOUS_TAG="$BASE_TAG"
+          fi
 
           # A workflow-file push is an explicit fork release trigger. Pick the
           # next revision for the current upstream tag so the new fork code is
           # actually published without changing scheduled mirror behavior.
           if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-            PREFIX="${UPSTREAM_TAG}-autosync."
-            BASE_TAG="${UPSTREAM_TAG}-autosync"
-            MAX_REVISION=0
-            BASE_EXISTS=false
-
-            while IFS= read -r TAG; do
-              if [[ "$TAG" == "$BASE_TAG" ]]; then
-                BASE_EXISTS=true
-              elif [[ "$TAG" == "$PREFIX"* ]]; then
-                REVISION="${TAG#"$PREFIX"}"
-                if [[ "$REVISION" =~ ^[0-9]+$ ]] && (( REVISION > MAX_REVISION )); then
-                  MAX_REVISION="$REVISION"
-                fi
-              fi
-            done < <(
-              gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100"                 --jq '.[].tag_name'
-            )
-
             if [[ "$BASE_EXISTS" == "true" || "$MAX_REVISION" -gt 0 ]]; then
               RELEASE_SUFFIX="autosync.$(( MAX_REVISION + 1 ))"
             else
@@ -100,6 +106,7 @@ jobs:
 
           echo "upstream_tag=$UPSTREAM_TAG" >> "$GITHUB_OUTPUT"
           echo "autosync_tag=$AUTOSYNC_TAG" >> "$GITHUB_OUTPUT"
+          echo "previous_tag=$PREVIOUS_TAG" >> "$GITHUB_OUTPUT"
 
           echo "Official Nuvio release: $UPSTREAM_TAG"
           echo "AutoSync release: $AUTOSYNC_TAG"
@@ -191,6 +198,43 @@ jobs:
             echo "Refusing an unsafe automatic release sync." >&2
             exit 1
           fi
+
+      - name: Generate AutoSync changelog
+        if: steps.version.outputs.already_exists == 'false'
+        env:
+          PREVIOUS_TAG: ${{ steps.version.outputs.previous_tag }}
+          UPSTREAM_TAG: ${{ steps.version.outputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+
+          {
+            echo "## AutoSync changelog"
+            echo
+            if [[ -n "$PREVIOUS_TAG" ]] && git rev-parse --verify --quiet "$PREVIOUS_TAG^{commit}" >/dev/null; then
+              CHANGES="$(
+                git log --reverse --no-merges --pretty=format:'%s' "$PREVIOUS_TAG..HEAD" -- . ':(exclude).github/workflows/**' |
+                  grep -Ev '^(Trigger AutoSync release|Release .*autosync|Sync Nuvio )' || true
+              )"
+            else
+              CHANGES="$(
+                git log -20 --reverse --no-merges --pretty=format:'%s' -- . ':(exclude).github/workflows/**' |
+                  grep -Ev '^(Trigger AutoSync release|Release .*autosync|Sync Nuvio )' || true
+              )"
+            fi
+
+            if [[ -n "$CHANGES" ]]; then
+              while IFS= read -r line; do
+                printf -- '- %s\n' "$line"
+              done <<< "$CHANGES"
+            else
+              echo "- Rebuilt from the current subtitle-autosync branch."
+            fi
+
+            echo
+            echo "Based on official Nuvio $UPSTREAM_TAG."
+          } > autosync-release-notes.md
+
+          cat autosync-release-notes.md
 
       - name: Read exact Nuvio version code
         if: steps.version.outputs.already_exists == 'false'
@@ -327,4 +371,4 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --target subtitle-autosync \
             --title "$AUTOSYNC_TAG" \
-            --notes "AutoSync build based on official Nuvio $UPSTREAM_TAG."
+            --notes-file autosync-release-notes.md
