@@ -73,8 +73,14 @@ internal class AudioSubtitleSyncController(
         val tracker = AudioSyncTracker(track)
     }
 
-    /** An addon or stream subtitle that could serve as the English reference. */
-    data class ReferenceCandidate(val url: String, val language: String, val headers: Map<String, String>)
+    /** An addon or stream subtitle: an English reference, or an alternative to the chosen one. */
+    data class ReferenceCandidate(
+        val url: String,
+        val language: String,
+        val headers: Map<String, String>,
+        /** Name shown to the user. */
+        val label: String = "",
+    )
 
     private val fetchPool: ExecutorService = Executors.newFixedThreadPool(3) { runnable ->
         Thread({
@@ -127,6 +133,28 @@ internal class AudioSubtitleSyncController(
     @Volatile
     private var session: Session? = null
 
+    /** Other subtitles in the chosen one's language, tested against the audio while it is unsynced. */
+    @Volatile
+    private var pool: SubtitleCandidatePool? = null
+    private var poolSession: Session? = null
+    private val poolRequested = ConcurrentHashMap.newKeySet<String>()
+
+    /** Subtitles switched away from on this stream; picking one again is respected. */
+    private val switchedAway = ConcurrentHashMap.newKeySet<String>()
+
+    /** Mapping of the subtitle being switched to, adopted as soon as its session starts. */
+    private class Handover(val key: String, val model: SubtitleSyncModel, val method: String, val notice: String)
+
+    @Volatile
+    private var handover: Handover? = null
+
+    /** (subtitle key, message) shown after an automatic switch. */
+    @Volatile
+    private var switchNotice: Pair<String, String>? = null
+
+    @Volatile
+    private var mediaDurationMs = 0L
+
     @Volatile
     private var model: SubtitleSyncModel? = null
 
@@ -173,9 +201,13 @@ internal class AudioSubtitleSyncController(
         return (totalMs - manualDelayAtLockMs).roundToInt()
     }
 
-    /** Called on the main thread from the player's periodic snapshot. */
-    fun onPlaybackPosition(positionMs: Long) {
+    /** Called on the main thread from the player's periodic snapshot; [durationMs] <= 0 when unknown. */
+    fun onPlaybackPosition(positionMs: Long, durationMs: Long = 0L) {
         playbackPositionMs = positionMs.coerceAtLeast(0L)
+        if (durationMs > 0 && durationMs != mediaDurationMs) {
+            mediaDurationMs = durationMs
+            pool?.mediaDurationMs = durationMs
+        }
         asr?.onPlayhead(playbackPositionMs)
         scheduleAlignment()
         val now = SystemClock.elapsedRealtime()
@@ -225,6 +257,8 @@ internal class AudioSubtitleSyncController(
                 wordsHeard = asr?.heardWordCount ?: 0,
                 recognizer = recognizerText,
                 reference = referenceStatus,
+                alternatives = pool?.summary.orEmpty(),
+                notice = switchNotice?.takeIf { it.first == current.key }?.second,
                 problem = problem ?: if (decoderUnavailable) "Speech detector could not be loaded" else null,
             ),
         )
@@ -237,10 +271,17 @@ internal class AudioSubtitleSyncController(
         asr?.clear()
         selectedAudioFormat = null
         provisionalAudioFormat = null
-        session?.let { current -> session = Session(current.key, current.track, current.dialogue) }
+        stopPool()
+        switchedAway.clear()
+        handover = null
         model = null
         lockedAtElapsedMs = 0L
         lastAlignVersion = -1L
+        session?.let { current ->
+            val restarted = Session(current.key, current.track, current.dialogue)
+            session = restarted
+            startPool(restarted)
+        }
     }
 
     fun onAudioTrackSelected(format: Format?) {
@@ -257,6 +298,10 @@ internal class AudioSubtitleSyncController(
     fun startSession(key: String, cues: List<CuesWithTiming>) {
         val request = sessionRequest.incrementAndGet()
         session = null
+        stopPool()
+        val handedOver = handover?.takeIf { it.key == key }
+        handover = null
+        if (switchNotice?.first != key) switchNotice = null
         model = null
         lockedAtElapsedMs = 0L
         lockMethod = null
@@ -279,7 +324,14 @@ internal class AudioSubtitleSyncController(
                 session = started
                 Log.i(TAG, "sync session started for $key with ${track.size} dialogue cues")
                 if (!enabled) return@execute
-                if (!applyRemembered(started)) notify(AudioSyncStatus.Listening)
+                when {
+                    handedOver != null -> adoptHandover(started, handedOver)
+                    applyRemembered(started) -> Unit
+                    else -> {
+                        notify(AudioSyncStatus.Listening)
+                        startPool(started)
+                    }
+                }
                 startRecognition(started)
             }
         } catch (_: Exception) {
@@ -302,6 +354,7 @@ internal class AudioSubtitleSyncController(
 
     fun stopSession() {
         sessionRequest.incrementAndGet()
+        stopPool()
         lockedAtElapsedMs = 0L
         asr?.stopSession()
         if (session != null) Log.i(TAG, "sync session stopped")
@@ -316,6 +369,7 @@ internal class AudioSubtitleSyncController(
         released = true
         SubtitleSyncStatus.publishDiagnostics(null)
         session = null
+        stopPool()
         model = null
         decoder?.release()
         asr?.release()
@@ -337,6 +391,87 @@ internal class AudioSubtitleSyncController(
         candidates = list
         // Download the likeliest English references now so a later pick is instant.
         englishCandidates().take(PREFETCH_REFERENCES).forEach { fetchReference(it, onReady = null) }
+        // Subtitles listed after the pick join the running search.
+        session?.let { current -> if (model == null || estimated) startPool(current) }
+    }
+
+    /**
+     * Starts (or extends) testing the other subtitles in the chosen one's language against the
+     * audio, so a file that fits can replace one that never will.
+     */
+    private fun startPool(current: Session) {
+        if (!enabled || released || session !== current || current.key in switchedAway) return
+        val language = SubtitleCandidatePool.languageKey(candidates.firstOrNull { it.url == current.key }?.language)
+            ?: return
+        val alternatives = candidates
+            .filter { it.url != current.key && SubtitleCandidatePool.languageKey(it.language) == language }
+            .distinctBy { it.url }
+            .take(MAX_ALTERNATIVES)
+        if (alternatives.isEmpty()) return
+        val active = synchronized(poolRequested) {
+            if (poolSession !== current) {
+                poolRequested.clear()
+                poolSession = current
+                pool = SubtitleCandidatePool(current.track) { Log.i(TAG, it) }.apply { mediaDurationMs = this@AudioSubtitleSyncController.mediaDurationMs }
+                Log.i(TAG, "testing ${alternatives.size} other $language subtitles against the audio")
+            }
+            pool
+        } ?: return
+        for (alternative in alternatives) {
+            if (!poolRequested.add(alternative.url)) continue
+            fetchReference(alternative) { dialogue ->
+                if (pool === active) active.addCandidate(alternative.url, dialogue)
+            }
+        }
+        // English references the recognised words can pin to the audio.
+        englishCandidates().take(MAX_REFERENCES).forEach { reference ->
+            if (reference.url != current.key && poolRequested.add(reference.url)) {
+                fetchReference(reference) { dialogue -> if (pool === active) active.addReference(reference.url, dialogue) }
+            }
+        }
+    }
+
+    private fun stopPool() {
+        synchronized(poolRequested) {
+            pool = null
+            poolSession = null
+            poolRequested.clear()
+        }
+    }
+
+    /** Scores the alternatives while the chosen subtitle is unconfirmed; switches to one that fits. */
+    private fun updatePool(current: Session) {
+        val alternatives = pool ?: return
+        if (session !== current || (model != null && !estimated)) return
+        val winner = alternatives.update(timeline, asr?.heardWords(), SystemClock.elapsedRealtime()) ?: return
+        if (session !== current || !enabled || released) return
+        val label = candidates.firstOrNull { it.url == winner.key }?.label?.takeIf { it.isNotBlank() } ?: "another file"
+        Log.i(TAG, "SWITCHING subtitle ${current.key} -> ${winner.key} via ${winner.method}: ${winner.model}")
+        switchedAway += current.key
+        stopPool()
+        remember(winner.key, winner.model)
+        val notice = "Switched to a subtitle that matches the audio: $label"
+        handover = Handover(winner.key, winner.model, winner.method, notice)
+        switchNotice = winner.key to notice
+        SubtitleSyncStatus.requestSubtitleSwitch(winner.key)
+    }
+
+    /** Applies the mapping found for the subtitle that was switched to. */
+    private fun adoptHandover(current: Session, handedOver: Handover) {
+        manualDelayAtLockMs = manualDelayMs()
+        current.tracker.adopt(handedOver.model)
+        model = handedOver.model
+        estimated = false
+        lockMethod = handedOver.method
+        lockedAtElapsedMs = SystemClock.elapsedRealtime()
+        switchNotice = current.key to handedOver.notice
+        Log.i(TAG, "adopted mapping of switched-to subtitle ${handedOver.model}")
+        notify(
+            AudioSyncStatus.Synced(
+                offsetMs = handedOver.model.delayUsAt(playbackPositionMs * 1_000L) / 1_000L,
+                rateCorrected = handedOver.model.segments.first().scale != 1.0,
+            ),
+        )
     }
 
     private fun englishCandidates(): List<ReferenceCandidate> =
@@ -470,6 +605,7 @@ internal class AudioSubtitleSyncController(
                 val referenceTrack = SubtitleSpeechTrack.fromCues(dialogue)
                 val bridge = SubtitleBridge.align(current.track, referenceTrack)
                 Log.i(TAG, "reference ${candidate.url}: bridge=$bridge")
+                pool?.addReference(candidate.url, dialogue)
                 if (bridge != null) {
                     matched.incrementAndGet()
                     engine.addReference(ReferenceSubtitle(candidate.url, dialogue, bridge))
@@ -739,6 +875,7 @@ internal class AudioSubtitleSyncController(
             )
             else -> Unit
         }
+        updatePool(current)
     }
 
     private fun notify(status: AudioSyncStatus) {
@@ -766,6 +903,7 @@ internal class AudioSubtitleSyncController(
         private const val PREFETCH_REFERENCES = 2
         private const val MAX_REFERENCES = 4
         private const val MAX_FALLBACK_REFERENCES = 6
+        private const val MAX_ALTERNATIVES = 12
         private const val OPEN_SUBTITLES_FALLBACK = "https://opensubtitles-v3.strem.io"
         private const val RECOGNIZER_THREADS = 2
         private const val RECOGNIZER_RELEASE_DELAY_MS = 3_000L

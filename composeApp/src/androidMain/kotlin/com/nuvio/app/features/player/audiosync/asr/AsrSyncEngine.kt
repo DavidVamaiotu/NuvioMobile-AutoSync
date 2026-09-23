@@ -88,6 +88,9 @@ internal class AsrSyncEngine(
     /** Heard words so far; exposed for diagnostics. */
     val heardWordCount: Int get() = synchronized(lock) { heard.size }
 
+    /** Snapshot of every word heard so far, in time order. */
+    fun heardWords(): List<HeardWord> = synchronized(lock) { heard.toList() }
+
     fun setRecognizer(recognizer: SpeechToText?) {
         stt = recognizer
         synchronized(lock) { lock.notifyAll() }

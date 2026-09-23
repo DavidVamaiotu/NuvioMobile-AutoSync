@@ -984,6 +984,8 @@ private fun ExoPlayerSurface(
                                 url = subtitle.url,
                                 language = subtitle.language,
                                 headers = externalSubtitles.firstOrNull { it.url == subtitle.url }?.headers.orEmpty(),
+                                label = listOfNotNull(subtitle.display.takeIf { it.isNotBlank() }, subtitle.addonName)
+                                    .joinToString(" · "),
                             )
                         },
                     )
@@ -995,7 +997,7 @@ private fun ExoPlayerSurface(
     LaunchedEffect(exoPlayer) {
         while (isActive) {
             dispatchExoPlayerSnapshot()
-            audioSubtitleSync.onPlaybackPosition(exoPlayer.currentPosition)
+            audioSubtitleSync.onPlaybackPosition(exoPlayer.currentPosition, exoPlayer.duration.takeIf { it != C.TIME_UNSET } ?: 0L)
             delay(250L)
         }
     }

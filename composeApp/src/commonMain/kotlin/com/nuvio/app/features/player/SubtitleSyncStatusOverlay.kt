@@ -37,7 +37,7 @@ internal fun SubtitleSyncStatusOverlay(modifier: Modifier = Modifier) {
     LaunchedEffect(synced, current?.offsetMs) {
         hideAfterSync = false
         if (synced) {
-            delay(8_000)
+            delay(if (current?.notice != null) 12_000 else 8_000)
             hideAfterSync = true
         }
     }
@@ -63,6 +63,7 @@ internal fun SubtitleSyncStatusOverlay(modifier: Modifier = Modifier) {
                 SubtitleSyncDiagnostics.Phase.Unavailable -> "Subtitle sync unavailable" to Color(0xFFFF8A80)
             }
             Text(headline, color = color, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            state.notice?.let { Line(it, Color(0xFF7CE38B)) }
             val listening = if (state.liveOnly) {
                 "Listening live (no look-ahead for this audio)"
             } else {
@@ -71,6 +72,7 @@ internal fun SubtitleSyncStatusOverlay(modifier: Modifier = Modifier) {
             Line("$listening · ${state.wordsHeard} words recognised")
             if (state.recognizer.isNotEmpty()) Line("Speech recognition: ${state.recognizer}")
             if (state.reference.isNotEmpty()) Line("English reference: ${state.reference}")
+            if (state.alternatives.isNotEmpty()) Line("Other subtitles: ${state.alternatives}")
             state.problem?.let { Line(it, Color(0xFFFFB4A9)) }
         }
     }

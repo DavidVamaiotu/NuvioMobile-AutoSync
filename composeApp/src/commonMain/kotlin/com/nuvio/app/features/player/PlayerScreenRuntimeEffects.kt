@@ -190,6 +190,22 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
         playerController?.setSubtitleSyncReferences(addonSubtitles)
     }
 
+    // Audio subtitle sync found a same-language subtitle that fits the audio: select it like a pick.
+    LaunchedEffect(playerController) {
+        val handled = SubtitleSyncStatus.switchRequests.value?.id ?: 0L
+        SubtitleSyncStatus.switchRequests.collect { request ->
+            if (request == null || request.id <= handled) return@collect
+            val addon = addonSubtitles.firstOrNull { it.url == request.url } ?: return@collect
+            isUserExplicitSubtitleSelection = true
+            selectedAddonSubtitleId = addon.selectionKey
+            selectedSubtitleIndex = -1
+            useCustomSubtitles = true
+            preferredSubtitleSelectionApplied = true
+            persistAddonSubtitlePreference(addon)
+            playerController?.setSubtitleUri(addon.url)
+        }
+    }
+
     LaunchedEffect(playerController, activeAddonSubtitleType, activeVideoId) {
         val videoId = activeVideoId ?: return@LaunchedEffect
         playerController?.setSubtitleSyncContent(activeAddonSubtitleType, videoId)

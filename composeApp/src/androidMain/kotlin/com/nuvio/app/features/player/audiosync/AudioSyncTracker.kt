@@ -151,15 +151,7 @@ internal class AudioSyncTracker(
             maxShiftMs = MAX_SHIFT_MS,
         ) ?: return Outcome.NotEnoughEvidence
         lastEstimate = estimate
-        val requiredProminence = if (isStandardRate(estimate.scale)) {
-            ACCEPT_PROMINENCE
-        } else {
-            ACCEPT_PROMINENCE + NON_STANDARD_RATE_PENALTY
-        }
-        val lockable = knownFrames >= MIN_KNOWN_FRAMES && hasEnoughEvidence(estimate) &&
-            !estimate.atSearchEdge && estimate.prominence >= requiredProminence &&
-            confirmedByBothHalves(probabilities, from, estimate)
-        if (lockable) {
+        if (isLockable(estimate, probabilities, from, knownFrames, track)) {
             val locked = SubtitleSyncModel(listOf(SubtitleSyncSegment(0L, estimate.scale, estimate.shiftMs)))
             model = locked
             provisionalModel = null
@@ -268,48 +260,6 @@ internal class AudioSyncTracker(
         disagreeingRuns = 0
         return Outcome.Retracted(best)
     }
-
-    /**
-     * A chance alignment of unrelated subtitles rarely survives being checked on two disjoint halves
-     * of the audio, while a real one shows up in both.
-     */
-    private fun confirmedByBothHalves(
-        probabilities: FloatArray,
-        from: Int,
-        estimate: SubtitleAudioAligner.Estimate,
-    ): Boolean {
-        var knownTotal = 0
-        for (p in probabilities) if (!p.isNaN()) knownTotal++
-        var seen = 0
-        var split = probabilities.size / 2
-        for (i in probabilities.indices) {
-            if (!probabilities[i].isNaN()) seen++
-            if (seen * 2 >= knownTotal) {
-                split = i + 1
-                break
-            }
-        }
-        val halves = listOf(
-            from to probabilities.copyOfRange(0, split),
-            (from + split) to probabilities.copyOfRange(split, probabilities.size),
-        )
-        return halves.all { (halfFrom, halfProbabilities) ->
-            val half = SubtitleAudioAligner.estimate(
-                probabilities = halfProbabilities,
-                fromFrame = halfFrom,
-                track = track,
-                scales = doubleArrayOf(estimate.scale),
-                minShiftMs = -MAX_SHIFT_MS,
-                maxShiftMs = MAX_SHIFT_MS,
-            )
-            half != null &&
-                !half.atSearchEdge &&
-                half.cueCount >= MIN_HALF_CUES &&
-                abs(half.shiftMs - estimate.shiftMs) <= HALF_AGREEMENT_MS
-        }
-    }
-
-    private fun isStandardRate(scale: Double): Boolean = abs(scale - 1.0) < 0.002
 
     private fun follow(
         timeline: SpeechTimeline,
@@ -465,14 +415,80 @@ internal class AudioSyncTracker(
         return splitMs.coerceAtLeast(segment.fromMediaMs + MIN_SEGMENT_MS)
     }
 
-    private fun hasEnoughEvidence(
-        estimate: SubtitleAudioAligner.Estimate,
-        minCues: Int = MIN_CUES,
-    ): Boolean = estimate.cueCount >= minCues && estimate.speechSeconds >= MIN_SPEECH_SECONDS
-
     companion object {
+        /**
+         * Whether [estimate] (from [probabilities] starting at [from], [knownFrames] of them known)
+         * is strong enough to confirm [track]'s mapping: enough dialogue and speech, a clear peak,
+         * and the same answer on both halves of the audio.
+         */
+        fun isLockable(
+            estimate: SubtitleAudioAligner.Estimate,
+            probabilities: FloatArray,
+            from: Int,
+            knownFrames: Int,
+            track: SubtitleSpeechTrack,
+        ): Boolean {
+            val requiredProminence = if (isStandardRate(estimate.scale)) {
+                ACCEPT_PROMINENCE
+            } else {
+                ACCEPT_PROMINENCE + NON_STANDARD_RATE_PENALTY
+            }
+            return knownFrames >= MIN_KNOWN_FRAMES && hasEnoughEvidence(estimate) &&
+                !estimate.atSearchEdge && estimate.prominence >= requiredProminence &&
+                confirmedByBothHalves(probabilities, from, estimate, track)
+        }
+
+        private fun hasEnoughEvidence(
+            estimate: SubtitleAudioAligner.Estimate,
+            minCues: Int = MIN_CUES,
+        ): Boolean = estimate.cueCount >= minCues && estimate.speechSeconds >= MIN_SPEECH_SECONDS
+
+        private fun isStandardRate(scale: Double): Boolean = abs(scale - 1.0) < 0.002
+
+        /**
+         * A chance alignment of unrelated subtitles rarely survives being checked on two disjoint halves
+         * of the audio, while a real one shows up in both.
+         */
+        private fun confirmedByBothHalves(
+            probabilities: FloatArray,
+            from: Int,
+            estimate: SubtitleAudioAligner.Estimate,
+            track: SubtitleSpeechTrack,
+        ): Boolean {
+            var knownTotal = 0
+            for (p in probabilities) if (!p.isNaN()) knownTotal++
+            var seen = 0
+            var split = probabilities.size / 2
+            for (i in probabilities.indices) {
+                if (!probabilities[i].isNaN()) seen++
+                if (seen * 2 >= knownTotal) {
+                    split = i + 1
+                    break
+                }
+            }
+            val halves = listOf(
+                from to probabilities.copyOfRange(0, split),
+                (from + split) to probabilities.copyOfRange(split, probabilities.size),
+            )
+            return halves.all { (halfFrom, halfProbabilities) ->
+                val half = SubtitleAudioAligner.estimate(
+                    probabilities = halfProbabilities,
+                    fromFrame = halfFrom,
+                    track = track,
+                    scales = doubleArrayOf(estimate.scale),
+                    minShiftMs = -MAX_SHIFT_MS,
+                    maxShiftMs = MAX_SHIFT_MS,
+                )
+                half != null &&
+                    !half.atSearchEdge &&
+                    half.cueCount >= MIN_HALF_CUES &&
+                    abs(half.shiftMs - estimate.shiftMs) <= HALF_AGREEMENT_MS
+            }
+        }
+
         private val FRAMES_PER_SECOND = 1_000.0 / SpeechTimeline.FRAME_DURATION_MS
-        private val MAX_ANALYSIS_FRAMES = (20 * 60 * FRAMES_PER_SECOND).toInt()
+        /** The most recent audio searched for a first lock. */
+        val MAX_ANALYSIS_FRAMES = (20 * 60 * FRAMES_PER_SECOND).toInt()
         private val MIN_KNOWN_FRAMES = (60 * FRAMES_PER_SECOND).toInt()
         private val MIN_LOCAL_FRAMES = (120 * FRAMES_PER_SECOND).toInt()
         private val LOCAL_BACK_FRAMES = (180 * FRAMES_PER_SECOND).toInt()

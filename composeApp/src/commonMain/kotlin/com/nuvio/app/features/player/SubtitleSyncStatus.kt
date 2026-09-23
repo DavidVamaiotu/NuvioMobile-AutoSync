@@ -28,9 +28,16 @@ data class SubtitleSyncDiagnostics(
     val wordsHeard: Int = 0,
     val recognizer: String = "",
     val reference: String = "",
+    /** Progress of testing the other subtitles in the same language, e.g. "testing 4 · 7 ruled out". */
+    val alternatives: String = "",
+    /** Something worth telling the user, such as an automatic switch to a better-matching subtitle. */
+    val notice: String? = null,
     /** Why syncing is slower or not possible, when known. */
     val problem: String? = null,
-) {
+)
+
+/** Asks the player screen to select the addon subtitle at [url]; [id] makes repeated requests distinct. */
+data class SubtitleSwitchRequest(val url: String, val id: Long) {
     enum class Phase { Listening, Estimated, Synced, Unavailable }
 }
 
@@ -45,6 +52,12 @@ object SubtitleSyncStatus {
     private val diagnosticsState = MutableStateFlow<SubtitleSyncDiagnostics?>(null)
     val diagnostics: StateFlow<SubtitleSyncDiagnostics?> = diagnosticsState.asStateFlow()
 
+    private val switchRequestState = MutableStateFlow<SubtitleSwitchRequest?>(null)
+
+    /** Latest automatic subtitle switch; the player screen selects it like a user pick. */
+    val switchRequests: StateFlow<SubtitleSwitchRequest?> = switchRequestState.asStateFlow()
+    private var switchCounter = 0L
+
     /** Set by the platform that supports downloading the model. */
     var modelActions: SpeechModelActions? = null
 
@@ -54,6 +67,10 @@ object SubtitleSyncStatus {
 
     fun publishDiagnostics(diagnostics: SubtitleSyncDiagnostics?) {
         diagnosticsState.value = diagnostics
+    }
+
+    fun requestSubtitleSwitch(url: String) {
+        switchRequestState.value = SubtitleSwitchRequest(url, ++switchCounter)
     }
 }
 

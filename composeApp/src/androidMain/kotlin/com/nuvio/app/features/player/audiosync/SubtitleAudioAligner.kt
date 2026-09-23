@@ -65,9 +65,21 @@ internal object SubtitleAudioAligner {
         maxShiftMs: Double,
         /** Latency of the speech detector; 0 when [probabilities] is not detector output. */
         detectorBiasMs: Double = DETECTOR_BIAS_MS,
-    ): Estimate? {
+    ): Estimate? = prepare(probabilities, fromFrame, minShiftMs, maxShiftMs, detectorBiasMs)?.estimate(track, scales)
+
+    /**
+     * Transforms the speech side once so several subtitle files can be scored against the same
+     * audio for the cost of one extra FFT pair each. Null when there is too little known speech.
+     */
+    fun prepare(
+        probabilities: FloatArray,
+        fromFrame: Int,
+        minShiftMs: Double,
+        maxShiftMs: Double,
+        detectorBiasMs: Double = DETECTOR_BIAS_MS,
+    ): PreparedSpeech? {
         val n = probabilities.size
-        if (n < 2 || track.size == 0) return null
+        if (n < 2) return null
         val frameMs = SpeechTimeline.FRAME_DURATION_MS
         val minLag = Math.floorDiv((minShiftMs + detectorBiasMs).roundToInt(), frameMs.toInt())
         val maxLag = Math.floorDiv((maxShiftMs + detectorBiasMs).roundToInt(), frameMs.toInt()) + 1
@@ -96,51 +108,74 @@ internal object SubtitleAudioAligner {
             speechSeconds += p * frameMs / 1_000.0
         }
         if (energy <= 1e-9) return null
-        val norm = sqrt(energy)
 
         // g covers frames [fromFrame - maxLag, fromFrame + n - minLag).
         val gLength = n + lagCount - 1
         val size = Fft.sizeFor(n + gLength)
         val fft = Fft(size)
-        // Audio side, packed as (centered + i * mask), shared by every scale.
+        // Audio side, packed as (centered + i * mask), shared by every scale and subtitle.
         val audioRe = DoubleArray(size)
         val audioIm = DoubleArray(size)
         centered.copyInto(audioRe)
         mask.copyInto(audioIm)
         fft.transform(audioRe, audioIm)
+        return PreparedSpeech(
+            fft, audioRe, audioIm, n, fromFrame, gLength, count, sqrt(energy), speechSeconds, minLag, maxLag, detectorBiasMs,
+        )
+    }
 
-        var best: Estimate? = null
-        var bestPeak = Double.NEGATIVE_INFINITY
-        var unitScale: Estimate? = null
-        for (scale in scales) {
-            val g = track.render(fromFrame - maxLag, fromFrame - maxLag + gLength, scale)
-            val estimate = correlate(
-                fft, audioRe, audioIm, g, n, count, norm, minLag, maxLag, scale, frameMs, detectorBiasMs,
-            ) ?: continue
-            val cues = track.countCuesIn(
-                fromMs = fromFrame * frameMs,
-                toMs = (fromFrame + n) * frameMs,
-                scale = scale,
-                shiftMs = estimate.shiftMs,
-            )
-            val complete = estimate.copy(
-                analysedSeconds = count * frameMs / 1_000.0,
-                speechSeconds = speechSeconds,
-                cueCount = cues,
-            )
-            if (scale == 1.0) unitScale = complete
-            if (complete.peak > bestPeak) {
-                bestPeak = complete.peak
-                best = complete
+    /** The speech side of a correlation, transformed once; see [prepare]. Not thread-safe. */
+    class PreparedSpeech internal constructor(
+        private val fft: Fft,
+        private val audioRe: DoubleArray,
+        private val audioIm: DoubleArray,
+        private val n: Int,
+        private val fromFrame: Int,
+        private val gLength: Int,
+        private val count: Int,
+        private val norm: Double,
+        private val speechSeconds: Double,
+        private val minLag: Int,
+        private val maxLag: Int,
+        private val detectorBiasMs: Double,
+    ) {
+        /** Best mapping of [track] onto the prepared speech among [scales]. */
+        fun estimate(track: SubtitleSpeechTrack, scales: DoubleArray = CANDIDATE_SCALES): Estimate? {
+            if (track.size == 0) return null
+            val frameMs = SpeechTimeline.FRAME_DURATION_MS
+            var best: Estimate? = null
+            var bestPeak = Double.NEGATIVE_INFINITY
+            var unitScale: Estimate? = null
+            for (scale in scales) {
+                val g = track.render(fromFrame - maxLag, fromFrame - maxLag + gLength, scale)
+                val estimate = correlate(
+                    fft, audioRe, audioIm, g, n, count, norm, minLag, maxLag, scale, frameMs, detectorBiasMs,
+                ) ?: continue
+                val cues = track.countCuesIn(
+                    fromMs = fromFrame * frameMs,
+                    toMs = (fromFrame + n) * frameMs,
+                    scale = scale,
+                    shiftMs = estimate.shiftMs,
+                )
+                val complete = estimate.copy(
+                    analysedSeconds = count * frameMs / 1_000.0,
+                    speechSeconds = speechSeconds,
+                    cueCount = cues,
+                )
+                if (scale == 1.0) unitScale = complete
+                if (complete.peak > bestPeak) {
+                    bestPeak = complete.peak
+                    best = complete
+                }
             }
+            val unit = unitScale
+            if (unit != null && best != null && best !== unit && unit.peak >= best.peak - SCALE_PREFERENCE_MARGIN &&
+                isNearUnit(best.scale)
+            ) {
+                return unit
+            }
+            return best
         }
-        val unit = unitScale
-        if (unit != null && best != null && best !== unit && unit.peak >= best.peak - SCALE_PREFERENCE_MARGIN &&
-            isNearUnit(best.scale)
-        ) {
-            return unit
-        }
-        return best
     }
 
     private fun isNearUnit(scale: Double): Boolean = abs(scale - 1.0) < 0.002
