@@ -10,6 +10,8 @@ import org.gradle.api.tasks.TaskAction
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.plugin.mpp.TestExecutable
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask
+import java.net.URI
+import java.security.MessageDigest
 import java.util.Properties
 
 abstract class GenerateRuntimeConfigsTask : DefaultTask() {
@@ -341,13 +343,13 @@ tasks.withType<KotlinCompilationTask<*>>().configureEach {
 val sherpaOnnxVersion = "1.13.8"
 val sherpaOnnxSha256 = "633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96"
 val sherpaOnnxAar: File = project.file("libs/sherpa-onnx-$sherpaOnnxVersion.aar").also { aar ->
-    fun sha256(file: File): String = java.security.MessageDigest.getInstance("SHA-256")
+    fun sha256(file: File): String = MessageDigest.getInstance("SHA-256")
         .digest(file.readBytes()).joinToString("") { "%02x".format(it) }
     if (aar.isFile && sha256(aar) == sherpaOnnxSha256) return@also
     val url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v$sherpaOnnxVersion/sherpa-onnx-$sherpaOnnxVersion.aar"
     logger.lifecycle("Downloading $url")
     val partial = File(aar.path + ".part")
-    java.net.URI(url).toURL().openStream().use { input -> partial.outputStream().use { input.copyTo(it) } }
+    URI(url).toURL().openStream().use { input -> partial.outputStream().use { input.copyTo(it) } }
     check(sha256(partial) == sherpaOnnxSha256) { "Checksum mismatch for $url" }
     partial.renameTo(aar)
 }
