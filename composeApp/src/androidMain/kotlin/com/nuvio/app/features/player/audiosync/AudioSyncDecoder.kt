@@ -26,6 +26,8 @@ import java.nio.ByteOrder
  */
 internal class AudioSyncDecoder(
     private val analyzer: SpeechAnalyzer,
+    /** Called once per audio format that has no usable software decoder. */
+    private val onUnsupportedFormat: (mimeType: String) -> Unit = {},
 ) {
     private sealed interface Item {
         class Sample(val format: Format, val timeUs: Long, val data: ByteArray) : Item
@@ -236,6 +238,7 @@ internal class AudioSyncDecoder(
             unsupportedMimes += mime
             unsupportedMimesSnapshot = unsupportedMimes.toSet()
             Log.i(TAG, "audio sync unavailable for $mime (no software decoder)")
+            runCatching { onUnsupportedFormat(mime) }
             return null
         }
         codec = created

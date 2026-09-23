@@ -20,6 +20,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import android.widget.Toast
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.SideEffect
@@ -75,6 +76,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.CoroutineScope
 import com.nuvio.app.features.addons.httpGetTextWithHeaders
 import com.nuvio.app.features.player.audiosync.AudioSubtitleSyncController
+import com.nuvio.app.features.player.audiosync.AudioSyncStatus
 import com.nuvio.app.features.player.audiosync.selectedAudioFormat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -263,8 +265,18 @@ private fun ExoPlayerSurface(
     var subtitleDelayMs by remember(playerSourceKey) { mutableStateOf(0) }
     var selectedExternalSubtitleMimeType by remember(playerSourceKey) { mutableStateOf<String?>(null) }
     val latestSubtitleDelayMs = rememberUpdatedState(subtitleDelayMs)
+    val audioSyncScope = rememberCoroutineScope()
     val audioSubtitleSync = remember {
-        AudioSubtitleSyncController(context) { latestSubtitleDelayMs.value }
+        AudioSubtitleSyncController(
+            context = context,
+            manualDelayMs = { latestSubtitleDelayMs.value },
+            onStatus = { status ->
+                audioSyncScope.launch {
+                    val message = status.toastMessage() ?: return@launch
+                    Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                }
+            },
+        )
     }
     DisposableEffect(audioSubtitleSync) {
         onDispose { audioSubtitleSync.release() }
@@ -2338,6 +2350,25 @@ private class SubtitleOffsetRenderer(
         val adjustedPositionUs = (positionUs - subtitleDelayUsProvider()).coerceAtLeast(0L)
         super.render(adjustedPositionUs, elapsedRealtimeUs)
     }
+}
+
+private suspend fun AudioSyncStatus.toastMessage(): String? = when (this) {
+    AudioSyncStatus.Listening -> getString(Res.string.player_audio_sync_listening)
+    is AudioSyncStatus.Synced -> getString(
+        if (rateCorrected) Res.string.player_audio_sync_synced_rate else Res.string.player_audio_sync_synced,
+        formatSyncOffset(offsetMs),
+    )
+    is AudioSyncStatus.Adjusted -> getString(Res.string.player_audio_sync_adjusted, formatSyncOffset(offsetMs))
+    is AudioSyncStatus.Unsupported -> getString(
+        Res.string.player_audio_sync_unsupported,
+        mimeType.substringAfter('/').uppercase(),
+    )
+}
+
+private fun formatSyncOffset(offsetMs: Long): String {
+    val sign = if (offsetMs < 0) "-" else "+"
+    val tenths = (kotlin.math.abs(offsetMs) + 50) / 100
+    return "$sign${tenths / 10}.${tenths % 10}s"
 }
 
 private fun diagnosticElapsedSince(startedAtMs: Long): Long =

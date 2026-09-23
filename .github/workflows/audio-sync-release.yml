@@ -1,0 +1,139 @@
+name: Audio Sync Release
+
+# Release trigger: toast feedback for audio subtitle sync
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [audio-sync]
+    paths:
+      - ".github/workflows/audio-sync-release.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: audio-sync-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    env:
+      NUVIO_SUPABASE_URL: ${{ secrets.NUVIO_SUPABASE_URL }}
+      NUVIO_SUPABASE_ANON_KEY: ${{ secrets.NUVIO_SUPABASE_ANON_KEY }}
+      NUVIO_SUPABASE_FALLBACK_URL: ${{ secrets.NUVIO_SUPABASE_FALLBACK_URL }}
+      TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+
+    steps:
+      - name: Checkout audio-sync branch
+        uses: actions/checkout@v6
+        with:
+          ref: audio-sync
+
+      - name: Pick release tag
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          UPSTREAM_TAG="$(
+            gh api repos/NuvioMedia/NuvioMobile/releases \
+              --jq '[.[] | select(.draft == false)][0].tag_name'
+          )"
+          if [[ -z "$UPSTREAM_TAG" || "$UPSTREAM_TAG" == "null" ]]; then
+            echo "No official Nuvio release found"
+            exit 1
+          fi
+
+          PREFIX="${UPSTREAM_TAG}-audiosync."
+          MAX_REVISION=0
+          while IFS= read -r TAG; do
+            if [[ "$TAG" == "$PREFIX"* ]]; then
+              REVISION="${TAG#"$PREFIX"}"
+              if [[ "$REVISION" =~ ^[0-9]+$ ]] && (( REVISION > MAX_REVISION )); then
+                MAX_REVISION="$REVISION"
+              fi
+            fi
+          done < <(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name')
+
+          RELEASE_TAG="${PREFIX}$(( MAX_REVISION + 1 ))"
+          echo "upstream_tag=$UPSTREAM_TAG" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "Audio sync release: $RELEASE_TAG"
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Configure release signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.AUTOSYNC_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.AUTOSYNC_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.AUTOSYNC_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.AUTOSYNC_KEY_PASSWORD }}
+        run: |
+          if [[ -z "$KEYSTORE_BASE64" || -z "$STORE_PASSWORD" || -z "$KEY_ALIAS" || -z "$KEY_PASSWORD" ]]; then
+            echo "Missing AutoSync signing secret"
+            exit 1
+          fi
+
+          KEYSTORE_PATH="$RUNNER_TEMP/audiosync-release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+
+          {
+            echo "NUVIO_RELEASE_STORE_FILE=$KEYSTORE_PATH"
+            echo "NUVIO_RELEASE_STORE_PASSWORD=$STORE_PASSWORD"
+            echo "NUVIO_RELEASE_KEY_ALIAS=$KEY_ALIAS"
+            echo "NUVIO_RELEASE_KEY_PASSWORD=$KEY_PASSWORD"
+
+            # Public Nuvio integration configuration
+            echo "SIMKL_CLIENT_ID=dc20e0db975583b15096267cee79cd23b1f56d4bd301ce3c51e4a96a49c834a6"
+            echo "SIMKL_REDIRECT_URI=nuvio://auth/simkl"
+            echo "SIMKL_APP_NAME=nuvio"
+            echo "INTRODB_API_URL=https://api.introdb.app/"
+            echo "IMDB_RATINGS_API_BASE_URL=https://seriesgraph.com/"
+            echo "IMDB_TAPFRAME_API_BASE_URL=https://imdb.tapframe.space/"
+          } > local.properties
+
+      - name: Run audio sync host tests
+        run: |
+          ./gradlew :composeApp:testAndroidHostTest -Pnuvio.android.distribution=full \
+            --tests "com.nuvio.app.features.player.audiosync.*" --stacktrace
+
+      - name: Build signed release APKs
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+        run: |
+          ./gradlew :androidApp:assembleFullRelease \
+            -Pnuvio.app.versionName="$RELEASE_TAG" \
+            --stacktrace
+          APK_COUNT="$(find androidApp/build/outputs/apk/full/release -maxdepth 1 -type f -name '*.apk' | wc -l)"
+          if [[ "$APK_COUNT" -eq 0 ]]; then
+            echo "No release APKs were produced"
+            exit 1
+          fi
+          find androidApp/build/outputs/apk/full/release -maxdepth 1 -type f -name '*.apk' -print
+
+      # Published as a pre-release that is never marked latest, so the AutoSync app's
+      # update checker (which reads this repository's releases) keeps offering AutoSync builds.
+      - name: Create GitHub pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_TAG: ${{ steps.version.outputs.upstream_tag }}
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            androidApp/build/outputs/apk/full/release/*.apk \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$RELEASE_TAG" \
+            --prerelease \
+            --latest=false \
+            --notes "Audio subtitle sync build (branch audio-sync) on top of Nuvio $UPSTREAM_TAG sources. Addon subtitles are aligned to the dialogue by analysing the audio as it buffers; a toast shows when syncing starts and when subtitles are synced. Toggle: Settings > Playback > Sync subtitles to audio. Signed with the AutoSync key, so it installs over the AutoSync app."

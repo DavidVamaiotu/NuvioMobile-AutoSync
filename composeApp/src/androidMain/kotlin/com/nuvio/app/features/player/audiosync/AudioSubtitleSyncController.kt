@@ -30,6 +30,8 @@ internal class AudioSubtitleSyncController(
     context: Context,
     /** The user's current manual subtitle delay. */
     private val manualDelayMs: () -> Int,
+    /** User-visible progress, called from background threads. */
+    private val onStatus: (AudioSyncStatus) -> Unit = {},
 ) : AudioSampleSink {
     private val appContext = context.applicationContext
     private val timeline = SpeechTimeline()
@@ -141,6 +143,7 @@ internal class AudioSubtitleSyncController(
                 if (sessionRequest.get() != request) return@execute
                 session = Session(key, track)
                 Log.i(TAG, "sync session started for $key with ${track.size} dialogue cues")
+                if (enabled) notify(AudioSyncStatus.Listening)
             }
         } catch (_: Exception) {
             // Executor already shut down: the surface is being released.
@@ -218,7 +221,10 @@ internal class AudioSubtitleSyncController(
             decoderUnavailable = true
             return null
         }
-        return AudioSyncDecoder(SpeechAnalyzer(SileroVad(weights), timeline)).also { decoder = it }
+        val analyzer = SpeechAnalyzer(SileroVad(weights), timeline)
+        return AudioSyncDecoder(analyzer) { mime ->
+            if (session != null) notify(AudioSyncStatus.Unsupported(mime))
+        }.also { decoder = it }
     }
 
     private fun scheduleAlignment() {
@@ -260,6 +266,12 @@ internal class AudioSubtitleSyncController(
                 lockedAtElapsedMs = SystemClock.elapsedRealtime()
                 model = outcome.model
                 Log.i(TAG, "LOCKED ${outcome.model} ${describe(outcome.estimate)} in ${elapsed}ms")
+                notify(
+                    AudioSyncStatus.Synced(
+                        offsetMs = outcome.model.delayUsAt(positionMs * 1_000L) / 1_000L,
+                        rateCorrected = outcome.estimate.scale != 1.0,
+                    ),
+                )
             }
             is AudioSyncTracker.Outcome.Refined -> {
                 model = outcome.model
@@ -268,12 +280,20 @@ internal class AudioSubtitleSyncController(
             is AudioSyncTracker.Outcome.Jumped -> {
                 model = outcome.model
                 Log.i(TAG, "jump detected ${outcome.model} ${describe(outcome.estimate)}")
+                notify(AudioSyncStatus.Adjusted(offsetMs = outcome.model.delayUsAt(positionMs * 1_000L) / 1_000L))
             }
             is AudioSyncTracker.Outcome.Searching -> Log.d(
                 TAG,
                 "searching ${outcome.estimate?.let(::describe) ?: "-"} known=${timeline.knownFrameCount()} in ${elapsed}ms",
             )
             else -> Unit
+        }
+    }
+
+    private fun notify(status: AudioSyncStatus) {
+        try {
+            onStatus(status)
+        } catch (_: Throwable) {
         }
     }
 
@@ -320,6 +340,21 @@ internal class AudioSubtitleSyncController(
             return a.language == b.language && a.channelCount == b.channelCount && a.sampleRate == b.sampleRate
         }
     }
+}
+
+/** Progress worth showing to the user. */
+internal sealed interface AudioSyncStatus {
+    /** A subtitle was picked and the audio is being analysed. */
+    data object Listening : AudioSyncStatus
+
+    /** Subtitles now follow the audio; [offsetMs] is the applied delay at the playhead. */
+    data class Synced(val offsetMs: Long, val rateCorrected: Boolean) : AudioSyncStatus
+
+    /** The subtitle timing changed partway through (a different cut). */
+    data class Adjusted(val offsetMs: Long) : AudioSyncStatus
+
+    /** The audio codec cannot be decoded on this device, so syncing is off for this stream. */
+    data class Unsupported(val mimeType: String) : AudioSyncStatus
 }
 
 /** Format of the audio track the player currently has selected, if any. */
