@@ -1,6 +1,6 @@
 name: Audio Sync Release
 
-# Release trigger: no 0.1% stretch from the subtitle pool; provisional estimates never override a sync
+# Release trigger: no 0.1% stretch from the subtitle pool; APK also kept with the run
 
 on:
   workflow_dispatch:
@@ -120,6 +120,14 @@ jobs:
             exit 1
           fi
           find androidApp/build/outputs/apk/full/release -maxdepth 1 -type f -name '*.apk' -print
+
+      # Kept with the run too, so a build is downloadable even if publishing the release fails.
+      - name: Upload arm64 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.release_tag }}-arm64-v8a
+          path: androidApp/build/outputs/apk/full/release/androidApp-full-arm64-v8a-release.apk
+          retention-days: 14
 
       # Published as a pre-release that is never marked latest, so the AutoSync app's
       # update checker (which reads this repository's releases) keeps offering AutoSync builds.
