@@ -142,12 +142,10 @@ internal class AudioSyncTracker(
         val provisionalFrames = (provisionalPolicy.minKnownSeconds * FRAMES_PER_SECOND).toInt()
         val minFrames = if (provisionalPolicy.enabled) minOf(MIN_KNOWN_FRAMES, provisionalFrames) else MIN_KNOWN_FRAMES
         if (knownFrames < minFrames) return Outcome.NotEnoughEvidence
-        val estimate = SubtitleAudioAligner.estimate(
-            segments = segments,
-            track = track,
-            minShiftMs = -MAX_SHIFT_MS,
-            maxShiftMs = MAX_SHIFT_MS,
-        ) ?: return Outcome.NotEnoughEvidence
+        // One transform of the speech serves every check below; each ratio is correlated once.
+        val speech = SubtitleAudioAligner.prepare(segments, -MAX_SHIFT_MS, MAX_SHIFT_MS)
+            ?: return Outcome.NotEnoughEvidence
+        val estimate = speech.estimate(track) ?: return Outcome.NotEnoughEvidence
         lastEstimate = estimate
         if (isLockable(estimate, segments, knownFrames, track)) {
             val locked = SubtitleSyncModel(listOf(SubtitleSyncSegment(0L, estimate.scale, estimate.shiftMs)))
@@ -158,24 +156,16 @@ internal class AudioSyncTracker(
         val candidate = if (!provisionalPolicy.unitScaleOnly || estimate.scale == 1.0) {
             estimate
         } else {
-            SubtitleAudioAligner.estimate(
-                segments = segments,
-                track = track,
-                scales = doubleArrayOf(1.0),
-                minShiftMs = -MAX_SHIFT_MS,
-                maxShiftMs = MAX_SHIFT_MS,
-            ) ?: return Outcome.Searching(estimate)
+            speech.estimate(track, doubleArrayOf(1.0)) ?: return Outcome.Searching(estimate)
         }
-        val nearUnit = SubtitleAudioAligner.estimate(
-            segments = segments,
+        val nearUnit = speech.estimate(
             track = track,
             scales = doubleArrayOf(1.0),
             minShiftMs = -provisionalPolicy.nearRangeMs,
             maxShiftMs = provisionalPolicy.nearRangeMs,
         )
         val nearRated = if (provisionalPolicy.nearRateMargin >= 0 && nearUnit != null) {
-            SubtitleAudioAligner.estimate(
-                segments = segments,
+            speech.estimate(
                 track = track,
                 scales = NON_UNIT_SCALES,
                 minShiftMs = -provisionalPolicy.nearRangeMs,
@@ -342,20 +332,10 @@ internal class AudioSyncTracker(
         current: SubtitleSyncModel,
         segment: SubtitleSyncSegment,
     ): Outcome? {
-        val here = SubtitleAudioAligner.estimate(
-            segments = heard,
-            track = track,
-            scales = doubleArrayOf(segment.scale),
-            minShiftMs = -MAX_SHIFT_MS,
-            maxShiftMs = MAX_SHIFT_MS,
-        ) ?: return null
-        val neighbour = SubtitleAudioAligner.estimate(
-            segments = heard,
-            track = track,
-            scales = doubleArrayOf(segment.scale * NEAR_RATE, segment.scale / NEAR_RATE),
-            minShiftMs = -MAX_SHIFT_MS,
-            maxShiftMs = MAX_SHIFT_MS,
-        ) ?: return null
+        val speech = SubtitleAudioAligner.prepare(heard, -MAX_SHIFT_MS, MAX_SHIFT_MS) ?: return null
+        val here = speech.estimate(track, doubleArrayOf(segment.scale)) ?: return null
+        val neighbour = speech.estimate(track, doubleArrayOf(segment.scale * NEAR_RATE, segment.scale / NEAR_RATE))
+            ?: return null
         if (neighbour.atSearchEdge || neighbour.peak < here.peak + RATE_SWITCH_MARGIN) return null
         val updated = SubtitleSyncModel(
             current.segments.dropLast(1) + segment.copy(scale = neighbour.scale, shiftMs = neighbour.shiftMs),

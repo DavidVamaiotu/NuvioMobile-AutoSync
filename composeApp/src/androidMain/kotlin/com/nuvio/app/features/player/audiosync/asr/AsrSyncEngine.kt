@@ -49,7 +49,8 @@ internal class AsrSyncEngine(
     /** Runs on the worker thread before it starts (e.g. to lower its priority). */
     private val workerSetup: () -> Unit = {},
 ) {
-    private class Segment(val startFrame: Int, val samples: FloatArray) {
+    /** [spread]: sampled away from the playhead, recognised first (see [nextSegment]). */
+    private class Segment(val startFrame: Int, val samples: FloatArray, val spread: Boolean) {
         val endFrame: Int get() = startFrame + samples.size / SileroVad.CHUNK_SAMPLES
     }
 
@@ -100,8 +101,12 @@ internal class AsrSyncEngine(
         playheadFrame = (positionMs / SpeechTimeline.FRAME_DURATION_MS).toInt()
     }
 
-    fun offerSegment(startFrame: Int, samples: FloatArray) {
-        val segment = Segment(startFrame, samples)
+    /**
+     * Queues a speech segment for recognition. [spread] marks speech sampled across the film: words
+     * from far-apart places pin a reference fastest, so it goes first.
+     */
+    fun offerSegment(startFrame: Int, samples: FloatArray, spread: Boolean = false) {
+        val segment = Segment(startFrame, samples, spread)
         synchronized(lock) {
             if (released) return
             val range = segment.startFrame until segment.endFrame
@@ -171,9 +176,25 @@ internal class AsrSyncEngine(
     }
 
     private fun segmentPriority(segment: Segment): Long {
+        if (segment.spread) return SPREAD_PRIORITY
         val distance = segment.startFrame - playheadFrame
         // Upcoming speech first (nearest first), then the most recent past speech.
         return if (distance >= -BEHIND_GRACE_FRAMES) distance.toLong() else 1_000_000L - distance
+    }
+
+    /**
+     * The next segment to recognise. Sampled speech first, taking the place with the fewest
+     * recognised segments around it, so words arrive from every sampled place early; then the
+     * nearest upcoming speech. Call with [lock] held and the queue not empty.
+     */
+    private fun nextSegment(): Segment {
+        if (queue.peek()?.spread != true) return queue.poll()
+        val next = queue.filter { it.spread }.minWith(
+            compareBy<Segment>({ segment -> covered.count { abs(it.first - segment.startFrame) <= SPREAD_RADIUS_FRAMES } })
+                .thenBy { it.startFrame },
+        )
+        queue.remove(next)
+        return next
     }
 
     private fun ensureWorker() {
@@ -191,7 +212,7 @@ internal class AsrSyncEngine(
             val (segment, recognizer) = synchronized(lock) {
                 while (!released && (queue.isEmpty() || stt == null || target == null || locked)) lock.wait()
                 if (released) return
-                queue.poll().also { queuedSamples -= it.samples.size } to stt!!
+                nextSegment().also { queuedSamples -= it.samples.size } to stt!!
             }
             val words = try {
                 recognizer.transcribe(segment.samples)
@@ -279,6 +300,8 @@ internal class AsrSyncEngine(
         /** About 8 minutes of speech at 16 kHz. */
         private const val MAX_QUEUED_SAMPLES = 16_000L * 60 * 8
         private const val BEHIND_GRACE_FRAMES = 94 // 3 s
+        private const val SPREAD_PRIORITY = -2_000_000L
+        private const val SPREAD_RADIUS_FRAMES = 2_813 // 90 s
         private val FINE_TUNE_MAX_FRAMES = (10 * 60 * 1_000 / SpeechTimeline.FRAME_DURATION_MS).toInt()
         private const val FINE_TUNE_WINDOW_MS = 1_500.0
         private const val FINE_TUNE_MAX_MOVE_MS = 1_200.0

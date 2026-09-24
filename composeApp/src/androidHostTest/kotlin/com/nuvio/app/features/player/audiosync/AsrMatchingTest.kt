@@ -1,11 +1,13 @@
 package com.nuvio.app.features.player.audiosync
 
+import com.nuvio.app.features.player.audiosync.asr.AsrSyncEngine
 import com.nuvio.app.features.player.audiosync.asr.HeardWord
 import com.nuvio.app.features.player.audiosync.asr.SubtitleBridge
 import com.nuvio.app.features.player.audiosync.asr.WordAnchorMatcher
 import kotlin.math.abs
 import kotlin.random.Random
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -66,6 +68,27 @@ class AsrMatchingTest {
             SubtitleBridge.align(SubtitleSpeechTrack.fromCues(translated), SubtitleSpeechTrack.fromCues(english)),
         )
         assertTrue(abs(bridge.shiftSec - 4.2) < 0.05, "bridge $bridge")
+    }
+
+    @Test
+    fun sampledSpeechIsRecognisedFirstAcrossPlaces() {
+        val order = java.util.Collections.synchronizedList(ArrayList<Int>())
+        val done = java.util.concurrent.CountDownLatch(6)
+        val engine = AsrSyncEngine(SpeechTimeline(), onLock = {})
+        engine.startSession(SubtitleSpeechTrack.fromCues(script(Random(6), 30)), emptyList())
+        fun segment(frame: Int) = FloatArray(SileroVad.CHUNK_SAMPLES * 10) { frame.toFloat() }
+        engine.onPlayhead(0L)
+        listOf(100, 200, 300).forEach { engine.offerSegment(it, segment(it)) }
+        // Two segments sampled at one place (~30 min), one at another (~60 min).
+        listOf(56_000, 56_100, 112_000).forEach { engine.offerSegment(it, segment(it), spread = true) }
+        engine.setRecognizer { samples ->
+            order += samples[0].toInt()
+            done.countDown()
+            emptyList()
+        }
+        assertTrue(done.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        engine.release()
+        assertEquals(listOf(56_000, 112_000, 56_100, 100, 200, 300), order.toList())
     }
 
     @Test

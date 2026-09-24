@@ -91,6 +91,42 @@ class SpotSamplingTest {
         assertTrue(split.cueCount < single.cueCount, "${split.cueCount} vs ${single.cueCount}")
     }
 
+    @Test
+    fun correlationMatchesDirectComputationWithAndWithoutGaps() {
+        val spoken = cues(Random(60), 5_000L, 90_000L)
+        val track = SubtitleSpeechTrack.fromCues(spoken.map { (a, b, t) -> Triple(a - 1_300L, b - 1_300L, t) })
+        val base = speechFor(spoken, Random(61)).snapshot(0, 2_500)
+        val withGaps = base.copyOf().also { for (f in 900 until 960) it[f] = Float.NaN }
+        for (probabilities in listOf(base, withGaps)) {
+            val fromFrame = 40
+            val slice = probabilities.copyOfRange(fromFrame, probabilities.size)
+            val estimate = SubtitleAudioAligner.estimate(
+                probabilities = slice, fromFrame = fromFrame, track = track, scales = doubleArrayOf(1.0),
+                minShiftMs = -10_000.0, maxShiftMs = 10_000.0,
+            )!!
+            // Direct masked Pearson correlation per lag.
+            val frameMs = SpeechTimeline.FRAME_DURATION_MS
+            val bias = SubtitleAudioAligner.DETECTOR_BIAS_MS
+            val minLag = Math.floorDiv((-10_000.0 + bias).roundToInt(), frameMs.toInt())
+            val maxLag = Math.floorDiv((10_000.0 + bias).roundToInt(), frameMs.toInt()) + 1
+            val known = slice.indices.filter { !slice[it].isNaN() }
+            val mean = known.sumOf { slice[it].toDouble() } / known.size
+            val norm = kotlin.math.sqrt(known.sumOf { (slice[it] - mean) * (slice[it] - mean) })
+            var bestPeak = Double.NEGATIVE_INFINITY
+            for (lag in minLag..maxLag) {
+                val g = track.render(fromFrame - lag, fromFrame - lag + slice.size, 1.0)
+                var c1 = 0.0; var cm = 0.0; var cm2 = 0.0
+                for (i in known) {
+                    c1 += (slice[i] - mean) * g[i]; cm += g[i]; cm2 += g[i] * g[i]
+                }
+                val variance = cm2 - cm * cm / known.size
+                if (variance > 1e-6 * known.size && cm > 0.5) bestPeak = maxOf(bestPeak, c1 / (norm * kotlin.math.sqrt(variance)))
+            }
+            assertEquals(bestPeak, estimate.peak, 1e-9)
+            assertTrue(abs(estimate.shiftMs - 1_300.0) < 64.0, "shift ${estimate.shiftMs}")
+        }
+    }
+
     private fun overlap(a: Long, b: Long, from: Long, to: Long): Long = (minOf(b, to) - maxOf(a, from)).coerceAtLeast(0L)
 
     private fun cues(random: Random, fromMs: Long, toMs: Long): List<Triple<Long, Long, String>> {

@@ -348,9 +348,16 @@ internal class AudioSubtitleSyncController(
         Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
         val weights = runCatching { loadWeights(appContext) }.getOrNull() ?: return
         createDecoder()
-        val analyzer = SpeechAnalyzer(SileroVad(weights), timeline)
-        asr?.let { engine -> analyzer.chunkListener = SpeechSegmenter(engine::offerSegment) }
-        val decoder = AudioSyncDecoder(analyzer, analyzer, allowVendorDecoders = false)
+        // One decoder per worker: each reads a different place, so their audio must not mix.
+        val decoders = List(SPOT_WORKERS) {
+            val analyzer = SpeechAnalyzer(SileroVad(weights), timeline)
+            asr?.let { engine ->
+                analyzer.chunkListener = SpeechSegmenter { startFrame, samples ->
+                    engine.offerSegment(startFrame, samples, spread = true)
+                }
+            }
+            AudioSyncDecoder(analyzer, analyzer, allowVendorDecoders = false)
+        }
         try {
             // Every subtitle at hand shows roughly where people talk, even with its timing off.
             val tracks = listOf(current.track) + englishCandidates()
@@ -364,15 +371,11 @@ internal class AudioSubtitleSyncController(
             if (spots.isEmpty()) return
             Log.i(TAG, "sampling audio at ${spots.map { it / 1_000 }}s")
             spotStatus = "sampling ${spots.size} dialogue spots…"
-            val sampler = AudioSpotSampler(
-                uri = source.uri,
-                dataSourceFactory = source.dataSourceFactory,
-                extractorsFactory = AudioSyncExtractorsFactory(source.extractorsFactory, SpotSink(decoder)),
-                maxBytes = MAX_SPOT_BYTES,
-            )
+            val sampler = AudioSpotSampler(source.uri, source.dataSourceFactory, MAX_SPOT_BYTES)
             val result = sampler.run(
                 spotsMs = spots,
                 spotMs = SPOT_MS,
+                workers = decoders.map { AudioSyncExtractorsFactory(source.extractorsFactory, SpotSink(it)) },
                 isCancelled = {
                     released || !enabled || sourceKey != source.sourceKey || session == null ||
                         (model != null && !estimated)
@@ -382,11 +385,11 @@ internal class AudioSubtitleSyncController(
             }
             Log.i(TAG, "sampled ${result.sampled} spots, ${result.bytes / 1_000_000} MB, failure=${result.failure}")
             if (result.failure != null && result.sampled == 0) spotStatus = "not possible for this stream"
-            decoder.awaitDrained(DRAIN_TIMEOUT_MS)
+            decoders.forEach { it.awaitDrained(DRAIN_TIMEOUT_MS) }
         } catch (error: Throwable) {
             Log.w(TAG, "audio sampling failed: ${error.message}")
         } finally {
-            decoder.release()
+            decoders.forEach(AudioSyncDecoder::release)
         }
     }
 
@@ -1033,6 +1036,7 @@ internal class AudioSubtitleSyncController(
 
         // Sampling audio across the film.
         private const val SPOT_COUNT = 4
+        private const val SPOT_WORKERS = 2
         private const val SPOT_MS = 30_000L
         private const val MAX_SPOT_BYTES = 150L * 1_000_000L
         private const val MIN_SAMPLED_FILM_MS = 20 * 60_000L
@@ -1041,7 +1045,7 @@ internal class AudioSubtitleSyncController(
         private const val DRAIN_TIMEOUT_MS = 10_000L
 
         /** Playback has started and buffered this much before sampling competes for bandwidth. */
-        private val SAMPLE_AFTER_FRAMES = (15_000 / SpeechTimeline.FRAME_DURATION_MS).toInt()
+        private val SAMPLE_AFTER_FRAMES = (5_000 / SpeechTimeline.FRAME_DURATION_MS).toInt()
         private val NEAR_PLAYHEAD_FRAMES = (5_000 / SpeechTimeline.FRAME_DURATION_MS).toInt()
         private const val OPEN_SUBTITLES_FALLBACK = "https://opensubtitles-v3.strem.io"
         private const val RECOGNIZER_THREADS = 2

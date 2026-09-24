@@ -124,7 +124,7 @@ internal object SubtitleAudioAligner {
             // Audio side, packed as (centered + i * mask), shared by every scale and subtitle.
             val audioRe = DoubleArray(size)
             val audioIm = DoubleArray(size)
-            var known = false
+            var known = 0
             for (i in 0 until n) {
                 val p = segment.probabilities[i]
                 if (p.isNaN()) continue
@@ -133,12 +133,12 @@ internal object SubtitleAudioAligner {
                 audioIm[i] = 1.0
                 energy += c * c
                 speechSeconds += p * frameMs / 1_000.0
-                known = true
+                known++
             }
-            if (!known) continue
+            if (known == 0) continue
             val fft = Fft(size)
             fft.transform(audioRe, audioIm)
-            parts += Part(fft, audioRe, audioIm, n, segment.fromFrame, gLength)
+            parts += Part(fft, audioRe, audioIm, n, segment.fromFrame, gLength, fullyKnown = known == n)
         }
         if (energy <= 1e-9 || parts.isEmpty()) return null
         return PreparedSpeech(parts, count, sqrt(energy), speechSeconds, minLag, maxLag, detectorBiasMs)
@@ -152,9 +152,15 @@ internal object SubtitleAudioAligner {
         val n: Int,
         val fromFrame: Int,
         val gLength: Int,
+        /** No unknown frames: the mask terms are plain window sums (see [accumulateWindowSums]). */
+        val fullyKnown: Boolean,
     )
 
-    /** The speech side of a correlation, transformed once; see [prepare]. Not thread-safe. */
+    /**
+     * The speech side of a correlation, transformed once; see [prepare]. Correlations already
+     * computed for a subtitle and ratio are kept, so asking again (another ratio subset, or a
+     * narrower shift range) costs nothing. Not thread-safe.
+     */
     class PreparedSpeech internal constructor(
         private val parts: List<Part>,
         private val count: Int,
@@ -164,24 +170,35 @@ internal object SubtitleAudioAligner {
         private val maxLag: Int,
         private val detectorBiasMs: Double,
     ) {
-        /** Best mapping of [track] onto the prepared speech among [scales]. */
-        fun estimate(track: SubtitleSpeechTrack, scales: DoubleArray = CANDIDATE_SCALES): Estimate? {
+        private val correlations = HashMap<Pair<SubtitleSpeechTrack, Double>, DoubleArray>()
+
+        /**
+         * Best mapping of [track] onto the prepared speech among [scales], with the shift searched
+         * in [minShiftMs, maxShiftMs] (clipped to the prepared range; null keeps the full range).
+         */
+        fun estimate(
+            track: SubtitleSpeechTrack,
+            scales: DoubleArray = CANDIDATE_SCALES,
+            minShiftMs: Double? = null,
+            maxShiftMs: Double? = null,
+        ): Estimate? {
             if (track.size == 0) return null
             val frameMs = SpeechTimeline.FRAME_DURATION_MS
-            val lagCount = maxLag - minLag + 1
+            // Index k = maxLag - lag; a narrower shift range is a slice of the same lags.
+            val rangeMaxLag = maxShiftMs?.let { Math.floorDiv((it + detectorBiasMs).roundToInt(), frameMs.toInt()) + 1 }
+                ?.coerceAtMost(maxLag) ?: maxLag
+            val rangeMinLag = minShiftMs?.let { Math.floorDiv((it + detectorBiasMs).roundToInt(), frameMs.toInt()) }
+                ?.coerceAtLeast(minLag) ?: minLag
+            if (rangeMinLag > rangeMaxLag) return null
+            val fromIndex = maxLag - rangeMaxLag
+            val toIndex = maxLag - rangeMinLag + 1
             var best: Estimate? = null
             var bestPeak = Double.NEGATIVE_INFINITY
             var unitScale: Estimate? = null
+            computeCorrelations(track, scales.filter { (track to it) !in correlations })
             for (scale in scales) {
-                val c1 = DoubleArray(lagCount)
-                val cm = DoubleArray(lagCount)
-                val cm2 = DoubleArray(lagCount)
-                for (part in parts) {
-                    val g = track.render(part.fromFrame - maxLag, part.fromFrame - maxLag + part.gLength, scale)
-                    accumulateTerms(part, g, lagCount, c1, cm, cm2)
-                }
-                val estimate = correlationPeak(c1, cm, cm2, count, norm, maxLag, scale, frameMs, detectorBiasMs)
-                    ?: continue
+                val correlation = correlations.getValue(track to scale).copyOfRange(fromIndex, toIndex)
+                val estimate = correlationPeak(correlation, rangeMaxLag, scale, frameMs, detectorBiasMs) ?: continue
                 val cues = parts.sumOf { part ->
                     track.countCuesIn(
                         fromMs = part.fromFrame * frameMs,
@@ -208,6 +225,37 @@ internal object SubtitleAudioAligner {
                 return unit
             }
             return best
+        }
+
+        /**
+         * Masked Pearson correlation of [track] at each of [scales] for every prepared lag (NaN
+         * where undefined), added to the cache. On stretches without gaps two ratios share each
+         * transform and the mask terms come from window sums: the same numbers for a third of the work.
+         */
+        private fun computeCorrelations(track: SubtitleSpeechTrack, scales: List<Double>) {
+            if (scales.isEmpty()) return
+            val lagCount = maxLag - minLag + 1
+            val c1 = List(scales.size) { DoubleArray(lagCount) }
+            val cm = List(scales.size) { DoubleArray(lagCount) }
+            val cm2 = List(scales.size) { DoubleArray(lagCount) }
+            for (part in parts) {
+                val g = scales.map { track.render(part.fromFrame - maxLag, part.fromFrame - maxLag + part.gLength, it) }
+                if (part.fullyKnown) {
+                    for (first in scales.indices step 2) {
+                        val second = (first + 1).takeIf { it < scales.size }
+                        accumulateCrossTerms(part, g[first], second?.let(g::get), lagCount, c1[first], second?.let(c1::get))
+                    }
+                    for (j in scales.indices) accumulateWindowSums(g[j], part.n, lagCount, cm[j], cm2[j])
+                } else {
+                    for (j in scales.indices) accumulateTerms(part, g[j], lagCount, c1[j], cm[j], cm2[j])
+                }
+            }
+            for (j in scales.indices) {
+                correlations[track to scales[j]] = DoubleArray(lagCount) { k ->
+                    val variance = cm2[j][k] - cm[j][k] * cm[j][k] / count
+                    if (variance > 1e-6 * count && cm[j][k] > 0.5) c1[j][k] / (norm * sqrt(variance)) else Double.NaN
+                }
+            }
         }
     }
 
@@ -275,27 +323,77 @@ internal object SubtitleAudioAligner {
         }
     }
 
-    /** Masked Pearson correlation per lag from the summed terms, and its peak. */
+    /**
+     * Adds sum(centered * g) per lag for one or two subtitle renderings [gA] and [gB] of a stretch
+     * without gaps: both real, so they share one forward and one inverse transform.
+     */
+    private fun accumulateCrossTerms(
+        part: Part,
+        gA: DoubleArray,
+        gB: DoubleArray?,
+        lagCount: Int,
+        c1A: DoubleArray,
+        c1B: DoubleArray?,
+    ) {
+        val fft = part.fft
+        val size = fft.size
+        val audioRe = part.audioRe
+        val audioIm = part.audioIm
+        // Subtitle side, packed as (gA + i * gB).
+        val subRe = DoubleArray(size)
+        val subIm = DoubleArray(size)
+        gA.copyInto(subRe)
+        gB?.copyInto(subIm)
+        fft.transform(subRe, subIm)
+        // Unpack X = FFT(centered), GA and GB, and form conj(X) * GA + i * conj(X) * GB.
+        val outRe = DoubleArray(size)
+        val outIm = DoubleArray(size)
+        for (k in 0 until size) {
+            val j = if (k == 0) 0 else size - k
+            val xRe = 0.5 * (audioRe[k] + audioRe[j]); val xIm = 0.5 * (audioIm[k] - audioIm[j])
+            val aRe = 0.5 * (subRe[k] + subRe[j]); val aIm = 0.5 * (subIm[k] - subIm[j])
+            val bRe = 0.5 * (subIm[k] + subIm[j]); val bIm = -0.5 * (subRe[k] - subRe[j])
+            val pRe = xRe * aRe + xIm * aIm
+            val pIm = xRe * aIm - xIm * aRe
+            val qRe = xRe * bRe + xIm * bIm
+            val qIm = xRe * bIm - xIm * bRe
+            outRe[k] = pRe - qIm
+            outIm[k] = pIm + qRe
+        }
+        fft.transform(outRe, outIm, inverse = true)
+        val inv = 1.0 / size
+        for (k in 0 until lagCount) {
+            c1A[k] += outRe[k] * inv
+            c1B?.let { it[k] += outIm[k] * inv }
+        }
+    }
+
+    /**
+     * Adds sum(mask * g) and sum(mask * g^2) per lag for a stretch without gaps, where the mask is
+     * all ones and both are sliding sums over [n] frames: g[k] + ... + g[k + n - 1].
+     */
+    private fun accumulateWindowSums(g: DoubleArray, n: Int, lagCount: Int, cm: DoubleArray, cm2: DoubleArray) {
+        val prefix = DoubleArray(g.size + 1)
+        val prefixSquares = DoubleArray(g.size + 1)
+        for (i in g.indices) {
+            prefix[i + 1] = prefix[i] + g[i]
+            prefixSquares[i + 1] = prefixSquares[i] + g[i] * g[i]
+        }
+        for (k in 0 until lagCount) {
+            cm[k] += prefix[k + n] - prefix[k]
+            cm2[k] += prefixSquares[k + n] - prefixSquares[k]
+        }
+    }
+
+    /** Peak of [correlation] (index k = [maxLag] - lag), its prominence and refined shift. */
     private fun correlationPeak(
-        c1: DoubleArray,
-        cm: DoubleArray,
-        cm2: DoubleArray,
-        count: Int,
-        norm: Double,
+        correlation: DoubleArray,
         maxLag: Int,
         scale: Double,
         frameMs: Double,
         detectorBiasMs: Double,
     ): Estimate? {
-        // Index k = maxLag - lag: audio frame i lines up with g[i + k] = subtitle frame (i - lag).
-        val lagCount = c1.size
-        val correlation = DoubleArray(lagCount) { Double.NaN }
-        for (k in 0 until lagCount) {
-            val variance = cm2[k] - cm[k] * cm[k] / count
-            if (variance > 1e-6 * count && cm[k] > 0.5) {
-                correlation[k] = c1[k] / (norm * sqrt(variance))
-            }
-        }
+        val lagCount = correlation.size
         var peakIndex = -1
         for (k in 0 until lagCount) {
             val value = correlation[k]

@@ -1,6 +1,6 @@
 name: Audio Sync Release
 
-# Release trigger: sample dialogue spots across the film for faster sync
+# Release trigger: faster alignment, parallel spot sampling, spot speech recognised first
 
 on:
   workflow_dispatch:
