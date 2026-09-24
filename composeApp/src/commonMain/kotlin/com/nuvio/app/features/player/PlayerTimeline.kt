@@ -29,20 +29,57 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.nuvio.app.core.ui.accentBrush
 import com.nuvio.app.core.ui.themePalette
 import com.nuvio.app.core.ui.nuvioTypeScale
+import com.nuvio.app.features.player.seekpreview.LocalSeekPreviewSession
+import com.nuvio.app.features.player.seekpreview.SeekPreviewThumbnailStrip
 import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.stringResource
 
 internal val PlayerTimelineContentInset = 2.dp
+
+/** Minimum spacing between drawn preview-cue ticks; denser than this they read as a solid bar. */
+private val MinCueTickSpacing = 5.dp
+
+/** Upper bound on tick count, so a long title cannot turn the scrubber into a solid block. */
+private const val MaxCueTicks = 400L
+
+/**
+ * Seek-preview thumbnails above a seek bar while it is being scrubbed. Takes no height in the
+ * layout — it is drawn above whatever precedes the bar — so the controls never shift.
+ */
+@Composable
+internal fun SeekPreviewAboveTimeline(positionMs: Long, durationMs: Long, active: Boolean) {
+    val session = LocalSeekPreviewSession.current ?: return
+    if (session.track == null) return
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .layout { measurable, constraints ->
+                val placeable = measurable.measure(constraints.copy(minHeight = 0, maxHeight = Constraints.Infinity))
+                layout(placeable.width, 0) {
+                    placeable.placeRelative(0, -placeable.height)
+                }
+            },
+    ) {
+        SeekPreviewThumbnailStrip(
+            session = session,
+            positionMs = positionMs,
+            durationMs = durationMs,
+            active = active,
+        )
+    }
+}
 
 @Composable
 internal fun PlayerTimelineDetails(
@@ -122,6 +159,7 @@ internal fun PlayerTimeline(
     val isPressed by interactionSource.collectIsPressedAsState()
     val isDragged by interactionSource.collectIsDraggedAsState()
     val isInteracting = enabled && durationMs > 0L && (isPressed || isDragged)
+    val cueIntervalMs = LocalSeekPreviewSession.current?.cueIntervalMs ?: 0L
     val trackThickness by animateDpAsState(
         targetValue = if (isInteracting) 10.dp else 6.dp,
         animationSpec = tween(durationMillis = if (isInteracting) 140 else 180),
@@ -129,6 +167,11 @@ internal fun PlayerTimeline(
     )
 
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+        SeekPreviewAboveTimeline(
+            positionMs = displayedPositionMs,
+            durationMs = durationMs,
+            active = isInteracting,
+        )
         Slider(
             value = displayedPositionMs.coerceIn(0L, durationMs).toFloat(),
             onValueChange = { value ->
@@ -171,6 +214,23 @@ internal fun PlayerTimeline(
                                 size = Size(size.width * (state.value / rangeEnd).coerceIn(0f, 1f), trackHeight),
                                 cornerRadius = radius,
                             )
+                            // Preview-cue ticks: where grid-locked scrubbing can actually stop.
+                            if (cueIntervalMs > 0L && durationMs > 0L) {
+                                val tickCount = durationMs / cueIntervalMs
+                                val stepPx = size.width * (cueIntervalMs.toFloat() / durationMs.toFloat())
+                                if (tickCount in 2..MaxCueTicks && stepPx >= MinCueTickSpacing.toPx()) {
+                                    var x = stepPx
+                                    while (x < size.width) {
+                                        drawLine(
+                                            color = Color.White.copy(alpha = 0.28f),
+                                            start = Offset(x, trackOrigin.y),
+                                            end = Offset(x, trackOrigin.y + trackHeight),
+                                            strokeWidth = 1.dp.toPx(),
+                                        )
+                                        x += stepPx
+                                    }
+                                }
+                            }
                         },
                 )
             },

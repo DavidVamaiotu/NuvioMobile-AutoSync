@@ -69,6 +69,7 @@ actual object PlayerSettingsStorage {
     private const val animeSkipEnabledKey = "animeskip_enabled"
     private const val animeSkipClientIdKey = "animeskip_client_id"
     private const val introDbApiKeyKey = "introdb_api_key"
+    private const val seekrApiKeyKey = "seekr_api_key"
     private const val introSubmitEnabledKey = "intro_submit_enabled"
     private const val streamAutoPlayNextEpisodeEnabledKey = "stream_auto_play_next_episode_enabled"
     private const val streamAutoPlayNextEpisodeFallbackEnabledKey = "stream_auto_play_next_episode_fallback_enabled"
@@ -786,6 +787,13 @@ actual object PlayerSettingsStorage {
 
     actual fun saveIntroDbApiKey(apiKey: String) {
         NSUserDefaults.standardUserDefaults.setObject(apiKey, forKey = ProfileScopedKey.of(introDbApiKeyKey))
+    }
+
+    actual fun loadSeekrApiKey(): String? =
+        NSUserDefaults.standardUserDefaults.stringForKey(ProfileScopedKey.of(seekrApiKeyKey))
+
+    actual fun saveSeekrApiKey(apiKey: String) {
+        NSUserDefaults.standardUserDefaults.setObject(apiKey, forKey = ProfileScopedKey.of(seekrApiKeyKey))
     }
 
     actual fun loadIntroSubmitEnabled(): Boolean? {

@@ -14,6 +14,7 @@ import com.nuvio.app.features.details.MetaScreenSettingsUiState
 import com.nuvio.app.features.details.MetaVideo
 import com.nuvio.app.features.p2p.P2pSettingsUiState
 import com.nuvio.app.features.p2p.P2pStreamingState
+import com.nuvio.app.features.player.seekpreview.SeekPreviewSession
 import com.nuvio.app.features.player.skip.NextEpisodeInfo
 import com.nuvio.app.features.player.skip.SkipInterval
 import com.nuvio.app.features.streams.StreamsUiState
@@ -134,6 +135,9 @@ internal class PlayerScreenRuntime(
     var errorMessage by mutableStateOf<String?>(null)
     var isScrubbingTimeline by mutableStateOf(false)
     var scrubbingPositionMs by mutableStateOf<Long?>(null)
+    val seekPreview = SeekPreviewSession()
+    /** Position being previewed by the horizontal seek gesture, while it is in progress. */
+    var gestureSeekPreviewPositionMs by mutableStateOf<Long?>(null)
     var pausedOverlayVisible by mutableStateOf(false)
     var gestureFeedback by mutableStateOf<GestureFeedbackState?>(null)
     var liveGestureFeedback by mutableStateOf<GestureFeedbackState?>(null)
