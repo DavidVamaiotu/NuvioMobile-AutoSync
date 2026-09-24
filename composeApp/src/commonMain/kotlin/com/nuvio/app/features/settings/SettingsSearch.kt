@@ -520,6 +520,15 @@ internal fun settingsSearchEntries(
         section = stringResource(Res.string.settings_stream_display_section),
         icon = Icons.Rounded.Style,
     )
+    addRow(
+        page = SettingsPage.Streams,
+        key = "stream-connection-fit",
+        title = stringResource(Res.string.settings_stream_connection_fit_title),
+        description = stringResource(Res.string.settings_stream_connection_fit_description),
+        pageLabel = streamsPage,
+        section = stringResource(Res.string.settings_stream_display_section),
+        icon = Icons.Rounded.Style,
+    )
     if (!isTablet) {
         addRow(
             page = SettingsPage.Streams,

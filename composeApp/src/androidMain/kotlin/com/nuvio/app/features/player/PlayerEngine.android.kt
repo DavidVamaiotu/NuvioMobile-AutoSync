@@ -70,6 +70,7 @@ import com.nuvio.app.features.autosync.AutoSyncExtractorsFactory
 import com.nuvio.app.features.autosync.AutoSyncPlayerController
 import com.nuvio.app.features.autosync.AutoSyncPlayerCoordinator
 import com.nuvio.app.features.autosync.AutoSyncSubtitleCandidate
+import com.nuvio.app.features.streams.PlaybackThroughputSampler
 import com.nuvio.app.features.streams.normalizeStreamType
 import `is`.xyz.mpv.BaseMPVView
 import `is`.xyz.mpv.MPV
@@ -90,6 +91,7 @@ import java.io.File
 import java.net.URI
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 private const val TAG = "NuvioPlayer"
 private const val PLAYER_DIAGNOSTIC_TAG = "NuvioPlayerDiag"
@@ -304,6 +306,7 @@ private fun ExoPlayerSurface(
             sourceKey = sourceUrl,
         )
     }
+    val networkBytesCounter = remember { AtomicLong() }
     val dataSourceFactory = remember(
         context,
         sourceUrl,
@@ -319,7 +322,11 @@ private fun ExoPlayerSurface(
             useYoutubeChunkedPlayback = useYoutubeChunkedPlayback,
             useLongReadTimeout = isLoopbackPlaybackSource(sourceUrl),
             externalSubtitles = externalSubtitles,
-        )
+        ).countingNetworkBytes(networkBytesCounter)
+    }
+    val throughputSampler = remember(sourceUrl) { PlaybackThroughputSampler(sourceUrl) }
+    DisposableEffect(throughputSampler) {
+        onDispose { throughputSampler.finish() }
     }
 
     fun ExoPlayer.setPlaybackMediaItem(videoMediaItem: MediaItem, startPositionMs: Long? = null) {
@@ -1005,6 +1012,17 @@ private fun ExoPlayerSurface(
         }
     }
 
+    LaunchedEffect(exoPlayer, throughputSampler) {
+        networkBytesCounter.set(0L)
+        while (isActive) {
+            throughputSampler.onBytesTick(
+                bytes = networkBytesCounter.getAndSet(0L),
+                isFetching = exoPlayer.isLoading,
+            )
+            delay(THROUGHPUT_TICK_MS)
+        }
+    }
+
     AndroidView(
         modifier = modifier,
         factory = { viewContext ->
@@ -1298,6 +1316,24 @@ private fun LibmpvPlayerSurface(
         }
     }
 
+    val throughputSampler = remember(sourceUrl) { PlaybackThroughputSampler(sourceUrl) }
+    DisposableEffect(throughputSampler) {
+        onDispose { throughputSampler.finish() }
+    }
+
+    LaunchedEffect(playerViewRef, throughputSampler) {
+        val view = playerViewRef ?: return@LaunchedEffect
+        while (isActive) {
+            view.networkActivity()?.let { activity ->
+                throughputSampler.onRateTick(
+                    bytesPerSecond = activity.bytesPerSecond,
+                    isFetching = activity.isFetching,
+                )
+            }
+            delay(THROUGHPUT_TICK_MS)
+        }
+    }
+
     AndroidView(
         modifier = modifier,
         factory = { viewContext ->
@@ -1453,6 +1489,23 @@ private class NuvioLibmpvView(
     fun seekToMs(positionMs: Long) {
         executeMpv {
             mpv.command("seek", (positionMs.coerceAtLeast(0L) / 1000.0).toString(), "absolute")
+        }
+    }
+
+    /** mpv stops reading once its cache is full, so the rate only reflects the network while it is fetching. */
+    suspend fun networkActivity(): MpvNetworkActivity? {
+        if (released.get()) return null
+        return withContext(mpvDispatcher) {
+            if (released.get()) {
+                null
+            } else {
+                runCatching {
+                    MpvNetworkActivity(
+                        bytesPerSecond = mpv.getPropertyDouble("cache-speed")?.toLong() ?: 0L,
+                        isFetching = mpv.getPropertyBoolean("demuxer-cache-idle") == false,
+                    )
+                }.getOrNull()
+            }
         }
     }
 
@@ -2402,6 +2455,37 @@ private fun diagnosticThrowableChain(value: Throwable): String =
             "${error.javaClass.simpleName}:${diagnosticPlayerMessage(error.message)}"
         }
         .let(::diagnosticPlayerMessage)
+
+private const val THROUGHPUT_TICK_MS = 250L
+
+private class MpvNetworkActivity(
+    val bytesPerSecond: Long,
+    val isFetching: Boolean,
+)
+
+/** Counts bytes received over the network (not from local files) by every data source the factory creates. */
+@androidx.annotation.OptIn(UnstableApi::class)
+private fun DataSource.Factory.countingNetworkBytes(counter: AtomicLong): DataSource.Factory {
+    val listener = object : TransferListener {
+        override fun onTransferInitializing(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) = Unit
+
+        override fun onTransferStart(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) = Unit
+
+        override fun onBytesTransferred(
+            source: DataSource,
+            dataSpec: DataSpec,
+            isNetwork: Boolean,
+            bytesTransferred: Int,
+        ) {
+            if (isNetwork) counter.addAndGet(bytesTransferred.toLong())
+        }
+
+        override fun onTransferEnd(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) = Unit
+    }
+    return DataSource.Factory {
+        createDataSource().apply { addTransferListener(listener) }
+    }
+}
 
 internal class SubtitleRequestHeaderDataSourceFactory(
     private val upstreamFactory: DataSource.Factory,

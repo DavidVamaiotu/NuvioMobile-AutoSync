@@ -90,6 +90,8 @@ import nuvio.composeapp.generated.resources.settings_stream_size_badges_descript
 import nuvio.composeapp.generated.resources.settings_stream_size_badges_title
 import nuvio.composeapp.generated.resources.settings_stream_addon_logo_title
 import nuvio.composeapp.generated.resources.settings_stream_addon_logo_description
+import nuvio.composeapp.generated.resources.settings_stream_connection_fit_description
+import nuvio.composeapp.generated.resources.settings_stream_connection_fit_title
 import nuvio.composeapp.generated.resources.settings_stream_display_section
 import nuvio.composeapp.generated.resources.settings_stream_background_title
 import nuvio.composeapp.generated.resources.settings_stream_background_description
@@ -161,6 +163,13 @@ internal fun LazyListScope.streamsSettingsContent(isTablet: Boolean) {
                     checked = currentSettings.showAddonLogo,
                     isTablet = isTablet,
                     onCheckedChange = StreamBadgeSettingsRepository::setShowAddonLogo,
+                )
+                SettingsSwitchRow(
+                    title = stringResource(Res.string.settings_stream_connection_fit_title),
+                    description = stringResource(Res.string.settings_stream_connection_fit_description),
+                    checked = currentSettings.preferConnectionFit,
+                    isTablet = isTablet,
+                    onCheckedChange = StreamBadgeSettingsRepository::setPreferConnectionFit,
                 )
             }
         }

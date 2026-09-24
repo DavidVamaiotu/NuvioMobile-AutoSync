@@ -25,6 +25,7 @@ import androidx.compose.ui.interop.UIKitViewController
 import androidx.compose.ui.platform.LocalDensity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import co.touchlab.kermit.Logger
+import com.nuvio.app.features.streams.PlaybackThroughputSampler
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.useContents
 import kotlinx.coroutines.delay
@@ -319,6 +320,12 @@ actual fun PlatformPlayerSurface(
         bridge.applyIosVideoOutputSettings(playerSettings)
     }
 
+    val throughputSampler = remember(sourceUrl) { PlaybackThroughputSampler(sourceUrl) }
+    val latestThroughputSampler = rememberUpdatedState(throughputSampler)
+    DisposableEffect(throughputSampler) {
+        onDispose { throughputSampler.finish() }
+    }
+
     // Polling for snapshots
     LaunchedEffect(bridge) {
         var lastReportedError: String? = null
@@ -333,6 +340,10 @@ actual fun PlatformPlayerSurface(
                 playbackSpeed = bridge.getPlaybackSpeed(),
             )
             latestOnSnapshot.value(snapshot)
+            latestThroughputSampler.value.onRateTick(
+                bytesPerSecond = bridge.getCacheSpeedBytesPerSecond(),
+                isFetching = !bridge.getIsCacheIdle(),
+            )
             val errorMessage = bridge.getErrorMessage().ifBlank { null }
             if (errorMessage != lastReportedError) {
                 lastReportedError = errorMessage

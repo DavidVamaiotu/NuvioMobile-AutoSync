@@ -81,6 +81,10 @@ interface NuvioPlayerBridge {
     fun getDurationMs(): Long
     fun getPositionMs(): Long
     fun getBufferedMs(): Long
+    /** mpv `cache-speed`: bytes per second read from the network into the cache. */
+    fun getCacheSpeedBytesPerSecond(): Long
+    /** mpv `demuxer-cache-idle`: true once the cache is full and mpv has stopped reading. */
+    fun getIsCacheIdle(): Boolean
     fun getPlaybackSpeed(): Float
     fun getErrorMessage(): String
     fun destroy()

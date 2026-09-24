@@ -19,6 +19,7 @@ import com.nuvio.app.features.streams.InstalledStreamAddonTarget
 import com.nuvio.app.features.streams.StreamAutoPlaySelector
 import com.nuvio.app.features.streams.StreamBadgePresentation
 import com.nuvio.app.features.streams.StreamBadgeSettingsRepository
+import com.nuvio.app.features.streams.StreamConnectionFit
 import com.nuvio.app.features.streams.StreamItem
 import com.nuvio.app.features.streams.StreamLoadCompletion
 import com.nuvio.app.features.streams.StreamParser
@@ -202,6 +203,13 @@ object PlayerStreamsRepository {
         stateFlow.value = StreamsUiState()
 
         val streamBadgeRules = StreamBadgeSettingsRepository.snapshot()
+        val connectionFit = StreamConnectionFit.capture(
+            type = type,
+            videoId = videoId,
+            parentMetaId = null,
+            season = season,
+            episode = episode,
+        )
         val embeddedStreams = MetaDetailsRepository.findEmbeddedStreams(videoId)
         if (embeddedStreams.isNotEmpty()) {
             log.d { "Using ${embeddedStreams.size} embedded streams for type=$type id=$videoId" }
@@ -211,10 +219,11 @@ object PlayerStreamsRepository {
                 streams = embeddedStreams,
                 isLoading = false,
             )
-            val presentedGroup = StreamBadgePresentation.apply(
+            val badgeGroup = StreamBadgePresentation.apply(
                 groups = listOf(group),
                 rules = streamBadgeRules,
             ).firstOrNull() ?: group
+            val presentedGroup = connectionFit?.apply(badgeGroup) ?: badgeGroup
             stateFlow.value = StreamsUiState(
                 groups = listOf(presentedGroup),
                 activeAddonIds = setOf("embedded"),
@@ -316,10 +325,11 @@ object PlayerStreamsRepository {
                     groups = listOf(group),
                     rules = streamBadgeRules,
                 ).firstOrNull() ?: group
-                return DebridStreamPresentation.apply(
+                val presentedGroup = DebridStreamPresentation.apply(
                     groups = listOf(badgeGroup),
                     settings = debridSettings,
                 ).firstOrNull() ?: badgeGroup
+                return connectionFit?.apply(presentedGroup) ?: presentedGroup
             }
 
             fun publishStreamGroup(group: AddonStreamGroup) {
@@ -470,6 +480,7 @@ object PlayerStreamsRepository {
                                             group.streams
                                         } else {
                                             (group.streams + completion.streams).sortedForGroupedDisplay()
+                                                .let { streams -> connectionFit?.apply(streams) ?: streams }
                                         }
                                         val stillLoading = remaining > 0
                                         val finalError = if (mergedStreams.isEmpty() && !stillLoading) {
