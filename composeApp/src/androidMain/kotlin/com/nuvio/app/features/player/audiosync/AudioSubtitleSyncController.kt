@@ -900,6 +900,8 @@ internal class AudioSubtitleSyncController(
     private fun onAsrLock(result: AsrLock) {
         val current = session ?: return
         if (!enabled || released) return
+        // A provisional estimate never replaces a confirmed sync (e.g. one found through the pool).
+        if (!result.final && model != null && !estimated) return
         val adopted = SubtitleSyncModel(result.segments)
         val previous = model
         val wasFinal = current.maintainedByRecognition
@@ -927,7 +929,8 @@ internal class AudioSubtitleSyncController(
         }
     }
 
-    private fun rememberKey(subtitleKey: String): String = "${sourceKey.hashCode()}:${subtitleKey.hashCode()}"
+    /** Versioned: syncs saved by earlier builds could hold a 0.1% stretch found on too little audio. */
+    private fun rememberKey(subtitleKey: String): String = "v2:${sourceKey.hashCode()}:${subtitleKey.hashCode()}"
 
     /** Stored as "fromMs,scale,shiftMs" per segment, separated by "|". */
     private fun remember(subtitleKey: String, synced: SubtitleSyncModel) {
@@ -936,13 +939,6 @@ internal class AudioSubtitleSyncController(
     }
 
     private fun parseRemembered(stored: String): SubtitleSyncModel? {
-        // Older entries hold a single "scale;shiftMs".
-        if (';' in stored) {
-            val parts = stored.split(';')
-            val scale = parts.getOrNull(0)?.toDoubleOrNull() ?: return null
-            val shiftMs = parts.getOrNull(1)?.toDoubleOrNull() ?: return null
-            return SubtitleSyncModel(listOf(SubtitleSyncSegment(0L, scale, shiftMs)))
-        }
         val segments = stored.split('|').map { entry ->
             val parts = entry.split(',')
             SubtitleSyncSegment(

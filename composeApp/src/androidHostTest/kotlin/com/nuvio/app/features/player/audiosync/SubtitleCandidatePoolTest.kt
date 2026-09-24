@@ -95,6 +95,28 @@ class SubtitleCandidatePoolTest {
     }
 
     @Test
+    fun chosenFileIsNeverStretchedByATenthOfAPercent() {
+        val random = Random(840)
+        // Quick exchanges: short lines, short pauses.
+        var t = 20_000L
+        val english = List(560) {
+            val words = List(2 + random.nextInt(3)) { vocabulary[random.nextInt(vocabulary.size)] }
+            val length = 800L + random.nextLong(700L)
+            Triple(t, t + length, words.joinToString(" ")).also { t += length + 300L + random.nextLong(700L) }
+        }
+        val words = hear(english, shiftSec = 5.0, random = random, upToLine = 560)
+            .filter { it.segment < 20 || it.segment in 270..300 || it.segment >= 540 }
+        // Timing that drifts 0.1% against the recognised reference, as a scene the release adds
+        // looks over a 20 minute window: too slight to tell apart from a step, so it is no rate.
+        val chosen = english.map { (a, b, _) -> Triple((a / 1.001).toLong() - 4_200L, (b / 1.001).toLong() - 4_200L, "linie") }
+        val pool = SubtitleCandidatePool(SubtitleSpeechTrack.fromCues(chosen))
+        pool.addReference("english", english)
+        pool.addCandidate("decoy", script(Random(850), 400).map { (a, b, _) -> Triple(a, b, "linie") })
+        val winner = pool.update(SpeechTimeline(), words, nowMs = 0L)
+        if (winner != null) assertEquals(1.0, winner.model.segments.single().scale, "${winner.model}")
+    }
+
+    @Test
     fun scoringTwelveFilesStaysCheap() {
         val spoken = cues(Random(900), durationMs)
         val speech = speechFor(spoken, shiftMs = 0.0, random = Random(901))

@@ -1,6 +1,6 @@
 name: Audio Sync Release
 
-# Release trigger: status panel hides after sync even with a frame-rate correction
+# Release trigger: no 0.1% stretch from the subtitle pool; provisional estimates never override a sync
 
 on:
   workflow_dispatch:

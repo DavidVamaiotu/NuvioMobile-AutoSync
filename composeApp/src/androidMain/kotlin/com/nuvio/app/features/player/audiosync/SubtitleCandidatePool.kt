@@ -4,6 +4,7 @@ import com.nuvio.app.features.player.audiosync.asr.AnchorFit
 import com.nuvio.app.features.player.audiosync.asr.HeardWord
 import com.nuvio.app.features.player.audiosync.asr.WordAnchorMatcher
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -239,9 +240,10 @@ internal class SubtitleCandidatePool(
                 !it.atSearchEdge && it.peak >= PINNED_MIN_PEAK && it.prominence >= PINNED_MIN_PROMINENCE &&
                     it.cueCount >= MIN_CUES
             }
-        // The subtitle's own rate first: over a 20 minute window a slight stretch can split the
-        // difference of a scene the release adds, which is wrong on both sides of it.
-        (fits(target, doubleArrayOf(1.0)) ?: fits(target, SubtitleAudioAligner.CANDIDATE_SCALES))?.let { estimate ->
+        // The subtitle's own rate first, and never a 0.1% stretch: over the window it moves lines by
+        // barely a second, so it can split the difference of a scene the release adds and then drift
+        // for the rest of the film. A real 0.1% rate is left to recognition across the whole film.
+        (fits(target, doubleArrayOf(1.0)) ?: fits(target, measurableScales(null)))?.let { estimate ->
             // The chosen subtitle lines up with the reference where the words were heard, even if
             // the two files differ elsewhere (so no whole-file bridge was found): sync it with that.
             finish("the chosen subtitle matches the recognised reference: $estimate")
@@ -250,13 +252,18 @@ internal class SubtitleCandidatePool(
         }
         var best: Pair<Candidate, SubtitleAudioAligner.Estimate>? = null
         for (candidate in candidates) {
-            val estimate = fits(candidate.track, candidate.scales ?: SubtitleAudioAligner.CANDIDATE_SCALES) ?: continue
+            val estimate = fits(candidate.track, measurableScales(candidate.scales)) ?: continue
             if (best == null || estimate.peak > best.second.peak) best = candidate to estimate
         }
         val (candidate, estimate) = best ?: return null
         log("candidate ${candidate.key} locked through reference ${reference.key}: fit=$fit $estimate")
         return win(candidate, estimate.scale, estimate.shiftMs, "speech recognition")
     }
+
+    /** The unstretched rate and the frame-rate conversions large enough to show within the window. */
+    private fun measurableScales(scales: DoubleArray?): DoubleArray =
+        (scales ?: SubtitleAudioAligner.CANDIDATE_SCALES)
+            .filter { it == 1.0 || abs(it - 1.0) > MIN_PINNED_STRETCH }.toDoubleArray()
 
     private fun win(candidate: Candidate, scale: Double, shiftMs: Double, method: String): Winner {
         finished = true
@@ -292,6 +299,7 @@ internal class SubtitleCandidatePool(
         private const val RATE_SPAN_SEC = 180.0
         private const val PINNED_MIN_PEAK = 0.35
         private const val PINNED_MIN_PROMINENCE = 0.15
+        private const val MIN_PINNED_STRETCH = 0.01
 
         /** Identical timing, whatever the text or encoding, means the same file. */
         private fun fingerprint(track: SubtitleSpeechTrack): Long {
