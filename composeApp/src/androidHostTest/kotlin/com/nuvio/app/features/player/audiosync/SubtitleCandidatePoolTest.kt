@@ -77,6 +77,24 @@ class SubtitleCandidatePoolTest {
     }
 
     @Test
+    fun chosenFileThatFitsTheRecognisedReferenceIsSyncedDirectly() {
+        val random = Random(820)
+        val english = script(random, 90)
+        val words = hear(english, shiftSec = 5.0, random = random, upToLine = 90)
+            .filter { it.segment < 6 || it.segment in 40..45 || it.segment >= 84 }
+        // The chosen translation keeps the English timing 4.2 s early: it maps at +9.2 s.
+        val chosen = english.map { (a, b, _) -> Triple(a - 4_200L, b - 4_200L, "linie tradusa") }
+        val pool = SubtitleCandidatePool(SubtitleSpeechTrack.fromCues(chosen))
+        pool.addReference("english", english)
+        repeat(3) { pool.addCandidate("decoy$it", script(Random(830 + it), 90).map { (a, b, _) -> Triple(a, b, "linie") }) }
+        val winner = assertNotNull(pool.update(SpeechTimeline(), words, nowMs = 0L))
+        assertTrue(winner.chosen, "the chosen subtitle itself fits")
+        val shiftMs = winner.model.segments.single().shiftMs
+        assertTrue(abs(shiftMs - 9_200.0) < 80.0, "shift $shiftMs")
+        assertTrue(pool.finished)
+    }
+
+    @Test
     fun scoringTwelveFilesStaysCheap() {
         val spoken = cues(Random(900), durationMs)
         val speech = speechFor(spoken, shiftMs = 0.0, random = Random(901))

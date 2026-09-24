@@ -67,6 +67,8 @@ internal class WordAnchorMatcher(cues: List<Triple<Long, Long, String>>) {
         var best = unit
         for (scale in RATE_CANDIDATES) {
             val fit = cluster(anchors, scale, maxShiftSec) ?: continue
+            // A rate change drifts further every minute: it needs words from several places.
+            if (fit.segments < MIN_RATE_SEGMENTS) continue
             if (fit.score > best.score * RATE_MARGIN && fit.score > unit.score * RATE_MARGIN) best = fit
         }
         return best
@@ -145,6 +147,7 @@ internal class WordAnchorMatcher(cues: List<Triple<Long, Long, String>>) {
         private const val WINDOW_SEC = 0.7
         private const val MAX_OCCURRENCES = 6
         private const val MIN_RATE_SPAN_SEC = 180.0
+        private const val MIN_RATE_SEGMENTS = 5
         private const val RATE_MARGIN = 1.3
         private val RATE_CANDIDATES = doubleArrayOf(
             24_000.0 / 23_976.0,

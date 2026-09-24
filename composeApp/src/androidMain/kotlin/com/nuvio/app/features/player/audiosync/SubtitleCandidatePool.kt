@@ -28,7 +28,8 @@ internal class SubtitleCandidatePool(
     private val target: SubtitleSpeechTrack,
     private val log: (String) -> Unit = {},
 ) {
-    class Winner(val key: String, val model: SubtitleSyncModel, val method: String)
+    /** [chosen]: the mapping is for the chosen subtitle itself (it fits; no switch needed). */
+    class Winner(val key: String, val model: SubtitleSyncModel, val method: String, val chosen: Boolean = false)
 
     private class Candidate(val key: String, val track: SubtitleSpeechTrack) {
         /** Frame-rate ratios that fit the video's length; null until the length is known. */
@@ -238,9 +239,12 @@ internal class SubtitleCandidatePool(
                 !it.atSearchEdge && it.peak >= PINNED_MIN_PEAK && it.prominence >= PINNED_MIN_PROMINENCE &&
                     it.cueCount >= MIN_CUES
             }
-        if (fits(target, SubtitleAudioAligner.CANDIDATE_SCALES) != null) {
-            finish("the chosen subtitle matches the recognised reference")
-            return null
+        fits(target, SubtitleAudioAligner.CANDIDATE_SCALES)?.let { estimate ->
+            // The chosen subtitle lines up with the reference where the words were heard, even if
+            // the two files differ elsewhere (so no whole-file bridge was found): sync it with that.
+            finish("the chosen subtitle matches the recognised reference: $estimate")
+            val model = SubtitleSyncModel(listOf(SubtitleSyncSegment(0L, estimate.scale, estimate.shiftMs)))
+            return Winner("", model, "speech recognition", chosen = true)
         }
         var best: Pair<Candidate, SubtitleAudioAligner.Estimate>? = null
         for (candidate in candidates) {

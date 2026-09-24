@@ -632,6 +632,25 @@ internal class AudioSubtitleSyncController(
         if (session !== current || (model != null && !estimated)) return
         val winner = alternatives.update(timeline, asr?.heardWords(), SystemClock.elapsedRealtime()) ?: return
         if (session !== current || !enabled || released) return
+        if (winner.chosen) {
+            stopPool()
+            if (model == null) manualDelayAtLockMs = manualDelayMs()
+            current.tracker.adopt(winner.model)
+            model = winner.model
+            estimated = false
+            lockMethod = winner.method
+            problem = null
+            lockedAtElapsedMs = SystemClock.elapsedRealtime()
+            remember(current.key, winner.model)
+            SyncLog.i("LOCK of the chosen subtitle through the recognised reference: ${winner.model}")
+            notify(
+                AudioSyncStatus.Synced(
+                    offsetMs = winner.model.delayUsAt(playbackPositionMs * 1_000L) / 1_000L,
+                    rateCorrected = winner.model.segments.first().scale != 1.0,
+                ),
+            )
+            return
+        }
         val label = candidates.firstOrNull { it.url == winner.key }?.label?.takeIf { it.isNotBlank() } ?: "another file"
         SyncLog.i("SWITCHING subtitle ${current.key} -> ${winner.key} via ${winner.method}: ${winner.model}")
         switchedAway += current.key
@@ -721,6 +740,20 @@ internal class AudioSubtitleSyncController(
         }
     }
 
+    /** Subtitle services throttle bursts (HTTP 429): wait a little and try again. */
+    private fun downloadWithRetry(candidate: ReferenceCandidate): String {
+        var attempt = 0
+        while (true) {
+            try {
+                return runBlocking { httpGetTextWithHeaders(url = candidate.url, headers = candidate.headers) }
+            } catch (error: Exception) {
+                val throttled = error.message.orEmpty().contains("429")
+                if (!throttled || ++attempt > DOWNLOAD_RETRIES || released) throw error
+                Thread.sleep(DOWNLOAD_RETRY_DELAY_MS * attempt)
+            }
+        }
+    }
+
     private fun fetchReference(candidate: ReferenceCandidate, onReady: ((List<Triple<Long, Long, String>>) -> Unit)?) {
         parsedReferences[candidate.url]?.let { cached ->
             if (cached.isNotEmpty()) onReady?.invoke(cached)
@@ -730,7 +763,7 @@ internal class AudioSubtitleSyncController(
         try {
             fetchPool.execute {
                 val dialogue = parsedReferences[candidate.url] ?: runCatching {
-                    val raw = runBlocking { httpGetTextWithHeaders(url = candidate.url, headers = candidate.headers) }
+                    val raw = downloadWithRetry(candidate)
                     dialogueOf(parseSidecarTimedCuesRobust(raw, candidate.url).cues)
                 }.getOrElse {
                     SyncLog.w("reference download failed for ${candidate.url}: ${it.message}")
@@ -1098,6 +1131,8 @@ internal class AudioSubtitleSyncController(
         private const val MAX_REFERENCES = 4
         private const val MAX_FALLBACK_REFERENCES = 6
         private const val MAX_ALTERNATIVES = 12
+        private const val DOWNLOAD_RETRIES = 3
+        private const val DOWNLOAD_RETRY_DELAY_MS = 1_500L
 
         // Sampling audio across the film.
         private const val SPOT_COUNT = 4
