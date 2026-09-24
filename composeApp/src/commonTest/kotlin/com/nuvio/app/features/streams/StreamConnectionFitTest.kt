@@ -38,7 +38,20 @@ class StreamConnectionFitTest {
     }
 
     @Test
-    fun `streams the connection cannot sustain move to the end in stable order`() {
+    fun `largest stream that fits comes first, not the smallest`() {
+        // ~95 Mbps connection, 120 min movie: the 1 GB file must not beat the 5 GB one.
+        val fit = StreamConnectionFit(runtimeMinutes = 120, connectionMbps = 95.0)
+        val oneGb = stream(name = "1gb", sizeBytes = 1 * gb)
+        val fiveGb = stream(name = "5gb", sizeBytes = 5 * gb)
+        val remux = stream(name = "remux", sizeBytes = 126 * gb) // 140 Mbps, too much
+
+        val ordered = fit.apply(listOf(oneGb, remux, fiveGb))
+
+        assertEquals(listOf("5gb", "1gb", "remux"), ordered.map { it.name })
+    }
+
+    @Test
+    fun `fitting streams by bitrate, then unknown, then exceeding in original order`() {
         // 30 Mbps connection, 120 min runtime: anything above 20 Mbps average is demoted.
         val fit = StreamConnectionFit(runtimeMinutes = 120, connectionMbps = 30.0)
         val remux = stream(name = "remux", sizeBytes = 60 * gb) // 66.7 Mbps
@@ -49,11 +62,11 @@ class StreamConnectionFitTest {
 
         val ordered = fit.apply(listOf(remux, uhd, hd, unknown, small))
 
-        assertEquals(listOf("hd", "unknown", "small", "remux", "uhd"), ordered.map { it.name })
+        assertEquals(listOf("hd", "small", "unknown", "remux", "uhd"), ordered.map { it.name })
     }
 
     @Test
-    fun `order is untouched when nothing or everything exceeds the connection`() {
+    fun `order is untouched when it already matches or everything exceeds the connection`() {
         val streams = listOf(stream(name = "a", sizeBytes = 9 * gb), stream(name = "b", sizeBytes = 4 * gb))
 
         assertSame(streams, StreamConnectionFit(runtimeMinutes = 120, connectionMbps = 100.0).apply(streams))

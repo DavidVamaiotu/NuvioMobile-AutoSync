@@ -15,7 +15,7 @@ import platform.Network.nw_path_uses_interface_type
 import platform.darwin.dispatch_queue_create
 
 internal actual object ConnectionSpeedStorage {
-    private const val samplesKey = "connection_speed_throughput_samples"
+    private const val samplesKey = "connection_speed_throughput_samples_v2"
 
     actual fun load(): String? =
         NSUserDefaults.standardUserDefaults.stringForKey(samplesKey)

@@ -90,9 +90,10 @@ internal object ConnectionSpeedEstimator {
 /**
  * Measures sustained download throughput over one playback session and reports it once.
  *
- * Only ticks where the player is actively fetching count: players stop downloading once their
- * buffer is full, and counting those idle stretches would make every connection look slow.
- * Startup before the first byte (DNS, TLS, redirects) is skipped for the same reason.
+ * Only ticks where the player is fetching and data actually arrives count. Players stop
+ * downloading once their buffer is full, and they also wait on connection setup, redirects and
+ * seeks (resume position, file index) without receiving anything; counting either would make a
+ * fast connection look slow. A genuinely slow link still delivers data on every tick.
  */
 internal class PlaybackThroughputSampler(
     sourceUrl: String,
@@ -131,7 +132,7 @@ internal class PlaybackThroughputSampler(
         // A long gap means the app was suspended; the interval says nothing about the network.
         if (!isFetching || elapsedMs <= 0 || elapsedMs > MAX_TICK_GAP_MS) return
         val bytes = bytesFor(elapsedMs).coerceAtLeast(0L)
-        if (activeBytes == 0L && bytes == 0L) return
+        if (bytes == 0L) return
         activeBytes += bytes
         activeMs += elapsedMs
         if (activeMs >= MAX_WINDOW_MS) finish()

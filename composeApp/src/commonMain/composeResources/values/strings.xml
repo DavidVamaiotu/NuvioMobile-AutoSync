@@ -886,9 +886,9 @@
     <string name="settings_stream_addon_logo_title">Addon logo</string>
     <string name="settings_stream_addon_logo_description">Show addon logo and name next to stream sources.</string>
     <string name="settings_stream_connection_fit_title">Match streams to connection</string>
-    <string name="settings_stream_connection_fit_description">Move streams your connection is unlikely to play smoothly to the end of each list. Speed is learned from your own playback.</string>
-    <string name="settings_stream_connection_fit_learning">Learning your speed on this network. Play two streams for a few seconds each to start moving streams that would buffer to the end of each list.</string>
-    <string name="settings_stream_connection_fit_measured">About %1$d Mbps measured on this network. Streams that need more move to the end of each list.</string>
+    <string name="settings_stream_connection_fit_description">List the best stream your connection can play smoothly first, and move streams that would buffer to the end. Speed is learned from your own playback.</string>
+    <string name="settings_stream_connection_fit_learning">Learning your speed on this network. Play two streams for about 10 seconds each to start.</string>
+    <string name="settings_stream_connection_fit_measured">About %1$d Mbps measured on this network. The best stream that fits is listed first; streams that need more go last.</string>
     <string name="settings_stream_display_section">DISPLAY</string>
     <string name="settings_stream_background_title">Background</string>
     <string name="settings_stream_background_description">Choose the background for the streams screen.</string>

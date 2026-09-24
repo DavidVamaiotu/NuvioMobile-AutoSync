@@ -74,6 +74,22 @@ class ConnectionSpeedTest {
     }
 
     @Test
+    fun `sampler ignores waits for connection setup and seeks mid-session`() {
+        val clock = TestTimeSource()
+        val reported = mutableListOf<Double>()
+        val sampler = PlaybackThroughputSampler("https://cdn.example.com/movie.mkv", clock, reported::add)
+
+        sampler.onBytesTick(0, isFetching = true)
+        repeat(8) { tick(clock, sampler, bytes = 1_250_000, isFetching = true) }
+        // Seek to the resume position: a new request is opened and nothing arrives for 3 s.
+        repeat(12) { tick(clock, sampler, bytes = 0, isFetching = true) }
+        repeat(8) { tick(clock, sampler, bytes = 1_250_000, isFetching = true) }
+        sampler.finish()
+
+        assertEquals(40.0, reported.single(), absoluteTolerance = 0.01)
+    }
+
+    @Test
     fun `sampler converts reported rates`() {
         val clock = TestTimeSource()
         val reported = mutableListOf<Double>()

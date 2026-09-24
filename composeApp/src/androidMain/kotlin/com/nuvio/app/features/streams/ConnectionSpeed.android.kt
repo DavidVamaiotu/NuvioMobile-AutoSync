@@ -7,7 +7,7 @@ import android.net.NetworkCapabilities
 
 internal actual object ConnectionSpeedStorage {
     private const val preferencesName = "nuvio_connection_speed"
-    private const val samplesKey = "throughput_samples"
+    private const val samplesKey = "throughput_samples_v2"
 
     private var preferences: SharedPreferences? = null
     internal var connectivityManager: ConnectivityManager? = null

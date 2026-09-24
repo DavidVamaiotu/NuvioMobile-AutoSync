@@ -5,10 +5,10 @@ import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.features.details.parseRuntimeMinutes
 
 /**
- * Moves streams the current connection can't sustain to the end of their list.
- *
- * Demote-only and stable: nothing is promoted on a guess, streams whose bitrate can't be known
- * (no size or runtime) keep their place, and addon or user sort order is otherwise untouched.
+ * Orders each list around what the current connection can sustain: streams that fit come first,
+ * highest bitrate first, so the top is the best quality that plays smoothly rather than the
+ * smallest file. Streams whose bitrate can't be known (no size or runtime) follow in their
+ * original order, and streams that exceed the connection go last, also in original order.
  * Built once per stream load from a snapshot, so the order never shifts while a list is open.
  */
 internal class StreamConnectionFit(
@@ -22,13 +22,19 @@ internal class StreamConnectionFit(
 
     fun apply(streams: List<StreamItem>): List<StreamItem> {
         if (streams.size < 2) return streams
-        val (fitting, exceeding) = streams.partition { !exceedsConnection(it) }
-        return if (exceeding.isEmpty() || fitting.isEmpty()) streams else fitting + exceeding
-    }
-
-    internal fun exceedsConnection(stream: StreamItem): Boolean {
-        val bitrateMbps = stream.averageBitrateMbps(runtimeMinutes) ?: return false
-        return bitrateMbps * BITRATE_HEADROOM > connectionMbps
+        val fitting = mutableListOf<Pair<StreamItem, Double>>()
+        val unknown = mutableListOf<StreamItem>()
+        val exceeding = mutableListOf<StreamItem>()
+        for (stream in streams) {
+            val bitrateMbps = stream.averageBitrateMbps(runtimeMinutes)
+            when {
+                bitrateMbps == null -> unknown += stream
+                bitrateMbps * BITRATE_HEADROOM > connectionMbps -> exceeding += stream
+                else -> fitting += stream to bitrateMbps
+            }
+        }
+        val ordered = fitting.sortedByDescending { it.second }.map { it.first } + unknown + exceeding
+        return if (ordered == streams) streams else ordered
     }
 
     companion object {
