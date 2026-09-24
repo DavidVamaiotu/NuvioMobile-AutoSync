@@ -22,6 +22,7 @@ class ReshapedApkAssetsTest {
         assertEquals("NuvioRS-$tag-arm32.apk", ReshapedApkAssets.choose(releaseAssets, listOf("armeabi-v7a")))
         assertEquals("NuvioRS-$tag-x64.apk", ReshapedApkAssets.choose(releaseAssets, listOf("x86_64", "x86")))
         assertEquals("NuvioRS-$tag-x32.apk", ReshapedApkAssets.choose(releaseAssets, listOf("x86")))
+        assertEquals("NuvioRS-$tag-any.apk", ReshapedApkAssets.choose(releaseAssets + "NuvioRS-$tag-any.apk", listOf("riscv64")))
     }
 
     @Test

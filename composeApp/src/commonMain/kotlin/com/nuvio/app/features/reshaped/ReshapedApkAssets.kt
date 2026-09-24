@@ -1,7 +1,7 @@
 package com.nuvio.app.features.reshaped
 
 /**
- * Release APK naming since the rename. Nuvio RS APKs are named `NuvioRS-<tag>-<alias>.apk`, where
+ * Release APK naming since the rename. Nuvio RS APKs are named `NuvioRS-[TV-]<tag>-<alias>.apk`, where
  * the alias deliberately avoids the ABI names and "universal"/"all" that pre-rename updaters look
  * for, so those updaters pick the legacy bridge APK published next to them instead.
  */
@@ -15,7 +15,7 @@ internal object ReshapedApkAssets {
         "x86" to "x32",
     )
 
-    /** Picks the Nuvio RS APK for [supportedAbis], or null when the release has none. */
+    /** Picks the Nuvio RS APK for [supportedAbis] (else the "-any" one), or null when the release has none. */
     fun choose(apkNames: List<String>, supportedAbis: List<String>): String? {
         val reshaped = apkNames.filter { it.startsWith(PREFIX, ignoreCase = true) }
         if (reshaped.isEmpty()) return null
@@ -23,6 +23,6 @@ internal object ReshapedApkAssets {
             val alias = abiAliases[abi] ?: continue
             reshaped.firstOrNull { it.lowercase().removeSuffix(".apk").endsWith("-$alias") }?.let { return it }
         }
-        return reshaped.first()
+        return reshaped.firstOrNull { it.lowercase().removeSuffix(".apk").endsWith("-any") } ?: reshaped.first()
     }
 }
