@@ -1,6 +1,6 @@
 name: Audio Sync Release
 
-# Release trigger: fix wrong frame-rate locks, shared speech model, faster sampling
+# Release trigger: keep sampling and subtitle search running until sync is confirmed
 
 on:
   workflow_dispatch:

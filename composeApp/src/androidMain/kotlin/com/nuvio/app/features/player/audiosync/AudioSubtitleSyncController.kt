@@ -176,6 +176,10 @@ internal class AudioSubtitleSyncController(
     @Volatile
     private var spotStatus = ""
 
+    /** (source key, reason) when this stream is not sampled at all. */
+    @Volatile
+    private var spotUnavailable: Pair<String, String>? = null
+
     @Volatile
     private var model: SubtitleSyncModel? = null
 
@@ -286,7 +290,7 @@ internal class AudioSubtitleSyncController(
                 recognizer = recognizerText,
                 reference = referenceStatus,
                 alternatives = pool?.summary.orEmpty(),
-                sampling = spotStatus,
+                sampling = spotStatus.ifEmpty { spotUnavailable?.takeIf { it.first == sourceKey }?.second.orEmpty() },
                 notice = switchNotice?.takeIf { it.first == current.key }?.second,
                 problem = problem ?: if (decoderUnavailable) "Speech detector could not be loaded" else null,
             ),
@@ -325,12 +329,18 @@ internal class AudioSubtitleSyncController(
         url: String,
         dataSourceFactory: DataSource.Factory,
         extractorsFactory: ExtractorsFactory,
+        localEngine: Boolean,
     ) {
-        val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return
-        if (uri.scheme != "http" && uri.scheme != "https") return
-        val path = uri.path.orEmpty().lowercase()
-        if (path.endsWith(".m3u8") || path.endsWith(".mpd")) return
-        spotSource = SpotSource(forSourceKey, uri, dataSourceFactory, extractorsFactory)
+        val uri = runCatching { Uri.parse(url) }.getOrNull()
+        val path = uri?.path.orEmpty().lowercase()
+        val unavailable = when {
+            localEngine -> "not used for torrent streams (would slow playback)"
+            uri == null || (uri.scheme != "http" && uri.scheme != "https") -> "not available for this stream"
+            path.endsWith(".m3u8") || path.endsWith(".mpd") -> "not available for playlist streams"
+            else -> null
+        }
+        spotSource = if (unavailable == null) SpotSource(forSourceKey, uri!!, dataSourceFactory, extractorsFactory) else null
+        spotUnavailable = unavailable?.let { forSourceKey to it }
     }
 
     /**
@@ -347,6 +357,7 @@ internal class AudioSubtitleSyncController(
         if (!spotSamplingStarted.compareAndSet(false, true)) return
         if (!AsrModel.isUnmetered(appContext)) {
             Log.i(TAG, "not sampling audio across the film on a metered network")
+            spotStatus = "off on mobile data (Wi-Fi only)"
             return
         }
         Thread({ sampleSpots(source, current) }, "NuvioAudioSyncSpots").apply {
@@ -816,16 +827,22 @@ internal class AudioSubtitleSyncController(
         if (previous == null) manualDelayAtLockMs = manualDelayMs()
         current.tracker.adopt(adopted)
         model = adopted
-        estimated = false
+        // Until the frame rate is known the mapping is an estimate: sampling across the film and
+        // the search among other subtitles keep running, and nothing is remembered yet.
+        estimated = !result.final
         lockMethod = "speech recognition"
         problem = null
-        if (result.final) lockedAtElapsedMs = SystemClock.elapsedRealtime()
-        remember(current.key, adopted)
+        if (result.final) {
+            lockedAtElapsedMs = SystemClock.elapsedRealtime()
+            remember(current.key, adopted)
+        }
         val offsetMs = adopted.delayUsAt(playbackPositionMs * 1_000L) / 1_000L
         Log.i(TAG, "RECOGNITION LOCK $adopted via ${result.referenceKey} fine=${result.fineTuned} final=${result.final}")
         val previousOffsetMs = previous?.delayUsAt(playbackPositionMs * 1_000L)?.div(1_000L)
-        if (previousOffsetMs == null || kotlin.math.abs(previousOffsetMs - offsetMs) >= NOTIFY_CHANGE_MS) {
-            notify(AudioSyncStatus.Synced(offsetMs = offsetMs, rateCorrected = result.scale != 1.0))
+        when {
+            result.final -> notify(AudioSyncStatus.Synced(offsetMs = offsetMs, rateCorrected = result.scale != 1.0))
+            previousOffsetMs == null || kotlin.math.abs(previousOffsetMs - offsetMs) >= NOTIFY_CHANGE_MS ->
+                notify(AudioSyncStatus.Estimated(offsetMs = offsetMs))
         }
     }
 
