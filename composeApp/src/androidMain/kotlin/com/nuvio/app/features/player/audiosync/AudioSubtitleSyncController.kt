@@ -302,6 +302,10 @@ internal class AudioSubtitleSyncController(
                 if (lockedAtElapsedMs > 0 && sessionStartedAtMs > 0 && tookMs >= 0) "$method in ${tookMs / 1_000}s" else method
             },
             offsetMs = synced?.delayUsAt(playbackPositionMs * 1_000L)?.div(1_000L),
+            // Half-second steps: fine-tuning nudges don't bring the panel back.
+            mapping = synced?.segments?.joinToString("|") {
+                "${it.fromMediaMs / 1_000}:${"%.5f".format(java.util.Locale.US, it.scale)}:${Math.round(it.shiftMs / 500.0)}"
+            }.orEmpty(),
             lookAheadSec = if (liveOnly) 0 else aheadSec,
             liveOnly = liveOnly,
             wordsHeard = asr?.heardWordCount ?: 0,
@@ -323,7 +327,7 @@ internal class AudioSubtitleSyncController(
     /** Logs what the status panel shows whenever it changes (offset to the tenth of a second). */
     private fun logChange(diagnostics: SubtitleSyncDiagnostics) {
         val state = with(diagnostics) {
-            "panel: $phase ${offsetMs?.let { "%+.1fs".format(java.util.Locale.US, it / 1_000.0) } ?: "-"}" +
+            "panel: $phase mapping=${mapping.ifEmpty { "-" }}" +
                 " method=${method ?: "-"} rate=${rate ?: "1"} ahead=${lookAheadSec}s words=$wordsHeard" +
                 " recognizer=$recognizer reference=$reference others=$alternatives sampling=$sampling" +
                 (notice?.let { " notice=$it" } ?: "") + (problem?.let { " problem=$it" } ?: "")
@@ -332,7 +336,8 @@ internal class AudioSubtitleSyncController(
         val key = state.replace(Regex(" ahead=\\d+s words=\\d+"), "")
         if (key == lastLoggedState) return
         lastLoggedState = key
-        SyncLog.i(state)
+        val offset = diagnostics.offsetMs?.let { " offset=%+.1fs".format(java.util.Locale.US, it / 1_000.0) }.orEmpty()
+        SyncLog.i(state + offset)
     }
 
     fun onSourceChanged(newSourceKey: String) {

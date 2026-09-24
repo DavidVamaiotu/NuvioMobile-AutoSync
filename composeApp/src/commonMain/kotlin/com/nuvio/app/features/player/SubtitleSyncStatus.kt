@@ -21,6 +21,11 @@ data class SubtitleSyncDiagnostics(
     /** How the current offset was found, when synced. */
     val method: String? = null,
     val offsetMs: Long? = null,
+    /**
+     * Identifies the mapping in effect. It changes when the sync changes, not as playback moves
+     * (with a frame-rate correction [offsetMs] grows every second).
+     */
+    val mapping: String = "",
     /** Seconds of audio already analysed ahead of the playhead; 0 in live-only mode. */
     val lookAheadSec: Int = 0,
     val liveOnly: Boolean = false,

@@ -34,7 +34,7 @@ internal fun SubtitleSyncStatusOverlay(modifier: Modifier = Modifier) {
     val current = diagnostics
     var hideAfterSync by remember { mutableStateOf(false) }
     val synced = current?.phase == SubtitleSyncDiagnostics.Phase.Synced
-    LaunchedEffect(synced, current?.offsetMs) {
+    LaunchedEffect(synced, current?.mapping) {
         hideAfterSync = false
         if (synced) {
             delay(if (current?.notice != null) 12_000 else 8_000)
