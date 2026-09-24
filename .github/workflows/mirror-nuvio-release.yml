@@ -210,14 +210,29 @@ jobs:
           {
             echo "## AutoSync changelog"
             echo
+            # Hand-written highlights, shown only when the notes file changed since the last
+            # release so old notes never repeat.
+            NOTES_FILE=".github/autosync-release-notes.md"
+            if [[ -s "$NOTES_FILE" ]] && {
+              [[ -z "$PREVIOUS_TAG" ]] ||
+                ! git rev-parse --verify --quiet "$PREVIOUS_TAG^{commit}" >/dev/null ||
+                ! git diff --quiet "$PREVIOUS_TAG" HEAD -- "$NOTES_FILE"
+            }; then
+              echo "### Highlights"
+              echo
+              cat "$NOTES_FILE"
+              echo
+              echo "### Commits"
+              echo
+            fi
             if [[ -n "$PREVIOUS_TAG" ]] && git rev-parse --verify --quiet "$PREVIOUS_TAG^{commit}" >/dev/null; then
               CHANGES="$(
-                git log --reverse --no-merges --pretty=format:'%s' "$PREVIOUS_TAG..HEAD" -- . ':(exclude).github/workflows/**' |
+                git log --reverse --no-merges --pretty=format:'%s' "$PREVIOUS_TAG..HEAD" -- . ':(exclude).github/workflows/**' ':(exclude).github/autosync-release-notes.md' |
                   grep -Ev '^(Trigger AutoSync release|Release .*autosync|Sync Nuvio )' || true
               )"
             else
               CHANGES="$(
-                git log -20 --reverse --no-merges --pretty=format:'%s' -- . ':(exclude).github/workflows/**' |
+                git log -20 --reverse --no-merges --pretty=format:'%s' -- . ':(exclude).github/workflows/**' ':(exclude).github/autosync-release-notes.md' |
                   grep -Ev '^(Trigger AutoSync release|Release .*autosync|Sync Nuvio )' || true
               )"
             fi
