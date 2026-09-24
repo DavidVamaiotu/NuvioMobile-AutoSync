@@ -479,6 +479,7 @@ private fun PlaybackSettingsSection(
             val audioLanguageEnabled = !isExternalPlayer
             val subtitleLanguageEnabled = !isExternalPlayer || isForwardingSubtitles
             val otherSubtitleOptionsEnabled = !isExternalPlayer
+
             SettingsGroup(isTablet = isTablet) {
                 SettingsNavigationRow(
                     title = stringResource(Res.string.settings_playback_preferred_audio_language),
@@ -521,7 +522,7 @@ private fun PlaybackSettingsSection(
                     isTablet = isTablet,
                     onClick = { showSecondarySubtitleDialog = true },
                 )
-                AutoSyncPlaybackSettingsRows(
+                AutoSyncPlaybackSettingsRows( // AutoSync hook
                     isTablet = isTablet,
                     enabled = otherSubtitleOptionsEnabled,
                     preferredSubtitleLanguage = preferredSubtitleLanguage,

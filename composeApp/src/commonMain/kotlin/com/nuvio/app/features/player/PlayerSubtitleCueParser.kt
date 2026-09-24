@@ -4,28 +4,14 @@ import kotlin.math.max
 
 object PlayerSubtitleCueParser {
     private val timestampRegex = Regex("""(?:(\d+):)?(\d{1,2}):(\d{2})([.,](\d+))?""")
-    private const val CANCELLATION_CHECK_INTERVAL = 64
 
-    fun parse(text: String, sourceUrl: String? = null): List<SubtitleSyncCue> =
-        parse(
-            text = text,
-            sourceUrl = sourceUrl,
-            cancellationCheck = null,
-        )
-
-    internal fun parse(
-        text: String,
-        sourceUrl: String?,
-        cancellationCheck: (() -> Unit)?,
-    ): List<SubtitleSyncCue> {
-        cancellationCheck?.invoke()
+    fun parse(text: String, sourceUrl: String? = null): List<SubtitleSyncCue> {
         val cleanedText = cleanText(text)
-        cancellationCheck?.invoke()
         return when (detectSubtitleFormat(sourceUrl, cleanedText)) {
-            SubtitleFormatHint.WebVtt -> parseVtt(cleanedText, cancellationCheck)
-            SubtitleFormatHint.Ass -> parseAss(cleanedText, cancellationCheck)
-            SubtitleFormatHint.Ttml -> parseTtml(cleanedText, cancellationCheck)
-            SubtitleFormatHint.Srt -> parseSrt(cleanedText, cancellationCheck)
+            SubtitleFormatHint.WebVtt -> parseVtt(cleanedText)
+            SubtitleFormatHint.Ass -> parseAss(cleanedText)
+            SubtitleFormatHint.Ttml -> parseTtml(cleanedText)
+            SubtitleFormatHint.Srt -> parseSrt(cleanedText)
         }
     }
 
@@ -80,15 +66,10 @@ object PlayerSubtitleCueParser {
         }
     }
 
-    private fun parseSrt(
-        text: String,
-        cancellationCheck: (() -> Unit)? = null,
-    ): List<SubtitleSyncCue> {
+    private fun parseSrt(text: String): List<SubtitleSyncCue> {
         val blocks = text.split(Regex("""\n\s*\n"""))
         val cues = mutableListOf<SubtitleSyncCue>()
-        var cancellationCounter = 0
         for (block in blocks) {
-            checkCancellation(cancellationCounter++, cancellationCheck)
             val lines = block
                 .lines()
                 .map { it.trim() }
@@ -111,20 +92,15 @@ object PlayerSubtitleCueParser {
         return cues
     }
 
-    private fun parseVtt(
-        text: String,
-        cancellationCheck: (() -> Unit)? = null,
-    ): List<SubtitleSyncCue> {
+    private fun parseVtt(text: String): List<SubtitleSyncCue> {
         val lines = text
             .lines()
             .map { it.trimEnd() }
 
         val cues = mutableListOf<SubtitleSyncCue>()
         var cursor = 0
-        var cancellationCounter = 0
 
         while (cursor < lines.size) {
-            checkCancellation(cancellationCounter++, cancellationCheck)
             val line = lines[cursor].trim()
             if (line.isBlank()) {
                 cursor++
@@ -191,17 +167,12 @@ object PlayerSubtitleCueParser {
         "Text",
     )
 
-    private fun parseAss(
-        text: String,
-        cancellationCheck: (() -> Unit)? = null,
-    ): List<SubtitleSyncCue> {
+    private fun parseAss(text: String): List<SubtitleSyncCue> {
         var inEventsSection = false
         var formatFields: List<String>? = null
-        var cancellationCounter = 0
 
-        val cues = text.lines()
+        return text.lines()
             .mapNotNull { rawLine ->
-                checkCancellation(cancellationCounter++, cancellationCheck)
                 val line = rawLine.trim()
                 when {
                     line.equals("[Events]", ignoreCase = true) -> {
@@ -223,8 +194,7 @@ object PlayerSubtitleCueParser {
                     else -> null
                 }
             }
-        cancellationCheck?.invoke()
-        return cues.sortedBy { it.startTimeMs }
+            .sortedBy { it.startTimeMs }
     }
 
     private fun parseAssDialogue(payload: String, formatFields: List<String>?): SubtitleSyncCue? {
@@ -250,16 +220,11 @@ object PlayerSubtitleCueParser {
         return if (body.isBlank()) null else SubtitleSyncCue(startTimeMs = start, endTimeMs = end, text = body)
     }
 
-    private fun parseTtml(
-        text: String,
-        cancellationCheck: (() -> Unit)? = null,
-    ): List<SubtitleSyncCue> {
+    private fun parseTtml(text: String): List<SubtitleSyncCue> {
         val frameRate = parseTtmlFrameRate(text)
-        var cancellationCounter = 0
-        val cues = Regex("""(?is)<p\b([^>]*)>(.*?)</p>""")
+        return Regex("""(?is)<p\b([^>]*)>(.*?)</p>""")
             .findAll(text)
             .mapNotNull { match ->
-                checkCancellation(cancellationCounter++, cancellationCheck)
                 val attrs = match.groupValues[1]
                 val startRaw = attrs.attributeValue("begin")
                     ?: attrs.attributeValue("start")
@@ -274,9 +239,8 @@ object PlayerSubtitleCueParser {
                 )
                 if (body.isBlank()) null else SubtitleSyncCue(startTimeMs = start, endTimeMs = end, text = body)
             }
+            .sortedBy { it.startTimeMs }
             .toList()
-        cancellationCheck?.invoke()
-        return cues.sortedBy { it.startTimeMs }
     }
 
     private fun parseTtmlFrameRate(text: String): Double {
@@ -384,18 +348,6 @@ object PlayerSubtitleCueParser {
             else -> millisRaw.take(3).toLongOrNull() ?: 0L
         }
         return ((hours * 3600L) + (minutes * 60L) + seconds) * 1000L + millis
-    }
-
-    private fun checkCancellation(
-        index: Int,
-        cancellationCheck: (() -> Unit)?,
-    ) {
-        if (
-            cancellationCheck != null &&
-            index % CANCELLATION_CHECK_INTERVAL == 0
-        ) {
-            cancellationCheck()
-        }
     }
 
     private fun List<String>.indexOfField(name: String): Int =
