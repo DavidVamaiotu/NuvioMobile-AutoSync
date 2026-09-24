@@ -77,6 +77,18 @@ jobs:
             echo "::warning::SEEKR_API_KEY secret is not set; seek previews are disabled in this build"
           fi
 
+      - name: Add Trakt credentials
+        env:
+          TRAKT_CLIENT_ID: ${{ secrets.TRAKT_CLIENT_ID }}
+          TRAKT_CLIENT_SECRET: ${{ secrets.TRAKT_CLIENT_SECRET }}
+        run: |
+          # Trakt login stays unavailable in builds without both secrets.
+          if [[ -n "$TRAKT_CLIENT_ID" && -n "$TRAKT_CLIENT_SECRET" ]]; then
+            printf '\nTRAKT_CLIENT_ID=%s\nTRAKT_CLIENT_SECRET=%s\n' "$TRAKT_CLIENT_ID" "$TRAKT_CLIENT_SECRET" >> local.properties
+          else
+            echo "::warning::TRAKT_CLIENT_ID or TRAKT_CLIENT_SECRET secret is not set; Trakt login is disabled in this build"
+          fi
+
       - name: Build full debug APK
         run: ./gradlew :androidApp:assembleFullDebug --stacktrace
 

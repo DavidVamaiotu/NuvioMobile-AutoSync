@@ -50,6 +50,18 @@ jobs:
           IMDB_TAPFRAME_API_BASE_URL=https://imdb.tapframe.space/
           PROPS
 
+      - name: Add Trakt credentials
+        env:
+          TRAKT_CLIENT_ID: ${{ secrets.TRAKT_CLIENT_ID }}
+          TRAKT_CLIENT_SECRET: ${{ secrets.TRAKT_CLIENT_SECRET }}
+        run: |
+          # Trakt login stays unavailable in builds without both secrets.
+          if [[ -n "$TRAKT_CLIENT_ID" && -n "$TRAKT_CLIENT_SECRET" ]]; then
+            printf '\nTRAKT_CLIENT_ID=%s\nTRAKT_CLIENT_SECRET=%s\n' "$TRAKT_CLIENT_ID" "$TRAKT_CLIENT_SECRET" >> local.properties
+          else
+            echo "::warning::TRAKT_CLIENT_ID or TRAKT_CLIENT_SECRET secret is not set; Trakt login is disabled in this build"
+          fi
+
       - name: Run AutoSync V2 host tests
         run: |
           ./gradlew :composeApp:testAndroidHostTest -Pnuvio.android.distribution=full \
