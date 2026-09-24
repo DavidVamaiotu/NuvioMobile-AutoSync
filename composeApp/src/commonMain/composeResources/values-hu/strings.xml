@@ -1175,7 +1175,7 @@
     <string name="addon_already_installed">Ez a kiegészítő már telepítve van.</string>
     <string name="addon_invalid_url">Kérjük, érvényes kiegészítő URL-t adj meg</string>
     <string name="addon_load_manifest_failed">Nem sikerült betölteni a manifest fájlt</string>
-    <string name="app_brand_name">Nuvio</string>
+    <string name="app_brand_name">Nuvio RS</string>
     <string name="auth_account_deletion_failed">A fiók törlése sikertelen</string>
     <string name="auth_sign_in_failed">Bejelentkezés sikertelen</string>
     <string name="auth_sign_out_failed">Kijelentkezés sikertelen</string>

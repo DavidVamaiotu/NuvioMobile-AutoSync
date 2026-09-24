@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated: Nuvio RS migration prompts. -->
+<resources>
+    <string name="nuvio_rs_moved_title">A Nuvio mostantól Nuvio RS</string>
+    <string name="nuvio_rs_bridge_install_message">Ez az alkalmazás Nuvio RS néven folytatódik, amely a hivatalos Nuvio mellé települ. Telepítsd a Nuvio RS-t, hogy továbbra is kapj frissítéseket. A beállításaid automatikusan átkerülnek.</string>
+    <string name="nuvio_rs_bridge_installed_message">A Nuvio RS telepítve van. Nyisd meg a beállítások áthozásához, majd távolítsd el ezt a régi alkalmazást.</string>
+    <string name="nuvio_rs_install">Nuvio RS telepítése</string>
+    <string name="nuvio_rs_downloading" formatted="true">Letöltés… %1$d%%</string>
+    <string name="nuvio_rs_download_failed">A Nuvio RS letöltése nem sikerült. Próbáld újra később.</string>
+    <string name="nuvio_rs_allow_installs">Engedélyezd a telepítést ebből az alkalmazásból, majd koppints újra a Nuvio RS telepítése gombra.</string>
+    <string name="nuvio_rs_open">Nuvio RS megnyitása</string>
+    <string name="nuvio_rs_uninstall_old">Régi alkalmazás eltávolítása</string>
+    <string name="nuvio_rs_later">Később</string>
+    <string name="nuvio_rs_imported_title">Beállítások áthozva</string>
+    <string name="nuvio_rs_imported_message">A beállításaid átkerültek a régi Nuvio alkalmazásból, amelyet most már eltávolíthatsz. Az MDBList és a Simkl újracsatlakoztatása szükséges.</string>
+    <string name="nuvio_rs_keep">Megtartás</string>
+    <string name="nuvio_rs_pending_title">Beállítások áthozása</string>
+    <string name="nuvio_rs_pending_message">A beállítások áthozásához nyisd meg a régi Nuvio alkalmazást, telepítsd a legújabb frissítését, majd gyere vissza ide.</string>
+    <string name="nuvio_rs_ready_message">A régi Nuvio alkalmazás beállításai készen állnak. A Nuvio RS újraindul, hogy alkalmazza őket a jelenlegi beállítások helyett.</string>
+    <string name="nuvio_rs_restart">Újraindítás</string>
+    <string name="nuvio_rs_open_old">Régi alkalmazás megnyitása</string>
+    <string name="nuvio_rs_start_fresh">Újrakezdés</string>
+</resources>

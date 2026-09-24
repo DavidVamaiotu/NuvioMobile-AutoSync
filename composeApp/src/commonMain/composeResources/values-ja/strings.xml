@@ -1354,7 +1354,7 @@
     <string name="addon_already_installed">そのアドオンはすでにインストールされています。</string>
     <string name="addon_invalid_url">有効なアドオンURLを入力してください</string>
     <string name="addon_load_manifest_failed">マニフェストを読み込めませんでした</string>
-    <string name="app_brand_name">Nuvio</string>
+    <string name="app_brand_name">Nuvio RS</string>
     <string name="auth_account_deletion_failed">アカウントの削除に失敗しました</string>
     <string name="auth_sign_in_failed">サインインに失敗しました</string>
     <string name="auth_sign_out_failed">サインアウトに失敗しました</string>

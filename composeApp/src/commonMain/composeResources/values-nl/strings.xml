@@ -1634,7 +1634,7 @@
     <string name="addon_already_installed">Die add-on is al geïnstalleerd.</string>
     <string name="addon_invalid_url">Voer een geldige add-on-URL in</string>
     <string name="addon_load_manifest_failed">Kan manifest niet laden</string>
-    <string name="app_brand_name">Nuvio</string>
+    <string name="app_brand_name">Nuvio RS</string>
     <string name="auth_account_deletion_failed">Verwijderen van account mislukt</string>
     <string name="auth_sign_in_failed">Inloggen mislukt</string>
     <string name="auth_sign_out_failed">Uitloggen mislukt</string>

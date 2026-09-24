@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated: Nuvio RS migration prompts. -->
+<resources>
+    <string name="nuvio_rs_moved_title">Nuvio הוא עכשיו Nuvio RS</string>
+    <string name="nuvio_rs_bridge_install_message">האפליקציה הזו ממשיכה בתור Nuvio RS, שמותקנת לצד Nuvio הרשמית. התקינו את Nuvio RS כדי להמשיך לקבל עדכונים. ההגדרות שלכם יועברו אוטומטית.</string>
+    <string name="nuvio_rs_bridge_installed_message">Nuvio RS מותקנת. פתחו אותה כדי להעביר את ההגדרות, ואז הסירו את האפליקציה הישנה הזו.</string>
+    <string name="nuvio_rs_install">התקנת Nuvio RS</string>
+    <string name="nuvio_rs_downloading" formatted="true">מוריד… %1$d%%</string>
+    <string name="nuvio_rs_download_failed">לא ניתן היה להוריד את Nuvio RS. נסו שוב מאוחר יותר.</string>
+    <string name="nuvio_rs_allow_installs">אפשרו התקנות מהאפליקציה הזו, ואז הקישו שוב על התקנת Nuvio RS.</string>
+    <string name="nuvio_rs_open">פתיחת Nuvio RS</string>
+    <string name="nuvio_rs_uninstall_old">הסרת האפליקציה הישנה</string>
+    <string name="nuvio_rs_later">אחר כך</string>
+    <string name="nuvio_rs_imported_title">ההגדרות הועברו</string>
+    <string name="nuvio_rs_imported_message">ההגדרות שלכם הועברו מאפליקציית Nuvio הישנה, שאפשר להסיר עכשיו. יש לחבר מחדש את MDBList ו-Simkl.</string>
+    <string name="nuvio_rs_keep">להשאיר</string>
+    <string name="nuvio_rs_pending_title">העברת ההגדרות</string>
+    <string name="nuvio_rs_pending_message">כדי להעביר את ההגדרות, פתחו את אפליקציית Nuvio הישנה והתקינו את העדכון האחרון שלה, ואז חזרו לכאן.</string>
+    <string name="nuvio_rs_ready_message">ההגדרות מאפליקציית Nuvio הישנה מוכנות. Nuvio RS תופעל מחדש כדי להחיל אותן במקום ההגדרות הנוכחיות.</string>
+    <string name="nuvio_rs_restart">הפעלה מחדש</string>
+    <string name="nuvio_rs_open_old">פתיחת האפליקציה הישנה</string>
+    <string name="nuvio_rs_start_fresh">התחלה מחדש</string>
+</resources>

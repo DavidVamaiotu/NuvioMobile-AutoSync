@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated: Nuvio RS migration prompts. -->
+<resources>
+    <string name="nuvio_rs_moved_title">Z Nuvio je teď Nuvio RS</string>
+    <string name="nuvio_rs_bridge_install_message">Tato aplikace pokračuje jako Nuvio RS, které se instaluje vedle oficiálního Nuvio. Nainstalujte Nuvio RS, abyste dál dostávali aktualizace. Nastavení se přenesou automaticky.</string>
+    <string name="nuvio_rs_bridge_installed_message">Nuvio RS je nainstalováno. Otevřete ho, aby se přenesla nastavení, a pak tuto starou aplikaci odinstalujte.</string>
+    <string name="nuvio_rs_install">Nainstalovat Nuvio RS</string>
+    <string name="nuvio_rs_downloading" formatted="true">Stahování… %1$d%%</string>
+    <string name="nuvio_rs_download_failed">Nuvio RS se nepodařilo stáhnout. Zkuste to později.</string>
+    <string name="nuvio_rs_allow_installs">Povolte instalace z této aplikace a pak znovu klepněte na Nainstalovat Nuvio RS.</string>
+    <string name="nuvio_rs_open">Otevřít Nuvio RS</string>
+    <string name="nuvio_rs_uninstall_old">Odinstalovat starou aplikaci</string>
+    <string name="nuvio_rs_later">Později</string>
+    <string name="nuvio_rs_imported_title">Nastavení přenesena</string>
+    <string name="nuvio_rs_imported_message">Nastavení byla přenesena ze staré aplikace Nuvio, kterou teď můžete odinstalovat. MDBList a Simkl je potřeba znovu připojit.</string>
+    <string name="nuvio_rs_keep">Ponechat</string>
+    <string name="nuvio_rs_pending_title">Přeneste nastavení</string>
+    <string name="nuvio_rs_pending_message">Pro přenos nastavení otevřete starou aplikaci Nuvio, nainstalujte její nejnovější aktualizaci a pak se sem vraťte.</string>
+    <string name="nuvio_rs_ready_message">Nastavení ze staré aplikace Nuvio jsou připravena. Nuvio RS se restartuje, aby je použilo místo současných nastavení.</string>
+    <string name="nuvio_rs_restart">Restartovat</string>
+    <string name="nuvio_rs_open_old">Otevřít starou aplikaci</string>
+    <string name="nuvio_rs_start_fresh">Začít znovu</string>
+</resources>

@@ -1167,7 +1167,7 @@
     <string name="addon_already_installed">Αυτό το πρόσθετο είναι ήδη εγκατεστημένο.</string>
     <string name="addon_invalid_url">Εισάγετε μια έγκυρη διεύθυνση URL πρόσθετου</string>
     <string name="addon_load_manifest_failed">Αδυναμία φόρτωσης manifest</string>
-    <string name="app_brand_name">Nuvio</string>
+    <string name="app_brand_name">Nuvio RS</string>
     <string name="auth_account_deletion_failed">Η διαγραφή λογαριασμού απέτυχε</string>
     <string name="auth_sign_in_failed">Η σύνδεση απέτυχε</string>
     <string name="auth_sign_out_failed">Η αποσύνδεση απέτυχε</string>

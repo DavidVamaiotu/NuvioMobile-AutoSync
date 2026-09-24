@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated: Nuvio RS migration prompts. -->
+<resources>
+    <string name="nuvio_rs_moved_title">Nuvio is now Nuvio RS</string>
+    <string name="nuvio_rs_bridge_install_message">This app continues as Nuvio RS, which installs next to the official Nuvio. Install Nuvio RS to keep getting updates. Your settings move over automatically.</string>
+    <string name="nuvio_rs_bridge_installed_message">Nuvio RS is installed. Open it to move your settings, then uninstall this old app.</string>
+    <string name="nuvio_rs_install">Install Nuvio RS</string>
+    <string name="nuvio_rs_downloading" formatted="true">Downloading… %1$d%%</string>
+    <string name="nuvio_rs_download_failed">Could not download Nuvio RS. Try again later.</string>
+    <string name="nuvio_rs_allow_installs">Allow installs from this app, then tap Install Nuvio RS again.</string>
+    <string name="nuvio_rs_open">Open Nuvio RS</string>
+    <string name="nuvio_rs_uninstall_old">Uninstall old app</string>
+    <string name="nuvio_rs_later">Later</string>
+    <string name="nuvio_rs_imported_title">Settings moved</string>
+    <string name="nuvio_rs_imported_message">Your settings were moved from the old Nuvio app, which you can now uninstall. MDBList and Simkl need to be connected again.</string>
+    <string name="nuvio_rs_keep">Keep it</string>
+    <string name="nuvio_rs_pending_title">Move your settings</string>
+    <string name="nuvio_rs_pending_message">To move your settings, open the old Nuvio app and install its latest update, then come back.</string>
+    <string name="nuvio_rs_ready_message">Your settings from the old Nuvio app are ready. Nuvio RS will restart to apply them, replacing its current settings.</string>
+    <string name="nuvio_rs_restart">Restart</string>
+    <string name="nuvio_rs_open_old">Open old app</string>
+    <string name="nuvio_rs_start_fresh">Start fresh</string>
+</resources>

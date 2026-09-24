@@ -38,6 +38,7 @@ import com.nuvio.app.features.player.ExternalPlayerPlatform
 import com.nuvio.app.features.player.SubtitleFileCache
 import com.nuvio.app.features.player.PlayerPictureInPictureManager
 import com.nuvio.app.features.player.PipRemoteActionReceiver
+import com.nuvio.app.features.reshaped.ReshapedMigrationUi
 import com.nuvio.app.features.p2p.P2pSettingsStorage
 import com.nuvio.app.features.p2p.P2pStreamingEngine
 import com.nuvio.app.features.plugins.PluginStorage
@@ -75,6 +76,7 @@ import com.nuvio.app.features.watchprogress.WatchProgressStorage
 
 open class MainActivity : AppCompatActivity() {
     private var pipRemoteActionReceiver: PipRemoteActionReceiver? = null
+    private val reshapedMigrationUi = ReshapedMigrationUi(this) // Nuvio RS hook
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
@@ -154,6 +156,11 @@ open class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        reshapedMigrationUi.onResume() // Nuvio RS hook
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -174,6 +181,7 @@ open class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        reshapedMigrationUi.onDestroy() // Nuvio RS hook
         EpisodeReleaseNotificationPlatform.unbindActivity(this)
         val receiver = pipRemoteActionReceiver
         if (receiver != null) {

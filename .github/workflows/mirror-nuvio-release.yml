@@ -358,7 +358,7 @@ jobs:
             echo "::warning::TRAKT_CLIENT_ID or TRAKT_CLIENT_SECRET secret is not set; Trakt login is disabled in this build"
           fi
 
-      - name: Build signed AutoSync release APKs
+      - name: Build signed Nuvio RS release APKs
         if: steps.version.outputs.already_exists == 'false'
         env:
           AUTOSYNC_TAG: ${{ steps.version.outputs.autosync_tag }}
@@ -367,32 +367,44 @@ jobs:
             -Pnuvio.app.versionName="$AUTOSYNC_TAG" \
             --stacktrace
 
-      - name: Show generated APKs
+          # NuvioRS-<tag>-<alias>.apk: the aliases avoid the ABI names and "universal"/"all" that
+          # updaters from before the rename match, so those pick the bridge APK below instead.
+          mkdir -p dist
+          for pair in arm64-v8a:arm64 armeabi-v7a:arm32 x86_64:x64 x86:x32; do
+            abi="${pair%%:*}"
+            alias="${pair##*:}"
+            apk="$(find androidApp/build/outputs/apk/full/release -maxdepth 1 -name "*-${abi}-release.apk" -print -quit)"
+            if [[ -z "$apk" ]]; then
+              echo "Missing $abi APK"
+              exit 1
+            fi
+            mv "$apk" "dist/NuvioRS-${AUTOSYNC_TAG}-${alias}.apk"
+          done
+
+      - name: Build signed legacy bridge APK
         if: steps.version.outputs.already_exists == 'false'
+        env:
+          AUTOSYNC_TAG: ${{ steps.version.outputs.autosync_tag }}
         run: |
-          find androidApp/build/outputs/apk/full/release \
-            -maxdepth 1 \
-            -type f \
-            -name '*.apk' \
-            -print
+          # Same app under the pre-rename id: old installs update to it in place, then it installs
+          # Nuvio RS and hands over its settings.
+          rm -rf androidApp/build/outputs/apk/full/release
+          ./gradlew :androidApp:assembleFullRelease \
+            -Pnuvio.app.versionName="$AUTOSYNC_TAG" \
+            -Pnuvio.reshaped.legacyBridge=true \
+            --stacktrace
+          apk="$(find androidApp/build/outputs/apk/full/release -maxdepth 1 -name '*.apk' -print -quit)"
+          mv "$apk" "dist/NuvioAutoSync-${AUTOSYNC_TAG}-bridge-universal.apk"
 
       - name: Verify APKs exist
         if: steps.version.outputs.already_exists == 'false'
         run: |
-          APK_COUNT="$(
-            find androidApp/build/outputs/apk/full/release \
-              -maxdepth 1 \
-              -type f \
-              -name '*.apk' |
-            wc -l
-          )"
-
-          if [[ "$APK_COUNT" -eq 0 ]]; then
-            echo "No release APKs were produced"
+          ls -l dist
+          APK_COUNT="$(find dist -maxdepth 1 -type f -name '*.apk' | wc -l)"
+          if [[ "$APK_COUNT" -ne 5 ]]; then
+            echo "Expected 5 APKs (4 Nuvio RS + bridge), found $APK_COUNT"
             exit 1
           fi
-
-          echo "Produced $APK_COUNT APKs"
 
       - name: Push merged Nuvio release
         if: steps.version.outputs.already_exists == 'false'
@@ -407,7 +419,7 @@ jobs:
           AUTOSYNC_TAG: ${{ steps.version.outputs.autosync_tag }}
         run: |
           gh release create "$AUTOSYNC_TAG" \
-            androidApp/build/outputs/apk/full/release/*.apk \
+            dist/*.apk \
             --repo "$GITHUB_REPOSITORY" \
             --target subtitle-autosync \
             --title "$AUTOSYNC_TAG" \

@@ -1373,7 +1373,7 @@
     <string name="addon_already_installed">Cet addon est déjà installé.</string>
     <string name="addon_invalid_url">Saisissez une URL d’addon valide</string>
     <string name="addon_load_manifest_failed">Impossible de charger le manifeste</string>
-    <string name="app_brand_name">Nuvio</string>
+    <string name="app_brand_name">Nuvio RS</string>
     <string name="auth_account_deletion_failed">Impossible de supprimer le compte</string>
     <string name="auth_sign_in_failed">Échec de la connexion</string>
     <string name="auth_sign_out_failed">Échec de la déconnexion</string>

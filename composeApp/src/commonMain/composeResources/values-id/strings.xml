@@ -1243,7 +1243,7 @@
     <string name="addon_already_installed">Addon tersebut sudah terpasang.</string>
     <string name="addon_invalid_url">Masukkan URL addon yang valid</string>
     <string name="addon_load_manifest_failed">Tidak dapat memuat manifes</string>
-    <string name="app_brand_name">Nuvio</string>
+    <string name="app_brand_name">Nuvio RS</string>
     <string name="auth_account_deletion_failed">Penghapusan akun gagal</string>
     <string name="auth_sign_in_failed">Masuk gagal</string>
     <string name="auth_sign_out_failed">Keluar gagal</string>

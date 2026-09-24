@@ -48,6 +48,11 @@ val releaseAppVersionName = providers.gradleProperty("nuvio.app.versionName").or
 val releaseAppVersionCode = readXcconfigValue(appVersionConfigFile, "CURRENT_PROJECT_VERSION")
     ?.toIntOrNull()
     ?: error("CURRENT_PROJECT_VERSION is missing or invalid in ${appVersionConfigFile.path}")
+// Nuvio RS: releases also ship a universal "bridge" APK under the pre-rename id, so installs from
+// before the rename update in place and then hand their settings to Nuvio RS.
+val buildsLegacyBridge = providers.gradleProperty("nuvio.reshaped.legacyBridge")
+    .map(String::toBooleanStrict)
+    .getOrElse(false)
 val requestedTaskNames = gradle.startParameter.taskNames.map { it.substringAfterLast(':') }
 val buildsReleaseApks = requestedTaskNames.any {
     it.startsWith("assemble", ignoreCase = true) && it.endsWith("Release", ignoreCase = true)
@@ -69,8 +74,13 @@ android {
         }
     }
 
+    buildFeatures {
+        resValues = true
+    }
+
     defaultConfig {
-        applicationId = "com.nuvio.app"
+        applicationId = if (buildsLegacyBridge) "com.nuvio.app" else "com.nuvioreshaped.app"
+        if (buildsLegacyBridge) resValue("string", "app_name", "Nuvio (old)")
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         versionCode = releaseAppVersionCode
@@ -115,7 +125,7 @@ android {
 
     splits {
         abi {
-            isEnable = buildsReleaseApks
+            isEnable = buildsReleaseApks && !buildsLegacyBridge
             reset()
             include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
             isUniversalApk = false

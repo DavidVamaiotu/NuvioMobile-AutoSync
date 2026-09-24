@@ -1383,7 +1383,7 @@
     <string name="addon_already_installed">Această extensie este deja instalată.</string>
     <string name="addon_invalid_url">Introdu un URL valid pentru extensie</string>
     <string name="addon_load_manifest_failed">Nu s-a putut încărca manifestul</string>
-    <string name="app_brand_name">Nuvio</string>
+    <string name="app_brand_name">Nuvio RS</string>
     <string name="auth_account_deletion_failed">Ștergerea contului a eșuat</string>
     <string name="auth_sign_in_failed">Autentificarea a eșuat</string>
     <string name="auth_sign_out_failed">Deconectarea a eșuat</string>

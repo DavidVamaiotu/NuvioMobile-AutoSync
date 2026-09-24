@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated: Nuvio RS migration prompts. -->
+<resources>
+    <string name="nuvio_rs_moved_title">Nuvio は Nuvio RS になりました</string>
+    <string name="nuvio_rs_bridge_install_message">このアプリは Nuvio RS として続きます。Nuvio RS は公式の Nuvio と並べてインストールできます。引き続きアップデートを受け取るには Nuvio RS をインストールしてください。設定は自動的に引き継がれます。</string>
+    <string name="nuvio_rs_bridge_installed_message">Nuvio RS はインストール済みです。開いて設定を引き継いでから、この古いアプリをアンインストールしてください。</string>
+    <string name="nuvio_rs_install">Nuvio RS をインストール</string>
+    <string name="nuvio_rs_downloading" formatted="true">ダウンロード中… %1$d%%</string>
+    <string name="nuvio_rs_download_failed">Nuvio RS をダウンロードできませんでした。後でもう一度お試しください。</string>
+    <string name="nuvio_rs_allow_installs">このアプリからのインストールを許可してから、もう一度「Nuvio RS をインストール」をタップしてください。</string>
+    <string name="nuvio_rs_open">Nuvio RS を開く</string>
+    <string name="nuvio_rs_uninstall_old">古いアプリをアンインストール</string>
+    <string name="nuvio_rs_later">後で</string>
+    <string name="nuvio_rs_imported_title">設定を引き継ぎました</string>
+    <string name="nuvio_rs_imported_message">古い Nuvio アプリから設定を引き継ぎました。古いアプリはアンインストールできます。MDBList と Simkl は再接続が必要です。</string>
+    <string name="nuvio_rs_keep">残す</string>
+    <string name="nuvio_rs_pending_title">設定の引き継ぎ</string>
+    <string name="nuvio_rs_pending_message">設定を引き継ぐには、古い Nuvio アプリを開いて最新のアップデートをインストールしてから、ここに戻ってください。</string>
+    <string name="nuvio_rs_ready_message">古い Nuvio アプリの設定の準備ができました。Nuvio RS を再起動して、現在の設定の代わりに適用します。</string>
+    <string name="nuvio_rs_restart">再起動</string>
+    <string name="nuvio_rs_open_old">古いアプリを開く</string>
+    <string name="nuvio_rs_start_fresh">最初から始める</string>
+</resources>

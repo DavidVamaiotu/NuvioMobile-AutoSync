@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated: Nuvio RS migration prompts. -->
+<resources>
+    <string name="nuvio_rs_moved_title">Nuvio ora è Nuvio RS</string>
+    <string name="nuvio_rs_bridge_install_message">Questa app continua come Nuvio RS, che si installa accanto al Nuvio ufficiale. Installa Nuvio RS per continuare a ricevere aggiornamenti. Le tue impostazioni vengono trasferite automaticamente.</string>
+    <string name="nuvio_rs_bridge_installed_message">Nuvio RS è installato. Aprilo per trasferire le tue impostazioni, poi disinstalla questa vecchia app.</string>
+    <string name="nuvio_rs_install">Installa Nuvio RS</string>
+    <string name="nuvio_rs_downloading" formatted="true">Download in corso… %1$d%%</string>
+    <string name="nuvio_rs_download_failed">Impossibile scaricare Nuvio RS. Riprova più tardi.</string>
+    <string name="nuvio_rs_allow_installs">Consenti le installazioni da questa app, poi tocca di nuovo Installa Nuvio RS.</string>
+    <string name="nuvio_rs_open">Apri Nuvio RS</string>
+    <string name="nuvio_rs_uninstall_old">Disinstalla la vecchia app</string>
+    <string name="nuvio_rs_later">Più tardi</string>
+    <string name="nuvio_rs_imported_title">Impostazioni trasferite</string>
+    <string name="nuvio_rs_imported_message">Le tue impostazioni sono state trasferite dalla vecchia app Nuvio, che ora puoi disinstallare. MDBList e Simkl vanno ricollegati.</string>
+    <string name="nuvio_rs_keep">Mantienila</string>
+    <string name="nuvio_rs_pending_title">Trasferisci le impostazioni</string>
+    <string name="nuvio_rs_pending_message">Per trasferire le tue impostazioni, apri la vecchia app Nuvio e installa il suo ultimo aggiornamento, poi torna qui.</string>
+    <string name="nuvio_rs_ready_message">Le impostazioni della vecchia app Nuvio sono pronte. Nuvio RS si riavvierà per applicarle, sostituendo quelle attuali.</string>
+    <string name="nuvio_rs_restart">Riavvia</string>
+    <string name="nuvio_rs_open_old">Apri la vecchia app</string>
+    <string name="nuvio_rs_start_fresh">Ricomincia da zero</string>
+</resources>

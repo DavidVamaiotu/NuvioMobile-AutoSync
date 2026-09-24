@@ -1327,7 +1327,7 @@
     <string name="addon_already_installed">Esse addon já está instalado.</string>
     <string name="addon_invalid_url">Introduz um URL de addon válido</string>
     <string name="addon_load_manifest_failed">Não foi possível carregar o manifesto</string>
-    <string name="app_brand_name">Nuvio</string>
+    <string name="app_brand_name">Nuvio RS</string>
     <string name="auth_account_deletion_failed">Falha ao eliminar a conta</string>
     <string name="auth_sign_in_failed">Falha ao iniciar sessão</string>
     <string name="auth_sign_out_failed">Falha ao terminar sessão</string>

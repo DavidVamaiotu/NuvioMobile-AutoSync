@@ -1615,7 +1615,7 @@
     <string name="addon_already_installed">Этот аддон уже установлен.</string>
     <string name="addon_invalid_url">Введите действительный аддон URL.</string>
     <string name="addon_load_manifest_failed">Не удалось загрузить манифест</string>
-    <string name="app_brand_name">Nuvio</string>
+    <string name="app_brand_name">Nuvio RS</string>
     <string name="auth_account_deletion_failed">Удаление аккаунта не удалось</string>
     <string name="auth_sign_in_failed">Не удалось войти в систему</string>
     <string name="auth_sign_out_failed">Не удалось выйти из системы</string>

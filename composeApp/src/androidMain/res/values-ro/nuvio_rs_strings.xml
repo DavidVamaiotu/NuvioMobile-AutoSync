@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated: Nuvio RS migration prompts. -->
+<resources>
+    <string name="nuvio_rs_moved_title">Nuvio este acum Nuvio RS</string>
+    <string name="nuvio_rs_bridge_install_message">Această aplicație continuă ca Nuvio RS, care se instalează alături de Nuvio oficial. Instalează Nuvio RS ca să primești în continuare actualizări. Setările tale se mută automat.</string>
+    <string name="nuvio_rs_bridge_installed_message">Nuvio RS este instalat. Deschide-l ca să îți muți setările, apoi dezinstalează această aplicație veche.</string>
+    <string name="nuvio_rs_install">Instalează Nuvio RS</string>
+    <string name="nuvio_rs_downloading" formatted="true">Se descarcă… %1$d%%</string>
+    <string name="nuvio_rs_download_failed">Nuvio RS nu a putut fi descărcat. Încearcă din nou mai târziu.</string>
+    <string name="nuvio_rs_allow_installs">Permite instalările din această aplicație, apoi atinge din nou Instalează Nuvio RS.</string>
+    <string name="nuvio_rs_open">Deschide Nuvio RS</string>
+    <string name="nuvio_rs_uninstall_old">Dezinstalează aplicația veche</string>
+    <string name="nuvio_rs_later">Mai târziu</string>
+    <string name="nuvio_rs_imported_title">Setări mutate</string>
+    <string name="nuvio_rs_imported_message">Setările tale au fost mutate din vechea aplicație Nuvio, pe care o poți dezinstala acum. MDBList și Simkl trebuie conectate din nou.</string>
+    <string name="nuvio_rs_keep">Păstreaz-o</string>
+    <string name="nuvio_rs_pending_title">Mută-ți setările</string>
+    <string name="nuvio_rs_pending_message">Ca să îți muți setările, deschide vechea aplicație Nuvio și instalează ultima ei actualizare, apoi revino aici.</string>
+    <string name="nuvio_rs_ready_message">Setările din vechea aplicație Nuvio sunt pregătite. Nuvio RS se va reporni ca să le aplice, înlocuind setările actuale.</string>
+    <string name="nuvio_rs_restart">Repornește</string>
+    <string name="nuvio_rs_open_old">Deschide aplicația veche</string>
+    <string name="nuvio_rs_start_fresh">Începe de la zero</string>
+</resources>

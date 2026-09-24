@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated: Nuvio RS migration prompts. -->
+<resources>
+    <string name="nuvio_rs_moved_title">Nuvio ahora es Nuvio RS</string>
+    <string name="nuvio_rs_bridge_install_message">Esta app continúa como Nuvio RS, que se instala junto al Nuvio oficial. Instala Nuvio RS para seguir recibiendo actualizaciones. Tus ajustes se transfieren automáticamente.</string>
+    <string name="nuvio_rs_bridge_installed_message">Nuvio RS está instalado. Ábrelo para transferir tus ajustes y luego desinstala esta app antigua.</string>
+    <string name="nuvio_rs_install">Instalar Nuvio RS</string>
+    <string name="nuvio_rs_downloading" formatted="true">Descargando… %1$d%%</string>
+    <string name="nuvio_rs_download_failed">No se pudo descargar Nuvio RS. Inténtalo más tarde.</string>
+    <string name="nuvio_rs_allow_installs">Permite instalaciones desde esta app y vuelve a tocar Instalar Nuvio RS.</string>
+    <string name="nuvio_rs_open">Abrir Nuvio RS</string>
+    <string name="nuvio_rs_uninstall_old">Desinstalar app antigua</string>
+    <string name="nuvio_rs_later">Más tarde</string>
+    <string name="nuvio_rs_imported_title">Ajustes transferidos</string>
+    <string name="nuvio_rs_imported_message">Tus ajustes se transfirieron desde la app antigua de Nuvio, que ya puedes desinstalar. MDBList y Simkl deben conectarse de nuevo.</string>
+    <string name="nuvio_rs_keep">Conservarla</string>
+    <string name="nuvio_rs_pending_title">Transfiere tus ajustes</string>
+    <string name="nuvio_rs_pending_message">Para transferir tus ajustes, abre la app antigua de Nuvio e instala su última actualización; luego vuelve aquí.</string>
+    <string name="nuvio_rs_ready_message">Tus ajustes de la app antigua de Nuvio están listos. Nuvio RS se reiniciará para aplicarlos y reemplazará sus ajustes actuales.</string>
+    <string name="nuvio_rs_restart">Reiniciar</string>
+    <string name="nuvio_rs_open_old">Abrir app antigua</string>
+    <string name="nuvio_rs_start_fresh">Empezar de cero</string>
+</resources>

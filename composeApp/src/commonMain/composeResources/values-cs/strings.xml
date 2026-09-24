@@ -1357,7 +1357,7 @@
     <string name="addon_already_installed">Tento doplněk je již nainstalován.</string>
     <string name="addon_invalid_url">Zadejte platnou URL doplňku</string>
     <string name="addon_load_manifest_failed">Nepodařilo se načíst manifest</string>
-    <string name="app_brand_name">Nuvio</string>
+    <string name="app_brand_name">Nuvio RS</string>
     <string name="auth_account_deletion_failed">Smazání účtu selhalo</string>
     <string name="auth_sign_in_failed">Přihlášení selhalo</string>
     <string name="auth_sign_out_failed">Odhlášení selhalo</string>

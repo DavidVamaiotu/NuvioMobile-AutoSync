@@ -1264,7 +1264,7 @@
     <string name="addon_already_installed">Ten dodatek jest już zainstalowany.</string>
     <string name="addon_invalid_url">Wprowadź prawidłowy URL dodatku</string>
     <string name="addon_load_manifest_failed">Nie można załadować manifestu</string>
-    <string name="app_brand_name">Nuvio</string>
+    <string name="app_brand_name">Nuvio RS</string>
     <string name="auth_account_deletion_failed">Usunięcie konta nie powiodło się</string>
     <string name="auth_sign_in_failed">Logowanie nie powiodło się</string>
     <string name="auth_sign_out_failed">Wylogowanie nie powiodło się</string>

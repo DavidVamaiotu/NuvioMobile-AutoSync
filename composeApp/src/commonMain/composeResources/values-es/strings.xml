@@ -1682,7 +1682,7 @@
     <string name="addon_already_installed">Ese complemento ya está instalado.</string>
     <string name="addon_invalid_url">Introduce una URL de complemento válida</string>
     <string name="addon_load_manifest_failed">No se pudo cargar el manifiesto</string>
-    <string name="app_brand_name">Nuvio</string>
+    <string name="app_brand_name">Nuvio RS</string>
     <string name="auth_account_deletion_failed">No se pudo eliminar la cuenta</string>
     <string name="auth_sign_in_failed">Error al iniciar sesión</string>
     <string name="auth_sign_out_failed">Error al cerrar sesión</string>
