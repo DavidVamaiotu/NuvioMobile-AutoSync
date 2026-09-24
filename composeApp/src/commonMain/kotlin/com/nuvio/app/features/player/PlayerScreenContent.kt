@@ -150,6 +150,6 @@ internal fun PlayerScreenContent(args: PlayerScreenArgs) {
             ),
         )
         runtime.BindPlayerRuntimeEffects()
-        runtime.RenderPlayerRuntimeUi()
+        runtime.WithSeekPreview { runtime.RenderPlayerRuntimeUi() }
     }
 }

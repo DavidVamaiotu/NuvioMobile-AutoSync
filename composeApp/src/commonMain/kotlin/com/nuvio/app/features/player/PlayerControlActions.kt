@@ -50,7 +50,6 @@ import com.nuvio.app.core.ui.AppIconResource
 import com.nuvio.app.core.ui.NuvioBackButton
 import com.nuvio.app.core.ui.appIconPainter
 import com.nuvio.app.core.ui.nuvioTypeScale
-import com.nuvio.app.features.player.seekpreview.LocalSeekPreviewSession
 import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.stringResource
 
@@ -101,8 +100,6 @@ internal fun PlayerControlActions(
     onSubmitIntroClick: (() -> Unit)?,
     onInteraction: () -> Unit,
 ) {
-    // Only meaningful when a Seekr track actually loaded for this title.
-    val seekPreview = LocalSeekPreviewSession.current?.takeIf { it.track != null }
     val actions = listOfNotNull(
         onNextEpisodeClick?.let {
             PlayerControlAction(
@@ -156,11 +153,8 @@ internal fun PlayerControlActions(
                 icon = Icons.Rounded.Flag,
             )
         },
-        seekPreview?.let { session ->
-            PlayerControlAction(
-                stringResource(Res.string.cd_seek_preview_sync), { session.showSyncPanel = true },
-                icon = Icons.Rounded.Tune,
-            )
+        seekPreviewSyncAction()?.let {
+            PlayerControlAction(stringResource(Res.string.cd_seek_preview_sync), it, icon = Icons.Rounded.Tune)
         },
     )
     val hasOverflow = actions.size > 5

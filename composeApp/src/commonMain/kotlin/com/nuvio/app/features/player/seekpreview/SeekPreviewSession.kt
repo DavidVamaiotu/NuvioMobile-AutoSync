@@ -39,6 +39,9 @@ internal class SeekPreviewSession {
 
     var showSyncPanel by mutableStateOf(false)
 
+    /** Position being previewed by the horizontal swipe-to-seek gesture while it is in progress. */
+    var gesturePositionMs by mutableStateOf<Long?>(null)
+
     /** Spacing between preview cues, or 0 before any preview has resolved. */
     val cueIntervalMs: Long get() = previewCue?.durationMs ?: 0L
 

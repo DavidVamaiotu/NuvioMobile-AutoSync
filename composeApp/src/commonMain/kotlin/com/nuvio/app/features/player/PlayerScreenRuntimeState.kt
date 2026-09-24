@@ -136,8 +136,6 @@ internal class PlayerScreenRuntime(
     var isScrubbingTimeline by mutableStateOf(false)
     var scrubbingPositionMs by mutableStateOf<Long?>(null)
     val seekPreview = SeekPreviewSession()
-    /** Position being previewed by the horizontal seek gesture, while it is in progress. */
-    var gestureSeekPreviewPositionMs by mutableStateOf<Long?>(null)
     var pausedOverlayVisible by mutableStateOf(false)
     var gestureFeedback by mutableStateOf<GestureFeedbackState?>(null)
     var liveGestureFeedback by mutableStateOf<GestureFeedbackState?>(null)

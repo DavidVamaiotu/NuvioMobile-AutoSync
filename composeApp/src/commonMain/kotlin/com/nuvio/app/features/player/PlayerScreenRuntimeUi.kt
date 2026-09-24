@@ -4,23 +4,12 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.unit.dp
-import com.nuvio.app.features.player.seekpreview.LocalSeekPreviewSession
-import com.nuvio.app.features.player.seekpreview.SeekPreviewSyncPanel
-import com.nuvio.app.features.player.seekpreview.SeekPreviewThumbnailStrip
 import com.nuvio.app.features.autosync.AutoSyncPlayerController
 import com.nuvio.app.features.autosync.AutoSyncRetryAction
 import com.nuvio.app.features.p2p.P2pStreamingState
@@ -122,197 +111,120 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi() {
     val playbackGesturesEnabled = initialLoadCompleted && errorMessage == null
 
     BindAutoSyncRuntimeEffects()
-    BindSeekPreviewEffects()
 
-    CompositionLocalProvider(LocalSeekPreviewSession provides seekPreview.takeIf { !isIos }) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .onSizeChanged { layoutSize = it }
-                .playerSurfaceTapGestures(
-                    layoutSize = layoutSize,
-                    playbackGesturesEnabled = playbackGesturesEnabled,
-                    playerControlsLockedState = gestureCallbacks.playerControlsLocked,
-                    onSurfaceTap = gestureCallbacks.onSurfaceTap,
-                    onSurfaceDoubleTap = gestureCallbacks.onSurfaceDoubleTap,
-                    activateHoldToSpeedState = gestureCallbacks.activateHoldToSpeed,
-                    deactivateHoldToSpeedState = gestureCallbacks.deactivateHoldToSpeed,
-                    revealLockedOverlayState = gestureCallbacks.revealLockedOverlay,
-                )
-                .playerSurfaceDragGestures(
-                    gestureController = gestureController,
-                    layoutSize = layoutSize,
-                    playbackGesturesEnabled = playbackGesturesEnabled,
-                    sideGestureSystemEdgeExclusionPx = sideGestureSystemEdgeExclusionPx,
-                    playerControlsLockedState = gestureCallbacks.playerControlsLocked,
-                    touchGesturesEnabledState = gestureCallbacks.touchGesturesEnabled,
-                    isHoldToSpeedGestureActiveState = gestureCallbacks.isHoldToSpeedGestureActive,
-                    currentPositionMsState = gestureCallbacks.currentPositionMs,
-                    currentDurationMsState = gestureCallbacks.currentDurationMs,
-                    deactivateHoldToSpeedState = gestureCallbacks.deactivateHoldToSpeed,
-                    showHorizontalSeekPreviewState = gestureCallbacks.showHorizontalSeekPreview,
-                    showBrightnessFeedbackState = gestureCallbacks.showBrightnessFeedback,
-                    showVolumeFeedbackState = gestureCallbacks.showVolumeFeedback,
-                    clearLiveGestureFeedbackState = gestureCallbacks.clearLiveGestureFeedback,
-                    revealLockedOverlayState = gestureCallbacks.revealLockedOverlay,
-                    commitHorizontalSeekState = gestureCallbacks.commitHorizontalSeek,
-                ),
-        ) {
-            val playerSurfaceSourceUrl = if (isP2pPlaybackActive) p2pResolvedSourceUrl else activeSourceUrl
-            val initialPositionRequestKey = currentInitialPositionRequestKey()
-            if (playerSurfaceSourceUrl != null) {
-                PlatformPlayerSurface(
-                    sourceUrl = playerSurfaceSourceUrl,
-                    sourceAudioUrl = activeSourceAudioUrl,
-                    sourceHeaders = activeSourceHeaders,
-                    sourceResponseHeaders = activeSourceResponseHeaders,
-                    externalSubtitles = externalSubtitles,
-                    streamType = activeStreamType,
-                    modifier = Modifier.fillMaxSize(),
-                    playWhenReady = shouldPlay,
-                    initialPositionMs = activeInitialPositionMs.takeIf { it > 0L },
-                    initialPositionRequestKey = initialPositionRequestKey,
-                    resizeMode = resizeMode,
-                    onInitialPositionHandled = { key, handled ->
-                        if (key == currentInitialPositionRequestKey()) {
-                            initialSeekApplied = handled
-                        }
-                    },
-                    onControllerReady = { controller ->
-                        playerController = controller
-                        playerControllerSourceUrl = activeSourceUrl
-                        configureAutoSyncController(controller)
-                    },
-                    onSnapshot = { snapshot ->
-                        updatePlaybackSnapshot(snapshot)
-                        refreshAudioTracksIfChanged()
-                        if (!snapshot.isLoading) initialLoadCompleted = true
-                        if (snapshot.isEnded) {
-                            shouldPlay = false
-                            controlsVisible = !playerControlsLocked
-                        }
-                    },
-                    onError = { message ->
-                        if (message != null && tryRefreshCredentialedSourceAfterError(message)) {
-                            return@PlatformPlayerSurface
-                        }
-                        errorMessage = message
-                        if (message != null) {
-                            scrubbingPositionMs = null
-                            controlsVisible = !playerControlsLocked
-                            removeFailedStreamFromCache()
-                        }
-                    },
-                )
-            }
-
-            AnimatedVisibility(
-                visible = playerSettingsUiState.pauseOverlayEnabled && pausedOverlayVisible && !controlsVisible && !playerControlsLocked,
-                enter = fadeIn(animationSpec = tween(durationMillis = 220)),
-                exit = fadeOut(animationSpec = tween(durationMillis = 180)),
-            ) {
-                PauseMetadataOverlay(
-                    title = title,
-                    logo = logo,
-                    isEpisode = isEpisode,
-                    seasonNumber = activeSeasonNumber,
-                    episodeNumber = activeEpisodeNumber,
-                    episodeTitle = activeEpisodeTitle,
-                    pauseDescription = activePauseDescription ?: activeStreamSubtitle,
-                    providerName = activeProviderName,
-                    metrics = metrics,
-                    horizontalSafePadding = horizontalSafePadding,
-                    modifier = Modifier.fillMaxSize(),
-                )
-            }
-
-            RenderPlayerControls(displayedPositionMs = displayedPositionMs, isEpisode = isEpisode)
-            RenderPlaybackOverlays(
-                runtime = runtime,
-                displayedPositionMs = displayedPositionMs,
-                currentGestureFeedback = currentGestureFeedback,
-                p2pInitialLoadingMessage = p2pInitialLoadingMessage,
-                p2pInitialLoadingProgress = p2pInitialLoadingProgress,
-                showP2pRebufferStats = showP2pRebufferStats,
-                p2pRebufferMessage = p2pRebufferMessage,
-                p2pRebufferProgress = p2pRebufferProgress,
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onSizeChanged { layoutSize = it }
+            .playerSurfaceTapGestures(
+                layoutSize = layoutSize,
+                playbackGesturesEnabled = playbackGesturesEnabled,
+                playerControlsLockedState = gestureCallbacks.playerControlsLocked,
+                onSurfaceTap = gestureCallbacks.onSurfaceTap,
+                onSurfaceDoubleTap = gestureCallbacks.onSurfaceDoubleTap,
+                activateHoldToSpeedState = gestureCallbacks.activateHoldToSpeed,
+                deactivateHoldToSpeedState = gestureCallbacks.deactivateHoldToSpeed,
+                revealLockedOverlayState = gestureCallbacks.revealLockedOverlay,
             )
-            RenderPlayerModals(displayedPositionMs = displayedPositionMs)
-            RenderSeekPreviewOverlays(runtime = runtime, displayedPositionMs = displayedPositionMs)
-        }
-    }
-}
-
-/** Loads the Seekr track for what is playing (Android only) and keeps a timeline scrub on its frame. */
-@Composable
-private fun PlayerScreenRuntime.BindSeekPreviewEffects() {
-    val apiKey = if (isIos) "" else playerSettingsUiState.seekrApiKey
-    val durationSeconds = playbackSnapshot.durationMs / 1000L
-    LaunchedEffect(
-        apiKey,
-        parentMetaId,
-        contentType,
-        parentMetaType,
-        activeSeasonNumber,
-        activeEpisodeNumber,
-        durationSeconds,
-        activePlaybackIdentity,
+            .playerSurfaceDragGestures(
+                gestureController = gestureController,
+                layoutSize = layoutSize,
+                playbackGesturesEnabled = playbackGesturesEnabled,
+                sideGestureSystemEdgeExclusionPx = sideGestureSystemEdgeExclusionPx,
+                playerControlsLockedState = gestureCallbacks.playerControlsLocked,
+                touchGesturesEnabledState = gestureCallbacks.touchGesturesEnabled,
+                isHoldToSpeedGestureActiveState = gestureCallbacks.isHoldToSpeedGestureActive,
+                currentPositionMsState = gestureCallbacks.currentPositionMs,
+                currentDurationMsState = gestureCallbacks.currentDurationMs,
+                deactivateHoldToSpeedState = gestureCallbacks.deactivateHoldToSpeed,
+                showHorizontalSeekPreviewState = gestureCallbacks.showHorizontalSeekPreview,
+                showBrightnessFeedbackState = gestureCallbacks.showBrightnessFeedback,
+                showVolumeFeedbackState = gestureCallbacks.showVolumeFeedback,
+                clearLiveGestureFeedbackState = gestureCallbacks.clearLiveGestureFeedback,
+                revealLockedOverlayState = gestureCallbacks.revealLockedOverlay,
+                commitHorizontalSeekState = gestureCallbacks.commitHorizontalSeek,
+            ),
     ) {
-        seekPreview.load(
-            apiKey = apiKey,
-            contentId = parentMetaId,
-            contentType = contentType ?: parentMetaType,
-            season = activeSeasonNumber,
-            episode = activeEpisodeNumber,
-            durationMs = playbackSnapshot.durationMs,
-        )
-    }
-    // Once the preview resolves a new cue, park the scrub position on the frame it shows.
-    LaunchedEffect(seekPreview.previewCue) {
-        val pendingMs = scrubbingPositionMs
-        if (isScrubbingTimeline && pendingMs != null) {
-            scrubbingPositionMs = seekPreview.alignedPosition(pendingMs, playbackSnapshot.durationMs)
+        val playerSurfaceSourceUrl = if (isP2pPlaybackActive) p2pResolvedSourceUrl else activeSourceUrl
+        val initialPositionRequestKey = currentInitialPositionRequestKey()
+        if (playerSurfaceSourceUrl != null) {
+            PlatformPlayerSurface(
+                sourceUrl = playerSurfaceSourceUrl,
+                sourceAudioUrl = activeSourceAudioUrl,
+                sourceHeaders = activeSourceHeaders,
+                sourceResponseHeaders = activeSourceResponseHeaders,
+                externalSubtitles = externalSubtitles,
+                streamType = activeStreamType,
+                modifier = Modifier.fillMaxSize(),
+                playWhenReady = shouldPlay,
+                initialPositionMs = activeInitialPositionMs.takeIf { it > 0L },
+                initialPositionRequestKey = initialPositionRequestKey,
+                resizeMode = resizeMode,
+                onInitialPositionHandled = { key, handled ->
+                    if (key == currentInitialPositionRequestKey()) {
+                        initialSeekApplied = handled
+                    }
+                },
+                onControllerReady = { controller ->
+                    playerController = controller
+                    playerControllerSourceUrl = activeSourceUrl
+                    configureAutoSyncController(controller)
+                },
+                onSnapshot = { snapshot ->
+                    updatePlaybackSnapshot(snapshot)
+                    refreshAudioTracksIfChanged()
+                    if (!snapshot.isLoading) initialLoadCompleted = true
+                    if (snapshot.isEnded) {
+                        shouldPlay = false
+                        controlsVisible = !playerControlsLocked
+                    }
+                },
+                onError = { message ->
+                    if (message != null && tryRefreshCredentialedSourceAfterError(message)) {
+                        return@PlatformPlayerSurface
+                    }
+                    errorMessage = message
+                    if (message != null) {
+                        scrubbingPositionMs = null
+                        controlsVisible = !playerControlsLocked
+                        removeFailedStreamFromCache()
+                    }
+                },
+            )
         }
-    }
-}
 
-/** The swipe-to-seek preview strip and the Preview Sync panel. */
-@Composable
-private fun BoxScope.RenderSeekPreviewOverlays(runtime: PlayerScreenRuntime, displayedPositionMs: Long) {
-    val session = LocalSeekPreviewSession.current ?: return
-    if (session.track == null) return
-    runtime.run {
-        val gesturePositionMs = gestureSeekPreviewPositionMs
-        SeekPreviewThumbnailStrip(
-            session = session,
-            positionMs = gesturePositionMs ?: displayedPositionMs,
-            durationMs = playbackSnapshot.durationMs,
-            active = gesturePositionMs != null,
-            followPosition = false,
-            modifier = Modifier
-                .align(Alignment.Center)
-                .padding(horizontal = horizontalSafePadding),
-        )
-        if (session.showSyncPanel) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                    ) { session.showSyncPanel = false },
-            ) {
-                SeekPreviewSyncPanel(
-                    session = session,
-                    positionMs = playbackSnapshot.positionMs,
-                    onDismiss = { session.showSyncPanel = false },
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(horizontal = horizontalSafePadding + 16.dp)
-                        .padding(bottom = 24.dp),
-                )
-            }
+        AnimatedVisibility(
+            visible = playerSettingsUiState.pauseOverlayEnabled && pausedOverlayVisible && !controlsVisible && !playerControlsLocked,
+            enter = fadeIn(animationSpec = tween(durationMillis = 220)),
+            exit = fadeOut(animationSpec = tween(durationMillis = 180)),
+        ) {
+            PauseMetadataOverlay(
+                title = title,
+                logo = logo,
+                isEpisode = isEpisode,
+                seasonNumber = activeSeasonNumber,
+                episodeNumber = activeEpisodeNumber,
+                episodeTitle = activeEpisodeTitle,
+                pauseDescription = activePauseDescription ?: activeStreamSubtitle,
+                providerName = activeProviderName,
+                metrics = metrics,
+                horizontalSafePadding = horizontalSafePadding,
+                modifier = Modifier.fillMaxSize(),
+            )
         }
+
+        RenderPlayerControls(displayedPositionMs = displayedPositionMs, isEpisode = isEpisode)
+        RenderPlaybackOverlays(
+            runtime = runtime,
+            displayedPositionMs = displayedPositionMs,
+            currentGestureFeedback = currentGestureFeedback,
+            p2pInitialLoadingMessage = p2pInitialLoadingMessage,
+            p2pInitialLoadingProgress = p2pInitialLoadingProgress,
+            showP2pRebufferStats = showP2pRebufferStats,
+            p2pRebufferMessage = p2pRebufferMessage,
+            p2pRebufferProgress = p2pRebufferProgress,
+        )
+        RenderPlayerModals(displayedPositionMs = displayedPositionMs)
     }
 }
 
@@ -338,8 +250,7 @@ private fun PlayerScreenRuntime.currentInitialPositionRequestKey(): String? {
 private fun PlayerScreenRuntime.RenderPlayerControls(displayedPositionMs: Long, isEpisode: Boolean) {
     val isInPip = rememberIsInPictureInPicture()
     AnimatedVisibility(
-        visible = (controlsVisible || showParentalGuide) && !playerControlsLocked && !isInPip &&
-            !seekPreview.showSyncPanel,
+        visible = (controlsVisible || showParentalGuide) && !playerControlsLocked && !isInPip && !seekPreview.showSyncPanel,
         enter = fadeIn(),
         exit = fadeOut(),
     ) {
@@ -441,14 +352,12 @@ private fun PlayerScreenRuntime.RenderPlayerControls(displayedPositionMs: Long, 
             parentalWarnings = parentalWarnings,
             showParentalGuide = showParentalGuide,
             onParentalGuideAnimationComplete = { showParentalGuide = false },
-            onScrubChange = { rawPositionMs ->
+            onScrubChange = { positionMs ->
                 isScrubbingTimeline = true
-                // With seek previews, the scrubber stops only where a preview frame exists.
-                scrubbingPositionMs = seekPreview.alignedPosition(rawPositionMs, playbackSnapshot.durationMs)
+                scrubbingPositionMs = seekPreviewAligned(positionMs)
             },
             onScrubFinished = { rawPositionMs ->
-                // Commit to exactly what the preview showed.
-                val positionMs = seekPreview.alignedPosition(rawPositionMs, playbackSnapshot.durationMs)
+                val positionMs = seekPreviewAligned(rawPositionMs)
                 finishTimelineScrub(positionMs)
                 playerController?.seekTo(positionMs)
                 scheduleProgressSyncAfterSeek()

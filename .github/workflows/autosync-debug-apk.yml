@@ -66,6 +66,17 @@ jobs:
             echo "NUVIO_RELEASE_KEY_PASSWORD=$KEY_PASSWORD"
           } >> local.properties
 
+      - name: Add Seekr API key
+        env:
+          SEEKR_API_KEY: ${{ secrets.SEEKR_API_KEY }}
+        run: |
+          # Seek-preview thumbnails stay off in builds without the secret.
+          if [[ -n "$SEEKR_API_KEY" ]]; then
+            printf '\nSEEKR_API_KEY=%s\n' "$SEEKR_API_KEY" >> local.properties
+          else
+            echo "::warning::SEEKR_API_KEY secret is not set; seek previews are disabled in this build"
+          fi
+
       - name: Build full debug APK
         run: ./gradlew :androidApp:assembleFullDebug --stacktrace
 

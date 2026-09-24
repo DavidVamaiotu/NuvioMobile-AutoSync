@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Seek-preview (Seekr) strings, kept apart from strings.xml so upstream merges stay clean. -->
+<resources>
+    <string name="player_seek_preview_sync">Preview Sync</string>
+    <string name="player_seek_preview_sync_hint">Nudge until the thumbnail matches the frame playing behind this panel.</string>
+    <string name="player_seek_preview_sync_suggested">Suggested: %1$s (duration gap vs. the preview source)</string>
+    <string name="player_seek_preview_sync_use_suggested">Use suggested</string>
+    <string name="player_seek_preview_sync_reset">Reset</string>
+    <string name="player_seek_preview_frame_at">frame %1$s</string>
+    <string name="cd_seek_preview_sync">Preview sync</string>
+</resources>

@@ -318,6 +318,18 @@ jobs:
             echo "IMDB_TAPFRAME_API_BASE_URL=https://imdb.tapframe.space/"
           } > local.properties
 
+      - name: Add Seekr API key
+        if: steps.version.outputs.already_exists == 'false'
+        env:
+          SEEKR_API_KEY: ${{ secrets.SEEKR_API_KEY }}
+        run: |
+          # Seek-preview thumbnails stay off in builds without the secret.
+          if [[ -n "$SEEKR_API_KEY" ]]; then
+            printf '\nSEEKR_API_KEY=%s\n' "$SEEKR_API_KEY" >> local.properties
+          else
+            echo "::warning::SEEKR_API_KEY secret is not set; seek previews are disabled in this build"
+          fi
+
       - name: Build signed AutoSync release APKs
         if: steps.version.outputs.already_exists == 'false'
         env:

@@ -72,7 +72,6 @@ data class PlayerSettingsUiState(
     val animeSkipClientId: String = "",
     val introDbApiKey: String = "",
     val introSubmitEnabled: Boolean = false,
-    val seekrApiKey: String = "",
     val streamAutoPlayNextEpisodeEnabled: Boolean = false,
     val streamAutoPlayNextEpisodeFallbackEnabled: Boolean = true,
     val streamAutoPlayPreferBingeGroup: Boolean = true,
@@ -143,7 +142,6 @@ object PlayerSettingsRepository {
     private var animeSkipClientId = ""
     private var introDbApiKey = ""
     private var introSubmitEnabled = false
-    private var seekrApiKey = ""
     private var streamAutoPlayNextEpisodeEnabled = false
     private var streamAutoPlayNextEpisodeFallbackEnabled = true
     private var streamAutoPlayPreferBingeGroup = true
@@ -219,7 +217,6 @@ object PlayerSettingsRepository {
         animeSkipClientId = ""
         introDbApiKey = ""
         introSubmitEnabled = false
-        seekrApiKey = ""
         streamAutoPlayNextEpisodeEnabled = false
         streamAutoPlayNextEpisodeFallbackEnabled = true
         streamAutoPlayPreferBingeGroup = true
@@ -349,7 +346,6 @@ object PlayerSettingsRepository {
         animeSkipEnabled = PlayerSettingsStorage.loadAnimeSkipEnabled() ?: false
         animeSkipClientId = PlayerSettingsStorage.loadAnimeSkipClientId() ?: ""
         introDbApiKey = PlayerSettingsStorage.loadIntroDbApiKey() ?: ""
-        seekrApiKey = PlayerSettingsStorage.loadSeekrApiKey() ?: ""
         introSubmitEnabled = PlayerSettingsStorage.loadIntroSubmitEnabled() ?: false
         streamAutoPlayNextEpisodeEnabled = PlayerSettingsStorage.loadStreamAutoPlayNextEpisodeEnabled() ?: false
         streamAutoPlayNextEpisodeFallbackEnabled = PlayerSettingsStorage.loadStreamAutoPlayNextEpisodeFallbackEnabled() ?: true
@@ -722,15 +718,6 @@ object PlayerSettingsRepository {
         PlayerSettingsStorage.saveIntroDbApiKey(apiKey)
     }
 
-    fun setSeekrApiKey(apiKey: String) {
-        ensureLoaded()
-        val trimmed = apiKey.trim()
-        if (seekrApiKey == trimmed) return
-        seekrApiKey = trimmed
-        publish()
-        PlayerSettingsStorage.saveSeekrApiKey(trimmed)
-    }
-
     fun setIntroSubmitEnabled(enabled: Boolean) {
         ensureLoaded()
         if (introSubmitEnabled == enabled) return
@@ -1017,7 +1004,6 @@ object PlayerSettingsRepository {
             animeSkipClientId = animeSkipClientId,
             introDbApiKey = introDbApiKey,
             introSubmitEnabled = introSubmitEnabled,
-            seekrApiKey = seekrApiKey,
             streamAutoPlayNextEpisodeEnabled = streamAutoPlayNextEpisodeEnabled,
             streamAutoPlayNextEpisodeFallbackEnabled = streamAutoPlayNextEpisodeFallbackEnabled,
             streamAutoPlayPreferBingeGroup = streamAutoPlayPreferBingeGroup,

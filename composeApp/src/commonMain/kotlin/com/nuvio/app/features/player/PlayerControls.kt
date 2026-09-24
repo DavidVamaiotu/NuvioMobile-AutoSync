@@ -34,6 +34,8 @@ import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Replay10
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import com.nuvio.app.core.ui.NuvioLoadingIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -44,10 +46,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import com.nuvio.app.features.player.seekpreview.LocalSeekPreviewSession
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsDraggedAsState
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -683,12 +681,8 @@ private fun ProgressControls(
                             onClick = onEpisodesClick,
                         )
                     }
-                    LocalSeekPreviewSession.current?.takeIf { it.track != null }?.let { session ->
-                        PlayerActionPillButton(
-                            label = stringResource(Res.string.player_seek_preview_sync),
-                            icon = Icons.Rounded.Tune,
-                            onClick = { session.showSyncPanel = true },
-                        )
+                    seekPreviewSyncAction()?.let {
+                        PlayerActionPillButton(stringResource(Res.string.player_seek_preview_sync), it, Icons.Rounded.Tune)
                     }
                 }
             }
@@ -708,14 +702,9 @@ internal fun PlayerSeekBar(
     val seekDurationMs = durationMs.coerceAtLeast(1L)
     val seekDescription = stringResource(Res.string.player_seek_position)
     val interactionSource = remember { MutableInteractionSource() }
-    val isPressed by interactionSource.collectIsPressedAsState()
     val isDragged by interactionSource.collectIsDraggedAsState()
     Column(modifier = modifier) {
-        SeekPreviewAboveTimeline(
-            positionMs = displayedPositionMs,
-            durationMs = durationMs,
-            active = durationMs > 0L && (isPressed || isDragged),
-        )
+        SeekPreviewAboveTimeline(displayedPositionMs, durationMs, active = isDragged)
         Slider(
             interactionSource = interactionSource,
             modifier = Modifier

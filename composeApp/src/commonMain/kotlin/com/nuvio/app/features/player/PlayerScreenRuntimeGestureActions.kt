@@ -45,7 +45,7 @@ internal fun PlayerScreenRuntime.showGestureMessage(message: String) {
 
 internal fun PlayerScreenRuntime.clearLiveGestureFeedback() {
     liveGestureFeedback = null
-    gestureSeekPreviewPositionMs = null
+    seekPreview.gesturePositionMs = null
 }
 
 internal fun PlayerScreenRuntime.revealLockedOverlay() {
@@ -100,9 +100,7 @@ internal fun PlayerScreenRuntime.showSeekFeedback(direction: PlayerSeekDirection
 }
 
 internal fun PlayerScreenRuntime.showHorizontalSeekPreview(rawPreviewPositionMs: Long, baselinePositionMs: Long) {
-    // With seek previews, show (and later seek to) the moment of the frame on screen.
-    val previewPositionMs = seekPreview.alignedPosition(rawPreviewPositionMs, playbackSnapshot.durationMs)
-    gestureSeekPreviewPositionMs = previewPositionMs
+    val previewPositionMs = seekPreviewAligned(rawPreviewPositionMs).also { seekPreview.gesturePositionMs = it }
     val deltaMs = previewPositionMs - baselinePositionMs
     val direction = if (deltaMs < 0L) PlayerSeekDirection.Backward else PlayerSeekDirection.Forward
     liveGestureFeedback = GestureFeedbackState(
@@ -320,7 +318,7 @@ internal fun PlayerScreenRuntime.rememberSurfaceGestureCallbacks(): PlayerSurfac
         currentPositionMs = rememberUpdatedState(playbackSnapshot.positionMs.coerceAtLeast(0L)),
         currentDurationMs = rememberUpdatedState(playbackSnapshot.durationMs),
         commitHorizontalSeek = rememberUpdatedState { rawTargetPositionMs: Long ->
-            val targetPositionMs = seekPreview.alignedPosition(rawTargetPositionMs, playbackSnapshot.durationMs)
+            val targetPositionMs = seekPreviewAligned(rawTargetPositionMs)
             lastManualSkipSeekPositions = playbackSnapshot.positionMs to targetPositionMs
             playerController?.seekTo(targetPositionMs)
             scheduleProgressSyncAfterSeek()

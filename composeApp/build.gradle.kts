@@ -148,6 +148,20 @@ abstract class GenerateRuntimeConfigsTask : DefaultTask() {
             )
         }
 
+        // Seekr seek-preview key, supplied to CI builds from the SEEKR_API_KEY secret.
+        outDir.resolve("com/nuvio/app/features/player/seekpreview").apply {
+            mkdirs()
+            resolve("SeekrConfig.kt").writeText(
+                """
+                |package com.nuvio.app.features.player.seekpreview
+                |
+                |internal object SeekrConfig {
+                |    const val API_KEY = "${props.getProperty("SEEKR_API_KEY", "").trim()}"
+                |}
+                """.trimMargin()
+            )
+        }
+
         outDir.resolve("com/nuvio/app/features/details").apply {
             mkdirs()
             resolve("ImdbEpisodeRatingsConfig.kt").writeText(
