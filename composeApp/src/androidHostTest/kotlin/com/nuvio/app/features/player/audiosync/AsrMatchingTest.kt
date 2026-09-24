@@ -138,7 +138,9 @@ class AsrMatchingTest {
         media.take(12).forEachIndexed { line, (start, _, _) ->
             engine.offerSegment((start / frameMs).toInt(), FloatArray(SileroVad.CHUNK_SAMPLES * 10) { line.toFloat() })
         }
+        val recognised = java.util.concurrent.atomic.AtomicInteger()
         engine.setRecognizer { samples ->
+            recognised.incrementAndGet()
             val line = samples[0].toInt()
             val (start, end, text) = media[line]
             val segmentStartSec = (start / frameMs).toInt() * frameMs / 1_000.0
@@ -148,8 +150,17 @@ class AsrMatchingTest {
                 (t - segmentStartSec) to word
             }
         }
-        assertTrue(latch.await(10, java.util.concurrent.TimeUnit.SECONDS), "no lock")
-        Thread.sleep(500)
+        assertTrue(latch.await(30, java.util.concurrent.TimeUnit.SECONDS), "no lock")
+        // Let every line be recognised and evaluated before reading the latest result.
+        val deadline = System.currentTimeMillis() + 60_000
+        while (recognised.get() < 12 && System.currentTimeMillis() < deadline) Thread.sleep(20)
+        var settled = locks.size
+        do {
+            Thread.sleep(1_000)
+            val now = locks.size
+            val stable = now == settled
+            settled = now
+        } while (!stable && System.currentTimeMillis() < deadline)
         engine.release()
         return locks.last()
     }

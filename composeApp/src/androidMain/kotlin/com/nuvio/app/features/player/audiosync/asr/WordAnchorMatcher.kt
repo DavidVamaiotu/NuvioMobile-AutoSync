@@ -13,6 +13,8 @@ internal data class AnchorFit(
     val segments: Int,
     val runnerUp: Double,
     val spanSec: Double,
+    /** Media time (median) of the agreeing words: where [shiftSec] holds exactly. */
+    val anchorSec: Double = 0.0,
 ) {
     val isConfident: Boolean
         get() = segments >= MIN_SEGMENTS && score >= MIN_SCORE && score >= RATIO * maxOf(runnerUp, 0.5)
@@ -134,6 +136,7 @@ internal class WordAnchorMatcher(cues: List<Triple<Long, Long, String>>) {
             segments = bestSegments,
             runnerUp = runnerUp,
             spanSec = times.max() - times.min(),
+            anchorSec = median(times),
         )
     }
 

@@ -76,6 +76,12 @@ internal class AsrSyncEngine(
     @Volatile
     private var locked = false
 
+    /** The reference-to-video ratio [mostLikelyRate] chose, for how many words and in what situation. */
+    private class ChosenRate(val situation: String, val words: Int, val rate: Double)
+
+    @Volatile
+    private var chosenRate: ChosenRate? = null
+
     /** Last reported (not yet final) lock, to report only real changes. */
     private var provisional: AsrLock? = null
 
@@ -294,7 +300,7 @@ internal class AsrSyncEngine(
         fit: AnchorFit,
         bridge: BridgeFit?,
     ): Triple<Double, Double, SubtitleAudioAligner.Estimate?> {
-        val anchorMs = words[words.size / 2].timeSec * 1_000.0
+        val anchorMs = fit.anchorSec * 1_000.0
         val referenceAtAnchorMs = anchorMs - fit.shiftSec * 1_000.0
         val bridgeScale = bridge?.scale ?: 1.0
 
@@ -310,6 +316,12 @@ internal class AsrSyncEngine(
         val unstretched = hypothesis(1.0 / bridgeScale)
         val knownFrames = timeline.segments(maxFrames = FINE_TUNE_MAX_FRAMES).sumOf { it.knownFrames }
         if (knownFrames < STRETCH_MIN_KNOWN_FRAMES) return unstretched
+        // Trying every ratio is the expensive part: keep the ratio chosen last time until clearly
+        // more words or audio are in (or the target or bridge changed), then judge again.
+        val situation = "${track.hashCode()}|${bridge?.shiftSec}|${knownFrames / STRETCH_RECHECK_FRAMES}"
+        chosenRate?.let { last ->
+            if (last.situation == situation && words.size < last.words * 5 / 4) return hypothesis(last.rate)
+        }
         val floor = unstretched.third?.peak?.plus(OTHER_RATE_MARGIN) ?: Double.NEGATIVE_INFINITY
         var best = unstretched
         var bestPeak = floor
@@ -323,6 +335,7 @@ internal class AsrSyncEngine(
                 best = candidate
             }
         }
+        chosenRate = ChosenRate(situation, words.size, best.first / bridgeScale)
         return best
     }
 
@@ -355,7 +368,8 @@ internal class AsrSyncEngine(
         private const val SPREAD_PRIORITY = -2_000_000L
         private const val SPREAD_RADIUS_FRAMES = 2_813 // 90 s
         private val FINE_TUNE_MAX_FRAMES = (10 * 60 * 1_000 / SpeechTimeline.FRAME_DURATION_MS).toInt()
-        private const val FINE_TUNE_WINDOW_MS = 1_500.0
+        /** Searched either side of the coarse shift; the aligner distrusts the outer 1.5 s of any range. */
+        private const val FINE_TUNE_WINDOW_MS = 3_000.0
         private const val FINE_TUNE_MAX_MOVE_MS = 1_200.0
         private const val FINE_TUNE_MIN_CUES = 5
         private const val FINAL_SPAN_SEC = 180.0
@@ -365,6 +379,9 @@ internal class AsrSyncEngine(
 
         /** Like a speech-detection lock at a non-standard rate: 0.12 plus the 0.04 penalty. */
         private const val STRETCH_MIN_PROMINENCE = 0.16
+
+        /** More heard audio that makes the ratio worth judging again (30 s). */
+        private val STRETCH_RECHECK_FRAMES = (30 * 1_000 / SpeechTimeline.FRAME_DURATION_MS).toInt()
 
         /** Heard audio needed before a stretch can be judged at all (5 minutes). */
         private val STRETCH_MIN_KNOWN_FRAMES = (5 * 60 * 1_000 / SpeechTimeline.FRAME_DURATION_MS).toInt()

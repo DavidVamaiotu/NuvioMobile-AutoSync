@@ -1,6 +1,6 @@
 name: Audio Sync Release
 
-# Release trigger: never stretch on thin evidence, sync log sharing, sampling on mobile data option
+# Release trigger: precise rate anchor and working fine-tune for recognition locks
 
 on:
   workflow_dispatch:
