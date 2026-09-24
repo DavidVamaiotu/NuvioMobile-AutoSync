@@ -8,6 +8,7 @@ import com.nuvio.app.features.player.audiosync.SubtitleSpeechTrack
 import com.nuvio.app.features.player.audiosync.SubtitleSyncSegment
 import java.util.PriorityQueue
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /** Speech recogniser returning (seconds from segment start, word) pairs. */
 internal fun interface SpeechToText {
@@ -22,6 +23,27 @@ internal class ReferenceSubtitle(
     val bridge: BridgeFit?,
 ) {
     val matcher = WordAnchorMatcher(cues)
+    private val track = SubtitleSpeechTrack.fromCues(cues)
+    private val localShifts = HashMap<Pair<SubtitleSpeechTrack, Int>, Double?>()
+
+    /**
+     * The [bridge] shift around [referenceSec] (see [SubtitleBridge.localShiftSec]), falling back
+     * to the whole-file one. Kept per [LOCAL_STEP_SEC] of reference time, as regions recur.
+     */
+    fun bridgeShiftSecAt(target: SubtitleSpeechTrack, referenceSec: Double): Double {
+        val bridge = bridge ?: return 0.0
+        val step = (referenceSec / LOCAL_STEP_SEC).roundToInt()
+        val local = synchronized(localShifts) {
+            localShifts.getOrPut(target to step) {
+                SubtitleBridge.localShiftSec(target, track, bridge, step * LOCAL_STEP_SEC)
+            }
+        }
+        return local ?: bridge.shiftSec
+    }
+
+    private companion object {
+        const val LOCAL_STEP_SEC = 5.0
+    }
 }
 
 /** Target subtitle mapping found from recognised words. */
@@ -285,7 +307,7 @@ internal class AsrSyncEngine(
             mostLikelyRate(targetTrack, words, fit, bridge)
         }
         val shiftMs = fine?.shiftMs ?: coarseShiftMs
-        val segments = piecewise(targetTrack, words, reference, fit, scale)
+        val segments = piecewise(targetTrack, words, reference, fit, scale, shiftMs)
             ?: listOf(SubtitleSyncSegment(0L, scale, shiftMs))
         val result = AsrLock(
             scale = scale,
@@ -326,8 +348,9 @@ internal class AsrSyncEngine(
 
     /**
      * When the words in different parts of the film put the subtitle at clearly different offsets
-     * (the release adds or cuts a scene the subtitle was not made for), maps each part with its
-     * own offset, switching where the detected speech shows the change. Null when one offset fits
+     * (the release adds or cuts a scene the subtitle was not made for, or the subtitle and the
+     * reference were made for different cuts), maps each part with its own offset, switching where
+     * the detected speech shows the change. Null when the whole-film mapping ([shiftMs]) fits
      * everywhere the words were heard.
      */
     private fun piecewise(
@@ -336,18 +359,20 @@ internal class AsrSyncEngine(
         reference: ReferenceSubtitle,
         fit: AnchorFit,
         scale: Double,
+        shiftMs: Double,
     ): List<SubtitleSyncSegment>? {
         val locals = reference.matcher.localFits(words, fit.scale)
-        if (locals.size < 2) return null
+        if (locals.isEmpty()) return null
         val bridgeScale = reference.bridge?.scale ?: 1.0
-        val bridgeShiftSec = reference.bridge?.shiftSec ?: 0.0
 
-        // Target -> media shift each region implies at the chosen scale, through its anchor.
-        fun targetShiftMs(local: AnchorFit): Double {
+        // Target -> media shift each region implies at the chosen scale, through its anchor. The
+        // target is placed against the reference by the lines around there, not the whole file.
+        val targetShifts = locals.associateWith { local ->
             val referenceSec = (local.anchorSec - local.shiftSec) / local.scale
-            val targetSec = (referenceSec - bridgeShiftSec) / bridgeScale
-            return (local.anchorSec - scale * targetSec) * 1_000.0
+            val targetSec = (referenceSec - reference.bridgeShiftSecAt(track, referenceSec)) / bridgeScale
+            (local.anchorSec - scale * targetSec) * 1_000.0
         }
+        fun targetShiftMs(local: AnchorFit): Double = targetShifts.getValue(local)
 
         class Part(val fits: MutableList<AnchorFit>, var shiftMs: Double)
         val parts = ArrayList<Part>()
@@ -363,7 +388,10 @@ internal class AsrSyncEngine(
         }
         // A step needs solid evidence on both sides; stray regions are ignored.
         parts.removeAll { part -> part.fits.sumOf { it.segments } < MIN_PART_SEGMENTS }
-        if (parts.size < 2) return null
+        if (parts.isEmpty()) return null
+        // One part: words heard in one place only. Its offset wins over the whole-film mapping
+        // where the subtitle and the reference differ there.
+        if (parts.size == 1 && abs(parts[0].shiftMs - shiftMs) <= STEP_TOLERANCE_MS) return null
         val frameMs = SpeechTimeline.FRAME_DURATION_MS
         val tuned = parts.map { part ->
             val fromFrame = ((part.fits.first().anchorSec - PART_CONTEXT_SEC) * 1_000 / frameMs).toInt().coerceAtLeast(0)
@@ -387,7 +415,7 @@ internal class AsrSyncEngine(
             ) ?: ((afterMs + beforeMs) / 2).toLong()
             segments += SubtitleSyncSegment(split.coerceAtLeast(segments.last().fromMediaMs + 1), scale, tuned[i])
         }
-        return segments.takeIf { it.size >= 2 }
+        return segments.takeIf { it.size >= 2 || abs(it[0].shiftMs - shiftMs) > STEP_TOLERANCE_MS }
     }
 
     /**

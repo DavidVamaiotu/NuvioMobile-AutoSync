@@ -36,4 +36,47 @@ internal object SubtitleBridge {
         if (estimate.atSearchEdge || estimate.peak < MIN_PEAK || estimate.prominence < MIN_PROMINENCE) return null
         return BridgeFit(estimate.scale, estimate.shiftMs / 1_000.0, estimate.peak, estimate.prominence)
     }
+
+    /**
+     * The bridge's shift around [referenceSec] only: the lines within a few minutes of it, at the
+     * whole-file [bridge]'s scale. It differs from the bridge's own shift where one file has a
+     * scene the other lacks (another cut of the film). Null when the lines there don't match
+     * clearly, e.g. little dialogue nearby.
+     */
+    fun localShiftSec(
+        target: SubtitleSpeechTrack,
+        reference: SubtitleSpeechTrack,
+        bridge: BridgeFit,
+        referenceSec: Double,
+    ): Double? {
+        val frameMs = SpeechTimeline.FRAME_DURATION_MS
+        val fromFrame = ((referenceSec - LOCAL_WINDOW_SEC) * 1_000 / frameMs).toInt().coerceAtLeast(0)
+        val toFrame = ((referenceSec + LOCAL_WINDOW_SEC) * 1_000 / frameMs).toInt()
+        if (toFrame <= fromFrame) return null
+        val coverage = reference.render(fromFrame, toFrame, 1.0)
+        val probabilities = FloatArray(coverage.size) { coverage[it].toFloat() }
+        val estimate = SubtitleAudioAligner.estimate(
+            probabilities = probabilities,
+            fromFrame = fromFrame,
+            track = target,
+            scales = doubleArrayOf(bridge.scale),
+            minShiftMs = (bridge.shiftSec - LOCAL_SEARCH_SEC) * 1_000.0,
+            maxShiftMs = (bridge.shiftSec + LOCAL_SEARCH_SEC) * 1_000.0,
+            detectorBiasMs = 0.0,
+        ) ?: return null
+        if (estimate.atSearchEdge || estimate.peak < LOCAL_MIN_PEAK || estimate.prominence < MIN_PROMINENCE ||
+            estimate.cueCount < LOCAL_MIN_CUES
+        ) {
+            return null
+        }
+        return estimate.shiftMs / 1_000.0
+    }
+
+    /** Lines within this distance of the place asked about decide the local shift. */
+    private const val LOCAL_WINDOW_SEC = 150.0
+
+    /** How far the local shift may be from the whole-file one: an added or cut scene or two. */
+    private const val LOCAL_SEARCH_SEC = 240.0
+    private const val LOCAL_MIN_PEAK = 0.5
+    private const val LOCAL_MIN_CUES = 20
 }

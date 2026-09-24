@@ -152,6 +152,77 @@ class AsrMatchingTest {
     }
 
     @Test
+    fun translationWithASceneTheReferenceLacksBecomesAStep() {
+        // The English file matches the video; the translation was made for a cut with 30 s more
+        // at 5:00, so one whole-file offset between the two is wrong on one side of it.
+        val english = script(Random(11), 250)
+        val translation = english.map { (a, b, _) ->
+            val extra = if (a < 300_000L) 0L else 30_000L
+            Triple(a + extra, b + extra, "linie")
+        }
+        val target = SubtitleSpeechTrack.fromCues(translation)
+        val bridge = assertNotNull(SubtitleBridge.align(target, SubtitleSpeechTrack.fromCues(english)))
+        val lock = lockFromHeardWords(english, target, english, bridge, listOf(30..150, 500..700, 900..1_000))
+        assertTrue(lock.final, "lock $lock")
+        assertEquals(2, lock.segments.size, "segments ${lock.segments}")
+        val (before, after) = lock.segments
+        assertTrue(abs(before.shiftMs) < 150.0, "before $before")
+        assertTrue(abs(after.shiftMs + 30_000.0) < 150.0, "after $after")
+        assertTrue(abs(after.fromMediaMs - 300_000L) < 20_000L, "step at ${after.fromMediaMs}")
+    }
+
+    @Test
+    fun translationOffsetWhereTheWordsAreHeardWins() {
+        // Words heard only after the scene the translation adds: the offset there, not the
+        // whole-file one, which the earlier (longer) part of the file decides.
+        val english = script(Random(12), 250)
+        val translation = english.map { (a, b, _) ->
+            val extra = if (a < 780_000L) 0L else 30_000L
+            Triple(a + extra, b + extra, "linie")
+        }
+        val target = SubtitleSpeechTrack.fromCues(translation)
+        val bridge = assertNotNull(SubtitleBridge.align(target, SubtitleSpeechTrack.fromCues(english)))
+        assertTrue(abs(bridge.shiftSec) < 1.0, "bridge $bridge")
+        val lock = lockFromHeardWords(english, target, english, bridge, listOf(830..1_050))
+        val delayMs = lock.segments.last().shiftMs
+        assertTrue(abs(delayMs + 30_000.0) < 150.0, "lock $lock")
+    }
+
+    /** Runs recognition on the lines of [media] starting within [heardSec], returning the last lock. */
+    private fun lockFromHeardWords(
+        media: List<Triple<Long, Long, String>>,
+        target: SubtitleSpeechTrack,
+        english: List<Triple<Long, Long, String>>,
+        bridge: com.nuvio.app.features.player.audiosync.asr.BridgeFit,
+        heardSec: List<IntRange>,
+    ): com.nuvio.app.features.player.audiosync.asr.AsrLock {
+        val locks = java.util.Collections.synchronizedList(ArrayList<com.nuvio.app.features.player.audiosync.asr.AsrLock>())
+        val engine = AsrSyncEngine(speech(media), onLock = { locks += it })
+        engine.startSession(target, listOf(com.nuvio.app.features.player.audiosync.asr.ReferenceSubtitle("en", english, bridge)))
+        val heardLines = media.indices.filter { line -> heardSec.any { media[line].first / 1_000 in it } }
+        val frameMs = SpeechTimeline.FRAME_DURATION_MS
+        heardLines.forEach { line ->
+            engine.offerSegment((media[line].first / frameMs).toInt(), FloatArray(SileroVad.CHUNK_SAMPLES * 10) { line.toFloat() }, spread = true)
+        }
+        val random = Random(13)
+        val recognised = java.util.concurrent.atomic.AtomicInteger()
+        engine.setRecognizer { samples ->
+            recognised.incrementAndGet()
+            val (start, end, text) = media[samples[0].toInt()]
+            val segmentStartSec = (start / frameMs).toInt() * frameMs / 1_000.0
+            val words = text.split(' ')
+            words.mapIndexed { k, word ->
+                ((start + (end - start) * k / words.size) / 1_000.0 + random.nextDouble(-0.1, 0.1) - segmentStartSec) to word
+            }
+        }
+        val deadline = System.currentTimeMillis() + 60_000
+        while (recognised.get() < heardLines.size && System.currentTimeMillis() < deadline) Thread.sleep(20)
+        Thread.sleep(1_500)
+        engine.release()
+        return locks.last()
+    }
+
+    @Test
     fun littleHeardAudioNeverStretches() {
         // As on a phone without sampling: about 70 s heard. Even if a stretch is right, it is not
         // applied on so little evidence; the subtitle keeps its own rate until more is heard.
