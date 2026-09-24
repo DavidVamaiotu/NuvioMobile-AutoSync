@@ -1,0 +1,106 @@
+name: Backfill AutoSync release changelogs
+
+on:
+  push:
+    branches:
+      - subtitle-autosync
+    paths:
+      - ".github/workflows/backfill-autosync-release-changelogs-2026-09-24.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  backfill-release-notes:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout AutoSync branch
+        uses: actions/checkout@v6
+        with:
+          ref: subtitle-autosync
+          fetch-depth: 0
+      - name: Update generic release descriptions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat > /tmp/autosync-notes-1.md <<'AUTOSYNC_NOTES_1'
+          ## AutoSync changelog
+          
+          - Updated the fork to the official Nuvio 0.5.1-beta base while retaining AutoSync V2.
+          - Included upstream library-provider ordering and sorting, MDBList library/ratings, and localization updates.
+          - AutoSync matching and timeline retiming were unchanged from 0.5.0-beta-autosync.2.
+          
+          Based on official Nuvio 0.5.1-beta.
+          AUTOSYNC_NOTES_1
+          cat > /tmp/autosync-expected-1.md <<'AUTOSYNC_EXPECTED_1'
+          AutoSync build based on official Nuvio 0.5.1-beta.
+          AUTOSYNC_EXPECTED_1
+          current="$(gh release view '0.5.1-beta-autosync' --repo "$GITHUB_REPOSITORY" --json body --jq .body)"
+          if [[ "$current" == "$(cat /tmp/autosync-expected-1.md)" ]]; then
+            gh release edit '0.5.1-beta-autosync' --repo "$GITHUB_REPOSITORY" --notes-file /tmp/autosync-notes-1.md
+          elif [[ "$current" == "$(cat /tmp/autosync-notes-1.md)" ]]; then
+            echo "Already updated: 0.5.1-beta-autosync"
+          else
+            echo "::error::Unexpected release body for 0.5.1-beta-autosync; refusing to overwrite."
+            exit 1
+          fi
+          cat > /tmp/autosync-notes-2.md <<'AUTOSYNC_NOTES_2'
+          ## AutoSync changelog
+          
+          - Added debug-only, replayable timing dumps for the evaluated subtitle and embedded-reference timelines.
+          - Made matched-group anchoring resistant to isolated mis-pairings by using the median of a seven-group neighborhood for timing outliers.
+          - Cross-checked independent embedded subtitle sources before matching, excluding a mistimed source when two other independent sources agree.
+          - Changed subtitle candidate evaluation to follow the displayed list order instead of alternating from the beginning and end.
+          - Stopped evaluating a candidate's remaining references after three independent sources all establish a clear no-fit result; near misses and confident matches remain eligible.
+          - Incorporated the latest upstream changes and retained the existing AutoSync V2 approach.
+          
+          Based on official Nuvio 0.5.1-beta.
+          AUTOSYNC_NOTES_2
+          cat > /tmp/autosync-expected-2.md <<'AUTOSYNC_EXPECTED_2'
+          AutoSync build based on official Nuvio 0.5.1-beta.
+          AUTOSYNC_EXPECTED_2
+          current="$(gh release view '0.5.1-beta-autosync.1' --repo "$GITHUB_REPOSITORY" --json body --jq .body)"
+          if [[ "$current" == "$(cat /tmp/autosync-expected-2.md)" ]]; then
+            gh release edit '0.5.1-beta-autosync.1' --repo "$GITHUB_REPOSITORY" --notes-file /tmp/autosync-notes-2.md
+          elif [[ "$current" == "$(cat /tmp/autosync-notes-2.md)" ]]; then
+            echo "Already updated: 0.5.1-beta-autosync.1"
+          else
+            echo "::error::Unexpected release body for 0.5.1-beta-autosync.1; refusing to overwrite."
+            exit 1
+          fi
+          cat > /tmp/autosync-notes-3.md <<'AUTOSYNC_NOTES_3'
+          ## AutoSync changelog
+          
+          - Improved the AutoSync release workflow so future release notes are generated from substantive commits instead of relying on a generic release description.
+          - Rebuilt from the current subtitle-autosync branch.
+          - No AutoSync matcher or timeline-retiming behavior changed from 0.5.1-beta-autosync.1.
+          
+          Based on official Nuvio 0.5.1-beta.
+          AUTOSYNC_NOTES_3
+          cat > /tmp/autosync-expected-3.md <<'AUTOSYNC_EXPECTED_3'
+          ## AutoSync changelog
+          
+          - Rebuilt from the current subtitle-autosync branch.
+          
+          Based on official Nuvio 0.5.1-beta.
+          
+          AUTOSYNC_EXPECTED_3
+          current="$(gh release view '0.5.1-beta-autosync.2' --repo "$GITHUB_REPOSITORY" --json body --jq .body)"
+          if [[ "$current" == "$(cat /tmp/autosync-expected-3.md)" ]]; then
+            gh release edit '0.5.1-beta-autosync.2' --repo "$GITHUB_REPOSITORY" --notes-file /tmp/autosync-notes-3.md
+          elif [[ "$current" == "$(cat /tmp/autosync-notes-3.md)" ]]; then
+            echo "Already updated: 0.5.1-beta-autosync.2"
+          else
+            echo "::error::Unexpected release body for 0.5.1-beta-autosync.2; refusing to overwrite."
+            exit 1
+          fi
+      - name: Remove one-time updater
+        if: success()
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -- '.github/workflows/backfill-autosync-release-changelogs-2026-09-24.yml'
+          git commit -m "Remove one-time AutoSync release-changelog updater"
+          git push origin HEAD:subtitle-autosync
