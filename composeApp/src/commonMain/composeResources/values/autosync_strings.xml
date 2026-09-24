@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_playback_subtitle_auto_sync">Auto Sync Subtitle</string>
+    <string name="settings_playback_subtitle_auto_sync_description">Automatically sync the preferred add-on subtitle when playback starts. Requires a preferred subtitle language.</string>
+    <string name="settings_playback_auto_sync_mode_aggressive">Auto Sync Mode: Aggressive</string>
+    <string name="settings_playback_auto_sync_mode_aggressive_description">Takes longer and searches for a better subtitle match using stricter acceptance thresholds.</string>
+    <string name="settings_playback_auto_sync_mode_passive">Auto Sync Mode: Passive</string>
+    <string name="settings_playback_auto_sync_mode_passive_description">Faster, but accepts weaker subtitle matches sooner using lower acceptance thresholds.</string>
+    <string name="settings_playback_auto_sync_debug_logs">Debug Logs for Auto Sync</string>
+    <string name="settings_playback_auto_sync_debug_logs_description">Keep verbose Auto Sync logs and copy the report to the clipboard after each run.</string>
+    <string name="settings_playback_auto_sync_tolerance">Auto Sync Tolerance: %1$s</string>
+    <string name="settings_playback_auto_sync_tolerance_description">Keep the original subtitle timing when the sync would move it by no more than this. Tap to change.</string>
+    <string name="settings_playback_auto_sync_tolerance_off">Off</string>
+    <string name="settings_playback_auto_sync_tolerance_value">%1$d ms</string>
+    <string name="autosync_retry_action">AutoSync off? Try another reference</string>
+    <string name="autosync_retry_trying">Trying another reference…</string>
+    <string name="autosync_retry_updated">AutoSync updated. Try again if timing is still off.</string>
+    <string name="autosync_retry_exhausted">No more suitable references. Current timing kept.</string>
+    <string name="autosync_retry_failed">Couldn’t try another reference. Current timing kept.</string>
+</resources>

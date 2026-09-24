@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AutoSync toast messages. Generated; keep keys in sync across locales. -->
+<resources>
+    <string name="autosync_toast_analyzing">Auto Sync • Menganalisis…</string>
+    <string name="autosync_toast_unsupported_renderer">Auto Sync • Perender subtitle tidak didukung</string>
+    <string name="autosync_toast_load_failed">Auto Sync • Tidak dapat memuat subtitle</string>
+    <string name="autosync_toast_apply_failed">Auto Sync • Kecocokan ditemukan, tetapi sinkronisasi tidak dapat diterapkan</string>
+    <string name="autosync_toast_analyze_failed">Auto Sync • Tidak dapat menganalisis subtitle</string>
+    <string name="autosync_toast_no_embedded_subtitles">Auto Sync • Subtitle tersemat tidak ditemukan</string>
+    <string name="autosync_toast_no_reference">Auto Sync • Tidak ada trek referensi yang dapat digunakan</string>
+    <string name="autosync_toast_match_excellent">Auto Sync • Kecocokan sangat baik (%1$d%)</string>
+    <string name="autosync_toast_match_strong">Auto Sync • Kecocokan kuat (%1$d%)</string>
+    <string name="autosync_toast_match_possible">Auto Sync • Kemungkinan cocok (%1$d%)</string>
+    <string name="autosync_toast_match_weak">Auto Sync • Kecocokan lemah (%1$d%)</string>
+    <string name="autosync_toast_result_within_tolerance">sinkron (dalam toleransi %1$d ms)</string>
+    <string name="autosync_toast_result_localized_ignored">perbedaan lokalisasi diabaikan</string>
+    <string name="autosync_toast_result_replaced">subtitle diganti</string>
+    <string name="autosync_toast_result_drift_corrected">pergeseran dikoreksi</string>
+    <string name="autosync_toast_result_in_sync">sudah sinkron</string>
+    <string name="autosync_toast_result_kept">waktu asli dipertahankan</string>
+    <string name="autosync_toast_retry_weaker">Auto Sync • Referensi alternatif lebih lemah (%1$d%) • sinkronisasi saat ini dipertahankan</string>
+    <string name="autosync_toast_retry_none">Auto Sync • Tidak ditemukan referensi yang lebih baik</string>
+    <string name="autosync_toast_retry_matched">Auto Sync • Referensi baru cocok (%1$d%)</string>
+    <string name="autosync_toast_retry_failed">Auto Sync • Coba ulang dengan referensi lain gagal • sinkronisasi saat ini dipertahankan</string>
+</resources>

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AutoSync toast messages. Generated; keep keys in sync across locales. -->
+<resources>
+    <string name="autosync_toast_analyzing">Auto Sync • Analyzing…</string>
+    <string name="autosync_toast_unsupported_renderer">Auto Sync • Unsupported subtitle renderer</string>
+    <string name="autosync_toast_load_failed">Auto Sync • Could not load subtitle</string>
+    <string name="autosync_toast_apply_failed">Auto Sync • Match found, but sync could not be applied</string>
+    <string name="autosync_toast_analyze_failed">Auto Sync • Could not analyze subtitle</string>
+    <string name="autosync_toast_no_embedded_subtitles">Auto Sync • No embedded subtitles found</string>
+    <string name="autosync_toast_no_reference">Auto Sync • No usable reference track</string>
+    <string name="autosync_toast_match_excellent">Auto Sync • Excellent match (%1$d%)</string>
+    <string name="autosync_toast_match_strong">Auto Sync • Strong match (%1$d%)</string>
+    <string name="autosync_toast_match_possible">Auto Sync • Possible match (%1$d%)</string>
+    <string name="autosync_toast_match_weak">Auto Sync • Weak match (%1$d%)</string>
+    <string name="autosync_toast_result_within_tolerance">in sync (within %1$d ms tolerance)</string>
+    <string name="autosync_toast_result_localized_ignored">localized mismatch ignored</string>
+    <string name="autosync_toast_result_replaced">subtitle replaced</string>
+    <string name="autosync_toast_result_drift_corrected">drift corrected</string>
+    <string name="autosync_toast_result_in_sync">already in sync</string>
+    <string name="autosync_toast_result_kept">original timing kept</string>
+    <string name="autosync_toast_retry_weaker">Auto Sync • Alternative reference weaker (%1$d%) • current sync kept</string>
+    <string name="autosync_toast_retry_none">Auto Sync • No better reference found</string>
+    <string name="autosync_toast_retry_matched">Auto Sync • New reference matched (%1$d%)</string>
+    <string name="autosync_toast_retry_failed">Auto Sync • Reference retry failed • current sync kept</string>
+</resources>

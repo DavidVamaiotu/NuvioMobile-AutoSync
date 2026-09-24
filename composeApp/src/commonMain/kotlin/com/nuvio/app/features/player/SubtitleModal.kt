@@ -48,6 +48,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.nuvio.app.core.ui.nuvio
 import com.nuvio.app.core.ui.withDuplicateSafeLazyKeys
+import com.nuvio.app.features.autosync.AutoSyncSubtitleModalSlot
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.addon_title
 import nuvio.composeapp.generated.resources.compose_player_built_in
@@ -316,6 +317,8 @@ fun SubtitleModal(
                         }
                     }
                 }
+
+                AutoSyncSubtitleModalSlot() // AutoSync hook
             }
         }
     }

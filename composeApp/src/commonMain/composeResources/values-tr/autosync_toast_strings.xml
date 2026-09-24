@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AutoSync toast messages. Generated; keep keys in sync across locales. -->
+<resources>
+    <string name="autosync_toast_analyzing">Auto Sync • Analiz ediliyor…</string>
+    <string name="autosync_toast_unsupported_renderer">Auto Sync • Desteklenmeyen altyazı oluşturucu</string>
+    <string name="autosync_toast_load_failed">Auto Sync • Altyazı yüklenemedi</string>
+    <string name="autosync_toast_apply_failed">Auto Sync • Eşleşme bulundu ancak senkronizasyon uygulanamadı</string>
+    <string name="autosync_toast_analyze_failed">Auto Sync • Altyazı analiz edilemedi</string>
+    <string name="autosync_toast_no_embedded_subtitles">Auto Sync • Gömülü altyazı bulunamadı</string>
+    <string name="autosync_toast_no_reference">Auto Sync • Kullanılabilir referans parçası yok</string>
+    <string name="autosync_toast_match_excellent">Auto Sync • Mükemmel eşleşme (%1$d%)</string>
+    <string name="autosync_toast_match_strong">Auto Sync • Güçlü eşleşme (%1$d%)</string>
+    <string name="autosync_toast_match_possible">Auto Sync • Olası eşleşme (%1$d%)</string>
+    <string name="autosync_toast_match_weak">Auto Sync • Zayıf eşleşme (%1$d%)</string>
+    <string name="autosync_toast_result_within_tolerance">senkron (%1$d ms tolerans içinde)</string>
+    <string name="autosync_toast_result_localized_ignored">yerelleştirme farkı yok sayıldı</string>
+    <string name="autosync_toast_result_replaced">altyazı değiştirildi</string>
+    <string name="autosync_toast_result_drift_corrected">kayma düzeltildi</string>
+    <string name="autosync_toast_result_in_sync">zaten senkron</string>
+    <string name="autosync_toast_result_kept">orijinal zamanlama korundu</string>
+    <string name="autosync_toast_retry_weaker">Auto Sync • Alternatif referans daha zayıf (%1$d%) • mevcut senkronizasyon korundu</string>
+    <string name="autosync_toast_retry_none">Auto Sync • Daha iyi referans bulunamadı</string>
+    <string name="autosync_toast_retry_matched">Auto Sync • Yeni referans eşleşti (%1$d%)</string>
+    <string name="autosync_toast_retry_failed">Auto Sync • Başka referansla yeniden deneme başarısız • mevcut senkronizasyon korundu</string>
+</resources>

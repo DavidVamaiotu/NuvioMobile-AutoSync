@@ -522,6 +522,11 @@ private fun PlaybackSettingsSection(
                     isTablet = isTablet,
                     onClick = { showSecondarySubtitleDialog = true },
                 )
+                AutoSyncPlaybackSettingsRows( // AutoSync hook
+                    isTablet = isTablet,
+                    enabled = otherSubtitleOptionsEnabled,
+                    preferredSubtitleLanguage = preferredSubtitleLanguage,
+                )
                 SettingsGroupDivider(isTablet = isTablet)
                 SettingsSwitchRow(
                     title = stringResource(Res.string.settings_playback_subtitle_strip_sdh),

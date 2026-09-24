@@ -112,6 +112,8 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi() {
     val gestureCallbacks = rememberSurfaceGestureCallbacks()
     val playbackGesturesEnabled = initialLoadCompleted && errorMessage == null
 
+    BindAutoSyncRuntimeEffects() // AutoSync hook
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -175,6 +177,7 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi() {
                         if (active.value && playbackKey == activePlaybackKey) {
                             playerController = controller
                             playerControllerSourceUrl = activeSourceUrl
+                    configureAutoSyncController(controller) // AutoSync hook
                         }
                     },
                     onSnapshot = { snapshot ->
@@ -517,7 +520,7 @@ private fun PlayerScreenRuntime.RenderPlayerModals(displayedPositionMs: Long) {
             useCustomSubtitles = true
             preferredSubtitleSelectionApplied = true
             persistAddonSubtitlePreference(addon)
-            playerController?.setSubtitleUri(addon.url)
+            attachSelectedAddonSubtitleWithAutoSync(addon.url) // AutoSync hook
         },
         onFetchAddonSubtitles = { fetchAddonSubtitlesForActiveItem() },
         onSubtitleStyleChanged = PlayerSettingsRepository::setSubtitleStyle,
