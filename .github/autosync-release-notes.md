@@ -1,5 +1,2 @@
-- **Saved subtitles come back on every episode.** A remembered add-on subtitle is matched again against each episode's own subtitle list, instead of reusing the previous episode's file. This is upstream Nuvio's fix, which the fork had accidentally lost.
-- **AutoSync plugs into Nuvio through a few marked hooks.** It no longer edits Nuvio's player code, so new Nuvio versions merge with fewer conflicts. Syncing works the same as before.
-- **One download for the selected subtitle.** The on-screen subtitles and AutoSync now share it, and a failed download can no longer leave either one waiting.
-- **Retry AutoSync** now sits in its own slot at the top of the subtitle menu.
-- AutoSync's player helper is now cleaned up when you switch streams, instead of staying around.
+- **AutoSync toasts follow the app language.** All AutoSync messages (analyzing, match found, sync applied or kept, reference retries, errors) now use the language picked in Nuvio's settings, with translations for all 23 languages the app ships. English wording is unchanged.
+- **AutoSync settings are remembered again.** The Auto Sync toggle, tolerance, mode and debug-log settings reset on every restart and update since the Nuvio 0.5.0 sync; they are saved properly again. Set them once more after updating and they will stick.
