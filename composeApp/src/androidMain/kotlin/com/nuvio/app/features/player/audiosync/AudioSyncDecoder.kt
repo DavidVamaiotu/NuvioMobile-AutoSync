@@ -30,6 +30,11 @@ import java.nio.ByteOrder
 internal class AudioSyncDecoder(
     private val analyzer: SpeechAnalyzer,
     private val liveAnalyzer: SpeechAnalyzer,
+    /**
+     * Whether a vendor decoder that allows several instances may be used. Off for extra decoders
+     * next to the look-ahead one, which keep to platform software decoders and FFmpeg.
+     */
+    private val allowVendorDecoders: Boolean = true,
     /** Called once per audio format that has no usable decoder. */
     private val onUnsupportedFormat: (mimeType: String) -> Unit = {},
 ) {
@@ -93,6 +98,22 @@ internal class AudioSyncDecoder(
         }
     }
 
+    /** False once [format] turned out to have no usable decoder (or after [release]). */
+    fun accepts(format: Format): Boolean =
+        !released && format.sampleMimeType.let { it != null && it !in unsupportedMimesSnapshot }
+
+    /** Waits up to [timeoutMs] until everything offered so far has been taken for decoding. */
+    fun awaitDrained(timeoutMs: Long) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        synchronized(lock) {
+            while (queue.isNotEmpty() && !released) {
+                val left = deadline - System.currentTimeMillis()
+                if (left <= 0) return
+                lock.wait(left)
+            }
+        }
+    }
+
     fun discontinuity() {
         synchronized(lock) {
             if (released) return
@@ -130,6 +151,7 @@ internal class AudioSyncDecoder(
                 val item = synchronized(lock) {
                     while (queue.isEmpty() && !released) lock.wait()
                     if (released) return
+                    lock.notifyAll()
                     queue.removeFirst().also { item ->
                         when (item) {
                             is Item.Sample -> queuedBytes -= item.data.size
@@ -343,6 +365,7 @@ internal class AudioSyncDecoder(
             )
         }
         infos.firstOrNull { it.isSoftwareOnlyCompat() }?.let { return it.name }
+        if (!allowVendorDecoders) return null
         return infos.firstOrNull { info ->
             info.isHardwareAcceleratedCompat() != true && info.maxInstances(mime) >= 2
         }?.name

@@ -488,6 +488,14 @@ private fun ExoPlayerSurface(
         audioSubtitleSync.onSourceChanged(sourceUrl)
     }
 
+    // Audio across the film can be sampled ahead of playback, except from a local torrent engine.
+    LaunchedEffect(audioSubtitleSync, playerSourceKey, dataSourceFactory) {
+        val audioUrl = sourceAudioUrl?.takeIf { it.isNotBlank() } ?: sourceUrl
+        if (!isLoopbackPlaybackSource(audioUrl)) {
+            audioSubtitleSync.setSpotSource(sourceUrl, audioUrl, dataSourceFactory, baseExtractorsFactory)
+        }
+    }
+
     LaunchedEffect(exoPlayer, resolvedMediaItem, initialPositionRequestKey) {
         val mediaItem = resolvedMediaItem
         val requestedStartPositionMs = fallbackStartPositionMs

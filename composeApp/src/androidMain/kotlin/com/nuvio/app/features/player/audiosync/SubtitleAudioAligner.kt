@@ -65,73 +65,98 @@ internal object SubtitleAudioAligner {
         maxShiftMs: Double,
         /** Latency of the speech detector; 0 when [probabilities] is not detector output. */
         detectorBiasMs: Double = DETECTOR_BIAS_MS,
-    ): Estimate? = prepare(probabilities, fromFrame, minShiftMs, maxShiftMs, detectorBiasMs)?.estimate(track, scales)
+    ): Estimate? = estimate(listOf(SpeechSegment(fromFrame, probabilities)), track, scales, minShiftMs, maxShiftMs, detectorBiasMs)
 
-    /**
-     * Transforms the speech side once so several subtitle files can be scored against the same
-     * audio for the cost of one extra FFT pair each. Null when there is too little known speech.
-     */
+    /** Like the single-array form, over separate stretches of known speech (see [SpeechTimeline.segments]). */
+    fun estimate(
+        segments: List<SpeechSegment>,
+        track: SubtitleSpeechTrack,
+        scales: DoubleArray = CANDIDATE_SCALES,
+        minShiftMs: Double,
+        maxShiftMs: Double,
+        detectorBiasMs: Double = DETECTOR_BIAS_MS,
+    ): Estimate? = prepare(segments, minShiftMs, maxShiftMs, detectorBiasMs)?.estimate(track, scales)
+
     fun prepare(
         probabilities: FloatArray,
         fromFrame: Int,
         minShiftMs: Double,
         maxShiftMs: Double,
         detectorBiasMs: Double = DETECTOR_BIAS_MS,
+    ): PreparedSpeech? = prepare(listOf(SpeechSegment(fromFrame, probabilities)), minShiftMs, maxShiftMs, detectorBiasMs)
+
+    /**
+     * Transforms the speech side once so several subtitle files can be scored against the same
+     * audio for the cost of one extra FFT pair each. The correlation terms are sums over frames, so
+     * separate stretches are transformed on their own and their terms added: exactly the result of
+     * one array covering all of them, at the cost of only the known audio. Null when there is too
+     * little known speech.
+     */
+    fun prepare(
+        segments: List<SpeechSegment>,
+        minShiftMs: Double,
+        maxShiftMs: Double,
+        detectorBiasMs: Double = DETECTOR_BIAS_MS,
     ): PreparedSpeech? {
-        val n = probabilities.size
-        if (n < 2) return null
         val frameMs = SpeechTimeline.FRAME_DURATION_MS
         val minLag = Math.floorDiv((minShiftMs + detectorBiasMs).roundToInt(), frameMs.toInt())
         val maxLag = Math.floorDiv((maxShiftMs + detectorBiasMs).roundToInt(), frameMs.toInt()) + 1
         val lagCount = maxLag - minLag + 1
 
-        // Centre the known probabilities; unknown frames get weight zero.
+        // One mean and norm over every known frame, as if the stretches were a single array.
         var count = 0
         var sum = 0.0
-        for (p in probabilities) if (!p.isNaN()) {
+        for (segment in segments) for (p in segment.probabilities) if (!p.isNaN()) {
             count++
             sum += p
         }
         if (count < 2) return null
         val mean = sum / count
         var energy = 0.0
-        val centered = DoubleArray(n)
-        val mask = DoubleArray(n)
         var speechSeconds = 0.0
-        for (i in 0 until n) {
-            val p = probabilities[i]
-            if (p.isNaN()) continue
-            val c = p - mean
-            centered[i] = c
-            mask[i] = 1.0
-            energy += c * c
-            speechSeconds += p * frameMs / 1_000.0
+        val parts = ArrayList<Part>(segments.size)
+        for (segment in segments) {
+            val n = segment.probabilities.size
+            if (n == 0) continue
+            // g covers frames [fromFrame - maxLag, fromFrame + n - minLag).
+            val gLength = n + lagCount - 1
+            val size = Fft.sizeFor(n + gLength)
+            // Audio side, packed as (centered + i * mask), shared by every scale and subtitle.
+            val audioRe = DoubleArray(size)
+            val audioIm = DoubleArray(size)
+            var known = false
+            for (i in 0 until n) {
+                val p = segment.probabilities[i]
+                if (p.isNaN()) continue
+                val c = p - mean
+                audioRe[i] = c
+                audioIm[i] = 1.0
+                energy += c * c
+                speechSeconds += p * frameMs / 1_000.0
+                known = true
+            }
+            if (!known) continue
+            val fft = Fft(size)
+            fft.transform(audioRe, audioIm)
+            parts += Part(fft, audioRe, audioIm, n, segment.fromFrame, gLength)
         }
-        if (energy <= 1e-9) return null
-
-        // g covers frames [fromFrame - maxLag, fromFrame + n - minLag).
-        val gLength = n + lagCount - 1
-        val size = Fft.sizeFor(n + gLength)
-        val fft = Fft(size)
-        // Audio side, packed as (centered + i * mask), shared by every scale and subtitle.
-        val audioRe = DoubleArray(size)
-        val audioIm = DoubleArray(size)
-        centered.copyInto(audioRe)
-        mask.copyInto(audioIm)
-        fft.transform(audioRe, audioIm)
-        return PreparedSpeech(
-            fft, audioRe, audioIm, n, fromFrame, gLength, count, sqrt(energy), speechSeconds, minLag, maxLag, detectorBiasMs,
-        )
+        if (energy <= 1e-9 || parts.isEmpty()) return null
+        return PreparedSpeech(parts, count, sqrt(energy), speechSeconds, minLag, maxLag, detectorBiasMs)
     }
+
+    /** One transformed stretch of speech. */
+    internal class Part(
+        val fft: Fft,
+        val audioRe: DoubleArray,
+        val audioIm: DoubleArray,
+        val n: Int,
+        val fromFrame: Int,
+        val gLength: Int,
+    )
 
     /** The speech side of a correlation, transformed once; see [prepare]. Not thread-safe. */
     class PreparedSpeech internal constructor(
-        private val fft: Fft,
-        private val audioRe: DoubleArray,
-        private val audioIm: DoubleArray,
-        private val n: Int,
-        private val fromFrame: Int,
-        private val gLength: Int,
+        private val parts: List<Part>,
         private val count: Int,
         private val norm: Double,
         private val speechSeconds: Double,
@@ -143,20 +168,28 @@ internal object SubtitleAudioAligner {
         fun estimate(track: SubtitleSpeechTrack, scales: DoubleArray = CANDIDATE_SCALES): Estimate? {
             if (track.size == 0) return null
             val frameMs = SpeechTimeline.FRAME_DURATION_MS
+            val lagCount = maxLag - minLag + 1
             var best: Estimate? = null
             var bestPeak = Double.NEGATIVE_INFINITY
             var unitScale: Estimate? = null
             for (scale in scales) {
-                val g = track.render(fromFrame - maxLag, fromFrame - maxLag + gLength, scale)
-                val estimate = correlate(
-                    fft, audioRe, audioIm, g, n, count, norm, minLag, maxLag, scale, frameMs, detectorBiasMs,
-                ) ?: continue
-                val cues = track.countCuesIn(
-                    fromMs = fromFrame * frameMs,
-                    toMs = (fromFrame + n) * frameMs,
-                    scale = scale,
-                    shiftMs = estimate.shiftMs,
-                )
+                val c1 = DoubleArray(lagCount)
+                val cm = DoubleArray(lagCount)
+                val cm2 = DoubleArray(lagCount)
+                for (part in parts) {
+                    val g = track.render(part.fromFrame - maxLag, part.fromFrame - maxLag + part.gLength, scale)
+                    accumulateTerms(part, g, lagCount, c1, cm, cm2)
+                }
+                val estimate = correlationPeak(c1, cm, cm2, count, norm, maxLag, scale, frameMs, detectorBiasMs)
+                    ?: continue
+                val cues = parts.sumOf { part ->
+                    track.countCuesIn(
+                        fromMs = part.fromFrame * frameMs,
+                        toMs = (part.fromFrame + part.n) * frameMs,
+                        scale = scale,
+                        shiftMs = estimate.shiftMs,
+                    )
+                }
                 val complete = estimate.copy(
                     analysedSeconds = count * frameMs / 1_000.0,
                     speechSeconds = speechSeconds,
@@ -180,21 +213,22 @@ internal object SubtitleAudioAligner {
 
     private fun isNearUnit(scale: Double): Boolean = abs(scale - 1.0) < 0.002
 
-    private fun correlate(
-        fft: Fft,
-        audioRe: DoubleArray,
-        audioIm: DoubleArray,
+    /**
+     * Adds this stretch's correlation terms per lag: c1 = sum(centered * g), cm = sum(mask * g) and
+     * cm2 = sum(mask * g^2), where index k = maxLag - lag.
+     */
+    private fun accumulateTerms(
+        part: Part,
         g: DoubleArray,
-        n: Int,
-        count: Int,
-        norm: Double,
-        minLag: Int,
-        maxLag: Int,
-        scale: Double,
-        frameMs: Double,
-        detectorBiasMs: Double,
-    ): Estimate? {
+        lagCount: Int,
+        c1: DoubleArray,
+        cm: DoubleArray,
+        cm2: DoubleArray,
+    ) {
+        val fft = part.fft
         val size = fft.size
+        val audioRe = part.audioRe
+        val audioIm = part.audioIm
         // Subtitle side, packed as (g + i * g^2).
         val subRe = DoubleArray(size)
         val subIm = DoubleArray(size)
@@ -233,18 +267,33 @@ internal object SubtitleAudioAligner {
         }
         fft.transform(c1cmRe, c1cmIm, inverse = true)
         fft.transform(cm2Re, cm2Im, inverse = true)
-
-        // Index k = maxLag - lag: audio frame i lines up with g[i + k] = subtitle frame (i - lag).
-        val lagCount = maxLag - minLag + 1
-        val correlation = DoubleArray(lagCount) { Double.NaN }
         val inv = 1.0 / size
         for (k in 0 until lagCount) {
-            val c1 = c1cmRe[k] * inv
-            val cm = c1cmIm[k] * inv
-            val cm2 = cm2Re[k] * inv
-            val variance = cm2 - cm * cm / count
-            if (variance > 1e-6 * count && cm > 0.5) {
-                correlation[k] = c1 / (norm * sqrt(variance))
+            c1[k] += c1cmRe[k] * inv
+            cm[k] += c1cmIm[k] * inv
+            cm2[k] += cm2Re[k] * inv
+        }
+    }
+
+    /** Masked Pearson correlation per lag from the summed terms, and its peak. */
+    private fun correlationPeak(
+        c1: DoubleArray,
+        cm: DoubleArray,
+        cm2: DoubleArray,
+        count: Int,
+        norm: Double,
+        maxLag: Int,
+        scale: Double,
+        frameMs: Double,
+        detectorBiasMs: Double,
+    ): Estimate? {
+        // Index k = maxLag - lag: audio frame i lines up with g[i + k] = subtitle frame (i - lag).
+        val lagCount = c1.size
+        val correlation = DoubleArray(lagCount) { Double.NaN }
+        for (k in 0 until lagCount) {
+            val variance = cm2[k] - cm[k] * cm[k] / count
+            if (variance > 1e-6 * count && cm[k] > 0.5) {
+                correlation[k] = c1[k] / (norm * sqrt(variance))
             }
         }
         var peakIndex = -1
@@ -276,7 +325,7 @@ internal object SubtitleAudioAligner {
             shiftMs = lagFrames * frameMs - detectorBiasMs,
             peak = peak,
             prominence = if (runnerUp.isFinite()) peak - runnerUp else peak,
-            analysedSeconds = n * frameMs / 1_000.0,
+            analysedSeconds = 0.0,
             speechSeconds = 0.0,
             cueCount = 0,
             atSearchEdge = peakIndex < edgeFrames || peakIndex >= lagCount - edgeFrames,

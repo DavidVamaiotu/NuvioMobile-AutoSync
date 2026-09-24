@@ -153,15 +153,11 @@ internal class SubtitleCandidatePool(
      * detected speech. The chosen subtitle is left to its own tracker, which searches more audio.
      */
     private fun fromSpeech(timeline: SpeechTimeline, candidates: List<Candidate>): Winner? {
-        val known = timeline.knownRange() ?: return null
-        val to = known.last + 1
-        val from = maxOf(known.first, to - WINDOW_FRAMES)
-        val knownFrames = timeline.knownFramesIn(from, to)
+        val segments = timeline.segments(maxFrames = WINDOW_FRAMES)
+        val knownFrames = segments.sumOf { it.knownFrames }
         if (knownFrames < MIN_SCORING_FRAMES) return null
-        val probabilities = timeline.snapshot(from, to)
         val speech = SubtitleAudioAligner.prepare(
-            probabilities = probabilities,
-            fromFrame = from,
+            segments = segments,
             minShiftMs = -AudioSyncTracker.MAX_SHIFT_MS,
             maxShiftMs = AudioSyncTracker.MAX_SHIFT_MS,
         ) ?: return null
@@ -176,7 +172,7 @@ internal class SubtitleCandidatePool(
             val estimate = speech.estimate(candidate.track, scales)
             candidate.score = estimate?.prominence ?: 0.0
             candidate.ranked = candidate.ranked || pruning
-            if (estimate != null && AudioSyncTracker.isLockable(estimate, probabilities, from, knownFrames, candidate.track)) {
+            if (estimate != null && AudioSyncTracker.isLockable(estimate, segments, knownFrames, candidate.track)) {
                 if (best == null || estimate.prominence > best.second.prominence) best = candidate to estimate
                 continue
             }
@@ -270,7 +266,7 @@ internal class SubtitleCandidatePool(
         private val FRAMES_PER_SECOND = 1_000.0 / SpeechTimeline.FRAME_DURATION_MS
         private val MIN_SCORING_FRAMES = (60 * FRAMES_PER_SECOND).toInt()
 
-        /** Latest audio candidates are scored on; enough to confirm a lock, half the tracker's cost. */
+        /** Known audio candidates are scored on; enough to confirm a lock, half the tracker's cost. */
         private val WINDOW_FRAMES = (10 * 60 * FRAMES_PER_SECOND).toInt()
 
         /** Candidates scored per call, so the cost per call stays flat however many there are. */

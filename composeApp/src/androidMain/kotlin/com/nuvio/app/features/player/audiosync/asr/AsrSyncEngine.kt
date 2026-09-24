@@ -258,11 +258,10 @@ internal class AsrSyncEngine(
      * it; the speech timeline pins the edges. Search a narrow window so it cannot jump elsewhere.
      */
     private fun fineTune(track: SubtitleSpeechTrack, scale: Double, coarseShiftMs: Double): Double? {
-        val known = timeline.knownRange() ?: return null
-        val from = maxOf(known.first, known.last + 1 - FINE_TUNE_MAX_FRAMES)
+        val segments = timeline.segments(maxFrames = FINE_TUNE_MAX_FRAMES)
+        if (segments.isEmpty()) return null
         val estimate = SubtitleAudioAligner.estimate(
-            probabilities = timeline.snapshot(from, known.last + 1),
-            fromFrame = from,
+            segments = segments,
             track = track,
             scales = doubleArrayOf(scale),
             minShiftMs = coarseShiftMs - FINE_TUNE_WINDOW_MS,

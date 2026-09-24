@@ -1,6 +1,6 @@
 name: Audio Sync Release
 
-# Release trigger: test all same-language subtitles against the audio and switch automatically (2)
+# Release trigger: sample dialogue spots across the film for faster sync
 
 on:
   workflow_dispatch:

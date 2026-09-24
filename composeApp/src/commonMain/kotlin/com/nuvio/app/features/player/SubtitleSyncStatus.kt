@@ -30,6 +30,8 @@ data class SubtitleSyncDiagnostics(
     val reference: String = "",
     /** Progress of testing the other subtitles in the same language, e.g. "testing 4 · 7 ruled out". */
     val alternatives: String = "",
+    /** Progress of sampling audio across the film, e.g. "sampled 2 of 4 dialogue spots (40 MB)". */
+    val sampling: String = "",
     /** Something worth telling the user, such as an automatic switch to a better-matching subtitle. */
     val notice: String? = null,
     /** Why syncing is slower or not possible, when known. */
