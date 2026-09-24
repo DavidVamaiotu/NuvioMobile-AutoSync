@@ -107,7 +107,19 @@ class AsrMatchingTest {
         assertEquals(25.0 / 23.976, lock.scale, 0.002, "lock $lock")
     }
 
-    private fun lockAcrossFrameRates(videoMatchesEnglish: Boolean): com.nuvio.app.features.player.audiosync.asr.AsrLock {
+    @Test
+    fun littleHeardAudioNeverStretches() {
+        // As on a phone without sampling: about 70 s heard. Even if a stretch is right, it is not
+        // applied on so little evidence; the subtitle keeps its own rate until more is heard.
+        val lock = lockAcrossFrameRates(videoMatchesEnglish = true, heardMs = 70_000L)
+        assertEquals(1.0, lock.scale, 1e-9, "lock $lock")
+        assertTrue(!lock.final, "lock $lock")
+    }
+
+    private fun lockAcrossFrameRates(
+        videoMatchesEnglish: Boolean,
+        heardMs: Long = Long.MAX_VALUE,
+    ): com.nuvio.app.features.player.audiosync.asr.AsrLock {
         val rate = 25.0 / 23.976
         val media = script(Random(7), 160)
         fun at25(cues: List<Triple<Long, Long, String>>) =
@@ -118,7 +130,7 @@ class AsrMatchingTest {
         val bridge = assertNotNull(SubtitleBridge.align(target, SubtitleSpeechTrack.fromCues(english)))
         val locks = java.util.Collections.synchronizedList(ArrayList<com.nuvio.app.features.player.audiosync.asr.AsrLock>())
         val latch = java.util.concurrent.CountDownLatch(1)
-        val engine = AsrSyncEngine(speech(media), onLock = { locks += it; latch.countDown() })
+        val engine = AsrSyncEngine(speech(media, heardMs), onLock = { locks += it; latch.countDown() })
         engine.startSession(target, listOf(com.nuvio.app.features.player.audiosync.asr.ReferenceSubtitle("en", english, bridge)))
         // Twelve lines heard near the start: far too short a span to judge a frame rate from words.
         val random = Random(8)
@@ -143,10 +155,10 @@ class AsrMatchingTest {
     }
 
     /** Clean speech exactly where [cues] are. */
-    private fun speech(cues: List<Triple<Long, Long, String>>): SpeechTimeline {
+    private fun speech(cues: List<Triple<Long, Long, String>>, heardMs: Long = Long.MAX_VALUE): SpeechTimeline {
         val frameMs = SpeechTimeline.FRAME_DURATION_MS
         val timeline = SpeechTimeline()
-        val frames = ((cues.maxOf { it.second } + 30_000) / frameMs).toInt()
+        val frames = (minOf(cues.maxOf { it.second } + 30_000, heardMs) / frameMs).toInt()
         val speaking = BooleanArray(frames)
         for ((a, b, _) in cues) {
             val from = ((a + SubtitleAudioAligner.DETECTOR_BIAS_MS) / frameMs).toInt()

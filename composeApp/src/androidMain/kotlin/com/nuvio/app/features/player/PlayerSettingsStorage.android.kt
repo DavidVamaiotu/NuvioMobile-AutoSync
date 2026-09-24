@@ -59,6 +59,7 @@ actual object PlayerSettingsStorage {
     private const val mapDV7ToHevcKey = "map_dv7_to_hevc"
     private const val tunnelingEnabledKey = "tunneling_enabled"
     private const val audioSubtitleSyncEnabledKey = "audio_subtitle_sync_enabled"
+    private const val audioSyncSamplingOnMobileDataKey = "audio_sync_sampling_on_mobile_data"
     private const val streamAutoPlayModeKey = "stream_auto_play_mode"
     private const val streamAutoPlaySourceKey = "stream_auto_play_source"
     private const val streamAutoPlaySelectedAddonsKey = "stream_auto_play_selected_addons"
@@ -135,6 +136,7 @@ actual object PlayerSettingsStorage {
         mapDV7ToHevcKey,
         tunnelingEnabledKey,
         audioSubtitleSyncEnabledKey,
+        audioSyncSamplingOnMobileDataKey,
         streamAutoPlayModeKey,
         streamAutoPlaySourceKey,
         streamAutoPlaySelectedAddonsKey,
@@ -775,6 +777,19 @@ actual object PlayerSettingsStorage {
         preferences
             ?.edit()
             ?.putBoolean(ProfileScopedKey.of(audioSubtitleSyncEnabledKey), enabled)
+            ?.apply()
+    }
+
+    actual fun loadAudioSyncSamplingOnMobileData(): Boolean? =
+        preferences?.let { sharedPreferences ->
+            val key = ProfileScopedKey.of(audioSyncSamplingOnMobileDataKey)
+            if (sharedPreferences.contains(key)) sharedPreferences.getBoolean(key, false) else null
+        }
+
+    actual fun saveAudioSyncSamplingOnMobileData(enabled: Boolean) {
+        preferences
+            ?.edit()
+            ?.putBoolean(ProfileScopedKey.of(audioSyncSamplingOnMobileDataKey), enabled)
             ?.apply()
     }
 

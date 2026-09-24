@@ -30,6 +30,8 @@ data class SubtitleSyncDiagnostics(
     val reference: String = "",
     /** Progress of testing the other subtitles in the same language, e.g. "testing 4 · 7 ruled out". */
     val alternatives: String = "",
+    /** Set when subtitles are stretched to another frame rate, e.g. "subtitle stretched ×1.043". */
+    val rate: String? = null,
     /** Progress of sampling audio across the film, e.g. "sampled 2 of 4 dialogue spots (40 MB)". */
     val sampling: String = "",
     /** Something worth telling the user, such as an automatic switch to a better-matching subtitle. */
@@ -63,6 +65,9 @@ object SubtitleSyncStatus {
     /** Set by the platform that supports downloading the model. */
     var modelActions: SpeechModelActions? = null
 
+    /** Set by the platform that keeps a sync log that can be shared. */
+    var logActions: SyncLogActions? = null
+
     fun publishSpeechModel(state: SpeechModelState) {
         speechModelState.value = state
     }
@@ -74,6 +79,10 @@ object SubtitleSyncStatus {
     fun requestSubtitleSwitch(url: String) {
         switchRequestState.value = SubtitleSwitchRequest(url, ++switchCounter)
     }
+}
+
+interface SyncLogActions {
+    fun share()
 }
 
 interface SpeechModelActions {

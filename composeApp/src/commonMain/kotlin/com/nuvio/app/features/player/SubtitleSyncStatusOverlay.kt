@@ -64,6 +64,7 @@ internal fun SubtitleSyncStatusOverlay(modifier: Modifier = Modifier) {
             }
             Text(headline, color = color, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             state.notice?.let { Line(it, Color(0xFF7CE38B)) }
+            state.rate?.let { Line("Frame rate: $it", Color(0xFFFFD166)) }
             val listening = if (state.liveOnly) {
                 "Listening live (no look-ahead for this audio)"
             } else {

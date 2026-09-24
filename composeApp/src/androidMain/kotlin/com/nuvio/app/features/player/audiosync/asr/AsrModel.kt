@@ -2,10 +2,10 @@ package com.nuvio.app.features.player.audiosync.asr
 
 import android.content.Context
 import android.net.ConnectivityManager
-import android.util.Log
 import com.nuvio.app.features.player.SpeechModelActions
 import com.nuvio.app.features.player.SpeechModelState
 import com.nuvio.app.features.player.SubtitleSyncStatus
+import com.nuvio.app.features.player.audiosync.SyncLog
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -23,7 +23,6 @@ internal object AsrModel {
     const val TOKENS = "tokens.txt"
     const val DOWNLOAD_MB = 74
 
-    private const val TAG = "NuvioAudioSync"
     private const val VERSION = "gigaspeech-2023-12-12"
     private const val MIRROR = "https://github.com/DavidVamaiotu/NuvioMobile-AutoSync/releases/download/asr-models/"
     private const val UPSTREAM = "https://huggingface.co/csukuangfj/sherpa-onnx-zipformer-gigaspeech-2023-12-12/resolve/main/"
@@ -144,7 +143,7 @@ internal object AsrModel {
             if (connection.responseCode != 200) {
                 val code = connection.responseCode
                 connection.disconnect()
-                Log.w(TAG, "model download HTTP $code for $url")
+                SyncLog.w("model download HTTP $code for $url")
                 return "HTTP $code"
             }
             var written = 0L
@@ -172,7 +171,7 @@ internal object AsrModel {
             if (!partial.renameTo(target)) return "could not save file"
             null
         } catch (failure: Exception) {
-            Log.w(TAG, "model download failed for $url: ${failure.message}")
+            SyncLog.w("model download failed for $url: ${failure.message}")
             partial.delete()
             failure.message ?: failure.javaClass.simpleName
         }

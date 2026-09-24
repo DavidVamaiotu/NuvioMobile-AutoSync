@@ -83,6 +83,8 @@ internal expect object PlayerSettingsStorage {
     fun saveTunnelingEnabled(enabled: Boolean)
     fun loadAudioSubtitleSyncEnabled(): Boolean?
     fun saveAudioSubtitleSyncEnabled(enabled: Boolean)
+    fun loadAudioSyncSamplingOnMobileData(): Boolean?
+    fun saveAudioSyncSamplingOnMobileData(enabled: Boolean)
     fun loadStreamAutoPlayMode(): String?
     fun saveStreamAutoPlayMode(mode: String)
     fun loadStreamAutoPlaySource(): String?

@@ -488,6 +488,10 @@ private fun ExoPlayerSurface(
         audioSubtitleSync.onSourceChanged(sourceUrl)
     }
 
+    LaunchedEffect(audioSubtitleSync, playerSettings.audioSyncSamplingOnMobileData) {
+        audioSubtitleSync.samplingOnMobileData = playerSettings.audioSyncSamplingOnMobileData
+    }
+
     // Audio across the film can be sampled ahead of playback, except from a local torrent engine.
     LaunchedEffect(audioSubtitleSync, playerSourceKey, dataSourceFactory) {
         val audioUrl = sourceAudioUrl?.takeIf { it.isNotBlank() } ?: sourceUrl

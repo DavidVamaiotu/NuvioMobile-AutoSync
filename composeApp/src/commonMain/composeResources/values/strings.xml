@@ -1072,6 +1072,10 @@
     <string name="player_audio_sync_synced_rate">Subtitle sync confirmed (%1$s, frame rate corrected)</string>
     <string name="player_audio_sync_adjusted">Subtitle timing changed, re-synced (%1$s)</string>
     <string name="settings_playback_speech_model">Speech recognition model (%1$s MB)</string>
+    <string name="settings_playback_audio_sync_mobile_data">Sample across the film on mobile data</string>
+    <string name="settings_playback_audio_sync_mobile_data_description">Syncs much faster by reading a few short parts of the film ahead of playback. Uses up to 150 MB per film</string>
+    <string name="settings_playback_audio_sync_share_log">Share audio sync log</string>
+    <string name="settings_playback_audio_sync_share_log_description">Timings and decisions of recent syncs, for reporting a problem. Links are shortened and no audio or subtitle text is included</string>
     <string name="settings_playback_speech_model_missing">Not downloaded. Tap to download for much faster and more precise sync of English-audio content</string>
     <string name="settings_playback_speech_model_downloading">Downloading… %1$s%%</string>
     <string name="settings_playback_speech_model_ready">Downloaded and ready. Tap to delete</string>

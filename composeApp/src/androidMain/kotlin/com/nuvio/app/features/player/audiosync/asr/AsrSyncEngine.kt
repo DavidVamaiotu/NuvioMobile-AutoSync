@@ -282,10 +282,11 @@ internal class AsrSyncEngine(
     }
 
     /**
-     * While the reference's frame rate relative to the video is unknown, tries each common ratio,
-     * anchored where the words were heard, against the detected speech. The video usually matches
-     * one of the two files, so another ratio has to fit clearly better to be chosen. Returns the
-     * target mapping (scale, coarse shift) and its fine-tuned estimate, if any.
+     * While the reference's frame rate relative to the video is unknown, the target keeps its own
+     * rate (the usual case: a subtitle made for this release), anchored where the words were heard.
+     * Another common ratio is used only when the detected speech clearly confirms it over plenty
+     * of audio: a wrong stretch drifts further with every minute. Returns the target mapping
+     * (scale, coarse shift) and its fine-tuned estimate, if any.
      */
     private fun mostLikelyRate(
         track: SubtitleSpeechTrack,
@@ -296,26 +297,33 @@ internal class AsrSyncEngine(
         val anchorMs = words[words.size / 2].timeSec * 1_000.0
         val referenceAtAnchorMs = anchorMs - fit.shiftSec * 1_000.0
         val bridgeScale = bridge?.scale ?: 1.0
-        var best: Triple<Double, Double, SubtitleAudioAligner.Estimate?>? = null
-        var bestScore = Double.NEGATIVE_INFINITY
-        for (rate in SubtitleAudioAligner.CANDIDATE_SCALES) {
+
+        /** Target -> media mapping when the reference runs at [rate] relative to the video. */
+        fun hypothesis(rate: Double): Triple<Double, Double, SubtitleAudioAligner.Estimate?> {
             // Reference -> media at this rate, passing through the anchor; then target -> media.
             val referenceShiftMs = anchorMs - rate * referenceAtAnchorMs
             val scale = rate * bridgeScale
             val coarseShiftMs = rate * (bridge?.shiftSec ?: 0.0) * 1_000.0 + referenceShiftMs
-            val fine = fineTune(track, scale, coarseShiftMs)
-            val plain = rate == 1.0 || abs(scale - 1.0) < 1e-9
-            val score = when {
-                fine == null -> if (plain) -1.0 else Double.NEGATIVE_INFINITY
-                plain -> fine.peak
-                else -> fine.peak - OTHER_RATE_MARGIN
-            }
-            if (score > bestScore) {
-                bestScore = score
-                best = Triple(scale, coarseShiftMs, fine)
+            return Triple(scale, coarseShiftMs, fineTune(track, scale, coarseShiftMs))
+        }
+
+        val unstretched = hypothesis(1.0 / bridgeScale)
+        val knownFrames = timeline.segments(maxFrames = FINE_TUNE_MAX_FRAMES).sumOf { it.knownFrames }
+        if (knownFrames < STRETCH_MIN_KNOWN_FRAMES) return unstretched
+        val floor = unstretched.third?.peak?.plus(OTHER_RATE_MARGIN) ?: Double.NEGATIVE_INFINITY
+        var best = unstretched
+        var bestPeak = floor
+        for (rate in SubtitleAudioAligner.CANDIDATE_SCALES) {
+            val candidate = hypothesis(rate)
+            if (abs(candidate.first - 1.0) < 1e-9) continue
+            val fine = candidate.third ?: continue
+            if (fine.atSearchEdge || fine.prominence < STRETCH_MIN_PROMINENCE) continue
+            if (fine.peak > bestPeak) {
+                bestPeak = fine.peak
+                best = candidate
             }
         }
-        return best!!
+        return best
     }
 
     /**
@@ -352,8 +360,14 @@ internal class AsrSyncEngine(
         private const val FINE_TUNE_MIN_CUES = 5
         private const val FINAL_SPAN_SEC = 180.0
 
-        /** Correlation a ratio matching neither file must win by (as for speech-detection locks). */
+        /** Correlation a stretched mapping must win by over the unstretched one. */
         private const val OTHER_RATE_MARGIN = 0.04
+
+        /** Like a speech-detection lock at a non-standard rate: 0.12 plus the 0.04 penalty. */
+        private const val STRETCH_MIN_PROMINENCE = 0.16
+
+        /** Heard audio needed before a stretch can be judged at all (5 minutes). */
+        private val STRETCH_MIN_KNOWN_FRAMES = (5 * 60 * 1_000 / SpeechTimeline.FRAME_DURATION_MS).toInt()
         private const val UPDATE_MIN_MS = 150.0
     }
 }

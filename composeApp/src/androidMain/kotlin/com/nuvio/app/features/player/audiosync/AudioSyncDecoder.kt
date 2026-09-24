@@ -9,7 +9,6 @@ import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.os.Build
 import android.os.Process
-import android.util.Log
 import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.MediaFormatUtil
@@ -171,7 +170,7 @@ internal class AudioSyncDecoder(
             }
         } catch (_: InterruptedException) {
         } catch (error: Throwable) {
-            Log.w(TAG, "decoder loop stopped: ${error.message}")
+            SyncLog.w("decoder loop stopped: ${error.message}")
         } finally {
             releaseCodec()
         }
@@ -200,7 +199,7 @@ internal class AudioSyncDecoder(
             codec.queueInputBuffer(inputIndex, 0, sample.data.size, sample.timeUs, 0)
             drainOutput(codec)
         } catch (error: Exception) {
-            Log.w(TAG, "decode failed for ${sample.format.sampleMimeType}: ${error.message}")
+            SyncLog.w("decode failed for ${sample.format.sampleMimeType}: ${error.message}")
             releaseCodec()
             analyzer.reset()
         }
@@ -218,7 +217,7 @@ internal class AudioSyncDecoder(
         } catch (error: InterruptedException) {
             throw error
         } catch (error: Exception) {
-            Log.w(TAG, "ffmpeg decode failed for ${sample.format.sampleMimeType}: ${error.message}")
+            SyncLog.w("ffmpeg decode failed for ${sample.format.sampleMimeType}: ${error.message}")
             releaseCodec()
             analyzer.reset()
         }
@@ -295,17 +294,17 @@ internal class AudioSyncDecoder(
         outputFloat = false
         centerIndex = if (format.channelCount >= 3) 2 else -1
         val created = runCatching { createCodec(format) }.onFailure {
-            Log.w(TAG, "no usable MediaCodec for $mime: ${it.message}")
+            SyncLog.w("no usable MediaCodec for $mime: ${it.message}")
         }.getOrNull()
         if (created != null) {
             codec = created
             codecFormat = format
-            Log.i(TAG, "decoding $mime ${format.channelCount}ch ${format.sampleRate}Hz with ${created.name}")
+            SyncLog.i("decoding $mime ${format.channelCount}ch ${format.sampleRate}Hz with ${created.name}")
             return true
         }
         val software = if (AudioSyncFfmpegDecoder.supports(mime)) {
             runCatching { AudioSyncFfmpegDecoder(format) }.onFailure {
-                Log.w(TAG, "ffmpeg decoder failed for $mime: ${it.message}")
+                SyncLog.w("ffmpeg decoder failed for $mime: ${it.message}")
             }.getOrNull()
         } else {
             null
@@ -315,12 +314,12 @@ internal class AudioSyncDecoder(
             codecFormat = format
             // FFmpeg emits float PCM in its native layout, where the centre is the third channel.
             outputFloat = true
-            Log.i(TAG, "decoding $mime ${format.channelCount}ch ${format.sampleRate}Hz with ${software.name}")
+            SyncLog.i("decoding $mime ${format.channelCount}ch ${format.sampleRate}Hz with ${software.name}")
             return true
         }
         unsupportedMimes += mime
         unsupportedMimesSnapshot = unsupportedMimes.toSet()
-        Log.i(TAG, "no usable decoder for $mime; relying on the playback tap")
+        SyncLog.i("no usable decoder for $mime; relying on the playback tap")
         runCatching { onUnsupportedFormat(mime) }
         return false
     }
@@ -342,7 +341,7 @@ internal class AudioSyncDecoder(
                 return codec
             } catch (error: Exception) {
                 codec.release()
-                Log.w(TAG, "failed to start $name: ${error.message}")
+                SyncLog.w("failed to start $name: ${error.message}")
             }
         }
         return null
@@ -358,9 +357,7 @@ internal class AudioSyncDecoder(
             !info.isEncoder && info.supportedTypes.any { it.equals(mime, ignoreCase = true) }
         }
         infos.forEach { info ->
-            Log.d(
-                TAG,
-                "decoder candidate ${info.name} for $mime: software=${info.isSoftwareOnlyCompat()} " +
+            SyncLog.d("decoder candidate ${info.name} for $mime: software=${info.isSoftwareOnlyCompat()} " +
                     "hardware=${info.isHardwareAcceleratedCompat()} instances=${info.maxInstances(mime)}",
             )
         }
@@ -423,7 +420,6 @@ internal class AudioSyncDecoder(
     }
 
     companion object {
-        private const val TAG = "NuvioAudioSync"
         private const val MAX_QUEUED_BYTES = 8 * 1024 * 1024
         private const val INPUT_TIMEOUT_US = 5_000L
         private const val MAX_INPUT_ATTEMPTS = 40

@@ -61,6 +61,8 @@ data class PlayerSettingsUiState(
     val mapDV7ToHevc: Boolean = false,
     val tunnelingEnabled: Boolean = false,
     val audioSubtitleSyncEnabled: Boolean = true,
+    /** Let audio sync sample across the film on mobile data too (not only Wi-Fi). */
+    val audioSyncSamplingOnMobileData: Boolean = false,
     val streamAutoPlayMode: StreamAutoPlayMode = StreamAutoPlayMode.MANUAL,
     val streamAutoPlaySource: StreamAutoPlaySource = StreamAutoPlaySource.ALL_SOURCES,
     val streamAutoPlaySelectedAddons: Set<String> = emptySet(),
@@ -132,6 +134,7 @@ object PlayerSettingsRepository {
     private var mapDV7ToHevc = false
     private var tunnelingEnabled = false
     private var audioSubtitleSyncEnabled = true
+    private var audioSyncSamplingOnMobileData = false
     private var streamAutoPlayMode = StreamAutoPlayMode.MANUAL
     private var streamAutoPlaySource = StreamAutoPlaySource.ALL_SOURCES
     private var streamAutoPlaySelectedAddons: Set<String> = emptySet()
@@ -208,6 +211,7 @@ object PlayerSettingsRepository {
         mapDV7ToHevc = false
         tunnelingEnabled = false
         audioSubtitleSyncEnabled = true
+        audioSyncSamplingOnMobileData = false
         streamAutoPlayMode = StreamAutoPlayMode.MANUAL
         streamAutoPlaySource = StreamAutoPlaySource.ALL_SOURCES
         streamAutoPlaySelectedAddons = emptySet()
@@ -313,6 +317,7 @@ object PlayerSettingsRepository {
         mapDV7ToHevc = PlayerSettingsStorage.loadMapDV7ToHevc() ?: false
         tunnelingEnabled = PlayerSettingsStorage.loadTunnelingEnabled() ?: false
         audioSubtitleSyncEnabled = PlayerSettingsStorage.loadAudioSubtitleSyncEnabled() ?: true
+        audioSyncSamplingOnMobileData = PlayerSettingsStorage.loadAudioSyncSamplingOnMobileData() ?: false
         streamAutoPlayMode = PlayerSettingsStorage.loadStreamAutoPlayMode()
             ?.let { runCatching { StreamAutoPlayMode.valueOf(it) }.getOrNull() }
             ?: StreamAutoPlayMode.MANUAL
@@ -637,6 +642,14 @@ object PlayerSettingsRepository {
         audioSubtitleSyncEnabled = enabled
         publish()
         PlayerSettingsStorage.saveAudioSubtitleSyncEnabled(enabled)
+    }
+
+    fun setAudioSyncSamplingOnMobileData(enabled: Boolean) {
+        ensureLoaded()
+        if (audioSyncSamplingOnMobileData == enabled) return
+        audioSyncSamplingOnMobileData = enabled
+        publish()
+        PlayerSettingsStorage.saveAudioSyncSamplingOnMobileData(enabled)
     }
 
     fun setStreamAutoPlayMode(mode: StreamAutoPlayMode) {
@@ -1005,6 +1018,7 @@ object PlayerSettingsRepository {
             mapDV7ToHevc = mapDV7ToHevc,
             tunnelingEnabled = tunnelingEnabled,
             audioSubtitleSyncEnabled = audioSubtitleSyncEnabled,
+            audioSyncSamplingOnMobileData = audioSyncSamplingOnMobileData,
             streamAutoPlayMode = streamAutoPlayMode,
             streamAutoPlaySource = streamAutoPlaySource,
             streamAutoPlaySelectedAddons = streamAutoPlaySelectedAddons,

@@ -682,6 +682,24 @@ private fun PlaybackSettingsSection(
                     }
                     SettingsGroupDivider(isTablet = isTablet)
                     SettingsSwitchRow(
+                        title = stringResource(Res.string.settings_playback_audio_sync_mobile_data),
+                        description = stringResource(Res.string.settings_playback_audio_sync_mobile_data_description),
+                        checked = autoPlayPlayerSettings.audioSyncSamplingOnMobileData,
+                        enabled = autoPlayPlayerSettings.audioSubtitleSyncEnabled,
+                        isTablet = isTablet,
+                        onCheckedChange = PlayerSettingsRepository::setAudioSyncSamplingOnMobileData,
+                    )
+                    SubtitleSyncStatus.logActions?.let { logActions ->
+                        SettingsGroupDivider(isTablet = isTablet)
+                        SettingsNavigationRow(
+                            title = stringResource(Res.string.settings_playback_audio_sync_share_log),
+                            description = stringResource(Res.string.settings_playback_audio_sync_share_log_description),
+                            isTablet = isTablet,
+                            onClick = { logActions.share() },
+                        )
+                    }
+                    SettingsGroupDivider(isTablet = isTablet)
+                    SettingsSwitchRow(
                         title = stringResource(Res.string.settings_playback_enable_libass),
                         description = stringResource(Res.string.settings_playback_enable_libass_description),
                         checked = useLibass,
