@@ -61,7 +61,9 @@ class SubtitleCandidatePoolTest {
         val random = Random(800)
         val english = script(random, 90)
         // The video runs 5 s after the English file; the good translation keeps its timing 4.2 s early.
-        val words = hear(english, shiftSec = 5.0, random = random, upToLine = 12)
+        // Lines heard at sampled places several minutes apart, so the reference's rate is known.
+        val words = hear(english, shiftSec = 5.0, random = random, upToLine = 90)
+            .filter { it.segment < 6 || it.segment in 40..45 || it.segment >= 84 }
         val chosen = script(Random(801), 90).map { (a, b, _) -> Triple(a, b, "linie") }
         val pool = SubtitleCandidatePool(SubtitleSpeechTrack.fromCues(chosen))
         pool.addReference("english", english)

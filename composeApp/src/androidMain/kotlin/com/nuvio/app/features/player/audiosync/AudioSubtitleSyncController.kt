@@ -23,7 +23,8 @@ import com.nuvio.app.features.player.audiosync.asr.AsrLock
 import com.nuvio.app.features.player.audiosync.asr.AsrModel
 import com.nuvio.app.features.player.audiosync.asr.AsrSyncEngine
 import com.nuvio.app.features.player.audiosync.asr.ReferenceSubtitle
-import com.nuvio.app.features.player.audiosync.asr.SherpaSpeechToText
+import com.nuvio.app.features.player.audiosync.asr.SharedRecognizer
+import com.nuvio.app.features.player.audiosync.asr.SpeechToText
 import com.nuvio.app.features.player.audiosync.asr.SpeechSegmenter
 import com.nuvio.app.features.player.audiosync.asr.SubtitleBridge
 import com.nuvio.app.features.player.audiosync.asr.WordAnchorMatcher
@@ -102,11 +103,14 @@ internal class AudioSubtitleSyncController(
     private var asr: AsrSyncEngine? = null
 
     @Volatile
-    private var recognizer: SherpaSpeechToText? = null
+    private var recognizer: SpeechToText? = null
     private val recognizerLoading = AtomicBoolean(false)
 
     @Volatile
     private var recognizerFailed = false
+
+    @Volatile
+    private var recognizerReady = "ready"
 
     // Diagnostics shown on screen.
     @Volatile
@@ -180,6 +184,10 @@ internal class AudioSubtitleSyncController(
 
     @Volatile
     private var lockedAtElapsedMs = 0L
+
+    /** When the current session started listening, to show how long syncing took. */
+    @Volatile
+    private var sessionStartedAtMs = 0L
 
     @Volatile
     var enabled: Boolean = true
@@ -258,7 +266,7 @@ internal class AudioSubtitleSyncController(
         // A model downloaded from Settings mid-playback is picked up here.
         if (recognizer == null && speechModel.downloaded) ensureRecognizer()
         val recognizerText = when {
-            recognizer != null -> "ready"
+            recognizer != null -> recognizerReady
             speechModel.downloading -> "downloading model ${(speechModel.progress * 100).toInt()}%"
             speechModel.error != null -> "model download failed (${speechModel.error})"
             recognizerStatus.isNotEmpty() -> recognizerStatus
@@ -267,7 +275,10 @@ internal class AudioSubtitleSyncController(
         SubtitleSyncStatus.publishDiagnostics(
             SubtitleSyncDiagnostics(
                 phase = phase,
-                method = lockMethod,
+                method = lockMethod?.let { method ->
+                    val tookMs = lockedAtElapsedMs - sessionStartedAtMs
+                    if (lockedAtElapsedMs > 0 && sessionStartedAtMs > 0 && tookMs >= 0) "$method in ${tookMs / 1_000}s" else method
+                },
                 offsetMs = synced?.delayUsAt(playbackPositionMs * 1_000L)?.div(1_000L),
                 lookAheadSec = if (liveOnly) 0 else aheadSec,
                 liveOnly = liveOnly,
@@ -371,6 +382,7 @@ internal class AudioSubtitleSyncController(
             if (spots.isEmpty()) return
             Log.i(TAG, "sampling audio at ${spots.map { it / 1_000 }}s")
             spotStatus = "sampling ${spots.size} dialogue spots…"
+            val startedAt = SystemClock.elapsedRealtime()
             val sampler = AudioSpotSampler(source.uri, source.dataSourceFactory, MAX_SPOT_BYTES)
             val result = sampler.run(
                 spotsMs = spots,
@@ -381,7 +393,8 @@ internal class AudioSubtitleSyncController(
                         (model != null && !estimated)
                 },
             ) { sampled, bytes ->
-                spotStatus = "sampled $sampled of ${spots.size} dialogue spots (${bytes / 1_000_000} MB)"
+                val seconds = (SystemClock.elapsedRealtime() - startedAt) / 1_000
+                spotStatus = "sampled $sampled of ${spots.size} dialogue spots in ${seconds}s (${bytes / 1_000_000} MB)"
             }
             Log.i(TAG, "sampled ${result.sampled} spots, ${result.bytes / 1_000_000} MB, failure=${result.failure}")
             if (result.failure != null && result.sampled == 0) spotStatus = "not possible for this stream"
@@ -450,6 +463,7 @@ internal class AudioSubtitleSyncController(
                 createDecoder()
                 if (sessionRequest.get() != request) return@execute
                 val started = Session(key, track, dialogue)
+                sessionStartedAtMs = SystemClock.elapsedRealtime()
                 session = started
                 Log.i(TAG, "sync session started for $key with ${track.size} dialogue cues")
                 if (!enabled) return@execute
@@ -504,20 +518,17 @@ internal class AudioSubtitleSyncController(
         asr?.release()
         aligner.shutdownNow()
         fetchPool.shutdownNow()
-        val loaded = recognizer
+        // Shared with later players and closed only after a while unused, so a worker that is
+        // mid-decode finishes safely and the next episode starts with the model loaded.
+        if (recognizer != null) SharedRecognizer.release()
         recognizer = null
-        if (loaded != null) {
-            // The worker may be mid-decode; release once it has had time to finish.
-            Thread({
-                Thread.sleep(RECOGNIZER_RELEASE_DELAY_MS)
-                runCatching { loaded.close() }
-            }, "NuvioAsrRelease").apply { isDaemon = true }.start()
-        }
     }
 
     /** Subtitles the user could pick; English ones become recognition references. */
     fun setReferenceSubtitles(list: List<ReferenceCandidate>) {
         candidates = list
+        // Load the speech model while the viewer is still choosing, so it is ready for the pick.
+        if (enabled && list.isNotEmpty() && AsrModel.isReady(appContext)) ensureRecognizer()
         // Download the likeliest English references now so a later pick is instant.
         englishCandidates().take(PREFETCH_REFERENCES).forEach { fetchReference(it, onReady = null) }
         // Subtitles listed after the pick join the running search.
@@ -771,15 +782,19 @@ internal class AudioSubtitleSyncController(
                             return@execute
                         }
                     }
+                    val alreadyLoaded = SharedRecognizer.isLoaded
                     recognizerStatus = "loading model…"
-                    val loaded = SherpaSpeechToText(AsrModel.directory(appContext), RECOGNIZER_THREADS)
+                    val startedAt = SystemClock.elapsedRealtime()
+                    val loaded = SharedRecognizer.acquire(AsrModel.directory(appContext), RECOGNIZER_THREADS)
                     if (released) {
-                        loaded.close()
+                        SharedRecognizer.release()
                         return@execute
                     }
+                    val seconds = (SystemClock.elapsedRealtime() - startedAt) / 100 / 10.0
+                    recognizerReady = if (alreadyLoaded) "ready" else "ready (loaded in ${seconds}s)"
                     recognizer = loaded
                     asr?.setRecognizer(loaded)
-                    Log.i(TAG, "speech recognizer ready")
+                    Log.i(TAG, "speech recognizer $recognizerReady")
                 } catch (error: Throwable) {
                     Log.w(TAG, "speech recognizer unavailable: ${error.message}")
                     recognizerStatus = "failed to load (${error.message ?: error.javaClass.simpleName})"
@@ -1036,7 +1051,8 @@ internal class AudioSubtitleSyncController(
 
         // Sampling audio across the film.
         private const val SPOT_COUNT = 4
-        private const val SPOT_WORKERS = 2
+        /** One connection per spot, so every spot arrives in the same round. */
+        private const val SPOT_WORKERS = SPOT_COUNT
         private const val SPOT_MS = 30_000L
         private const val MAX_SPOT_BYTES = 150L * 1_000_000L
         private const val MIN_SAMPLED_FILM_MS = 20 * 60_000L
@@ -1049,7 +1065,6 @@ internal class AudioSubtitleSyncController(
         private val NEAR_PLAYHEAD_FRAMES = (5_000 / SpeechTimeline.FRAME_DURATION_MS).toInt()
         private const val OPEN_SUBTITLES_FALLBACK = "https://opensubtitles-v3.strem.io"
         private const val RECOGNIZER_THREADS = 2
-        private const val RECOGNIZER_RELEASE_DELAY_MS = 3_000L
         private const val NOTIFY_CHANGE_MS = 1_000L
         /** 10 minutes of audio analysed before any subtitle is chosen. */
         private val PRE_SESSION_FRAMES = (10 * 60 * 1_000 / SpeechTimeline.FRAME_DURATION_MS).toInt()

@@ -92,6 +92,72 @@ class AsrMatchingTest {
     }
 
     @Test
+    fun englishReferenceAtAnotherFrameRateDoesNotSkewTheLock() {
+        // Video and translated subtitle agree; the English reference was made for 25 fps.
+        val lock = lockAcrossFrameRates(videoMatchesEnglish = false)
+        assertEquals(1.0, lock.scale, 0.002, "lock $lock")
+        assertTrue(abs(lock.shiftMs) < 150.0, "lock $lock")
+        assertTrue(!lock.final, "a rate chosen from a few lines stays open: $lock")
+    }
+
+    @Test
+    fun translationAtAnotherFrameRateIsCorrected() {
+        // Video and English reference agree; the translated subtitle was made for 25 fps.
+        val lock = lockAcrossFrameRates(videoMatchesEnglish = true)
+        assertEquals(25.0 / 23.976, lock.scale, 0.002, "lock $lock")
+    }
+
+    private fun lockAcrossFrameRates(videoMatchesEnglish: Boolean): com.nuvio.app.features.player.audiosync.asr.AsrLock {
+        val rate = 25.0 / 23.976
+        val media = script(Random(7), 160)
+        fun at25(cues: List<Triple<Long, Long, String>>) =
+            cues.map { (a, b, t) -> Triple((a / rate).toLong(), (b / rate).toLong(), t) }
+        val english = if (videoMatchesEnglish) media else at25(media)
+        val translated = (if (videoMatchesEnglish) at25(media) else media).map { (a, b, _) -> Triple(a, b, "linie tradusa") }
+        val target = SubtitleSpeechTrack.fromCues(translated)
+        val bridge = assertNotNull(SubtitleBridge.align(target, SubtitleSpeechTrack.fromCues(english)))
+        val locks = java.util.Collections.synchronizedList(ArrayList<com.nuvio.app.features.player.audiosync.asr.AsrLock>())
+        val latch = java.util.concurrent.CountDownLatch(1)
+        val engine = AsrSyncEngine(speech(media), onLock = { locks += it; latch.countDown() })
+        engine.startSession(target, listOf(com.nuvio.app.features.player.audiosync.asr.ReferenceSubtitle("en", english, bridge)))
+        // Twelve lines heard near the start: far too short a span to judge a frame rate from words.
+        val random = Random(8)
+        val frameMs = SpeechTimeline.FRAME_DURATION_MS
+        media.take(12).forEachIndexed { line, (start, _, _) ->
+            engine.offerSegment((start / frameMs).toInt(), FloatArray(SileroVad.CHUNK_SAMPLES * 10) { line.toFloat() })
+        }
+        engine.setRecognizer { samples ->
+            val line = samples[0].toInt()
+            val (start, end, text) = media[line]
+            val segmentStartSec = (start / frameMs).toInt() * frameMs / 1_000.0
+            val words = text.split(' ')
+            words.mapIndexed { k, word ->
+                val t = (start + (end - start) * k / words.size) / 1_000.0 + random.nextDouble(-0.1, 0.1)
+                (t - segmentStartSec) to word
+            }
+        }
+        assertTrue(latch.await(10, java.util.concurrent.TimeUnit.SECONDS), "no lock")
+        Thread.sleep(500)
+        engine.release()
+        return locks.last()
+    }
+
+    /** Clean speech exactly where [cues] are. */
+    private fun speech(cues: List<Triple<Long, Long, String>>): SpeechTimeline {
+        val frameMs = SpeechTimeline.FRAME_DURATION_MS
+        val timeline = SpeechTimeline()
+        val frames = ((cues.maxOf { it.second } + 30_000) / frameMs).toInt()
+        val speaking = BooleanArray(frames)
+        for ((a, b, _) in cues) {
+            val from = ((a + SubtitleAudioAligner.DETECTOR_BIAS_MS) / frameMs).toInt()
+            val to = ((b + SubtitleAudioAligner.DETECTOR_BIAS_MS) / frameMs).toInt()
+            for (f in from until to.coerceAtMost(frames)) speaking[f] = true
+        }
+        for (f in 0 until frames) timeline.record(f, if (speaking[f]) 0.9f else 0.05f)
+        return timeline
+    }
+
+    @Test
     fun bridgeRejectsUnrelatedFiles() {
         val a = script(Random(4), 80)
         val b = script(Random(5), 80)

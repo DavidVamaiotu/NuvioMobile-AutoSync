@@ -244,18 +244,25 @@ internal class AsrSyncEngine(
             if (best == null || fit.score > best.second.score) best = reference to fit
         }
         val (reference, fit) = best ?: return
-        // Compose target -> reference -> media.
         val bridge = reference.bridge
-        val scale = fit.scale * (bridge?.scale ?: 1.0)
-        val coarseShiftMs = (fit.scale * (bridge?.shiftSec ?: 0.0) + fit.shiftSec) * 1_000.0
-        val fine = fineTune(targetTrack, scale, coarseShiftMs)
+        // Words over a short stretch pin where the reference is, not its frame rate relative to the
+        // video: that is only known from a long span of words (or the words chose another rate).
+        val rateKnown = fit.spanSec >= FINAL_SPAN_SEC || fit.scale != 1.0
+        val (scale, coarseShiftMs, fine) = if (rateKnown) {
+            // Compose target -> reference -> media.
+            val scale = fit.scale * (bridge?.scale ?: 1.0)
+            val coarseShiftMs = (fit.scale * (bridge?.shiftSec ?: 0.0) + fit.shiftSec) * 1_000.0
+            Triple(scale, coarseShiftMs, fineTune(targetTrack, scale, coarseShiftMs))
+        } else {
+            mostLikelyRate(targetTrack, words, fit, bridge)
+        }
         val result = AsrLock(
             scale = scale,
-            shiftMs = fine ?: coarseShiftMs,
+            shiftMs = fine?.shiftMs ?: coarseShiftMs,
             referenceKey = reference.key,
             anchorScore = fit.score,
             fineTuned = fine != null,
-            final = bridge != null || fit.spanSec >= FINAL_SPAN_SEC || fit.scale != 1.0,
+            final = rateKnown,
         )
         synchronized(lock) {
             if (locked || target !== targetTrack) return
@@ -269,16 +276,53 @@ internal class AsrSyncEngine(
         }
         log(
             "words=${words.size} reference=${reference.key} fit=$fit bridge=$bridge " +
-                "coarse=${coarseShiftMs.toLong()}ms fine=${fine?.toLong()}",
+                "coarse=${coarseShiftMs.toLong()}ms fine=${fine?.shiftMs?.toLong()} rateKnown=$rateKnown",
         )
         onLock(result)
+    }
+
+    /**
+     * While the reference's frame rate relative to the video is unknown, tries each common ratio,
+     * anchored where the words were heard, against the detected speech. The video usually matches
+     * one of the two files, so another ratio has to fit clearly better to be chosen. Returns the
+     * target mapping (scale, coarse shift) and its fine-tuned estimate, if any.
+     */
+    private fun mostLikelyRate(
+        track: SubtitleSpeechTrack,
+        words: List<HeardWord>,
+        fit: AnchorFit,
+        bridge: BridgeFit?,
+    ): Triple<Double, Double, SubtitleAudioAligner.Estimate?> {
+        val anchorMs = words[words.size / 2].timeSec * 1_000.0
+        val referenceAtAnchorMs = anchorMs - fit.shiftSec * 1_000.0
+        val bridgeScale = bridge?.scale ?: 1.0
+        var best: Triple<Double, Double, SubtitleAudioAligner.Estimate?>? = null
+        var bestScore = Double.NEGATIVE_INFINITY
+        for (rate in SubtitleAudioAligner.CANDIDATE_SCALES) {
+            // Reference -> media at this rate, passing through the anchor; then target -> media.
+            val referenceShiftMs = anchorMs - rate * referenceAtAnchorMs
+            val scale = rate * bridgeScale
+            val coarseShiftMs = rate * (bridge?.shiftSec ?: 0.0) * 1_000.0 + referenceShiftMs
+            val fine = fineTune(track, scale, coarseShiftMs)
+            val plain = rate == 1.0 || abs(scale - 1.0) < 1e-9
+            val score = when {
+                fine == null -> if (plain) -1.0 else Double.NEGATIVE_INFINITY
+                plain -> fine.peak
+                else -> fine.peak - OTHER_RATE_MARGIN
+            }
+            if (score > bestScore) {
+                bestScore = score
+                best = Triple(scale, coarseShiftMs, fine)
+            }
+        }
+        return best!!
     }
 
     /**
      * Word anchors are exact about *which* line is spoken but only approximately about when inside
      * it; the speech timeline pins the edges. Search a narrow window so it cannot jump elsewhere.
      */
-    private fun fineTune(track: SubtitleSpeechTrack, scale: Double, coarseShiftMs: Double): Double? {
+    private fun fineTune(track: SubtitleSpeechTrack, scale: Double, coarseShiftMs: Double): SubtitleAudioAligner.Estimate? {
         val segments = timeline.segments(maxFrames = FINE_TUNE_MAX_FRAMES)
         if (segments.isEmpty()) return null
         val estimate = SubtitleAudioAligner.estimate(
@@ -290,7 +334,7 @@ internal class AsrSyncEngine(
         ) ?: return null
         if (estimate.atSearchEdge || estimate.cueCount < FINE_TUNE_MIN_CUES) return null
         if (abs(estimate.shiftMs - coarseShiftMs) > FINE_TUNE_MAX_MOVE_MS) return null
-        return estimate.shiftMs
+        return estimate
     }
 
     private fun overlap(a: IntRange, b: IntRange): Int =
@@ -307,6 +351,9 @@ internal class AsrSyncEngine(
         private const val FINE_TUNE_MAX_MOVE_MS = 1_200.0
         private const val FINE_TUNE_MIN_CUES = 5
         private const val FINAL_SPAN_SEC = 180.0
+
+        /** Correlation a ratio matching neither file must win by (as for speech-detection locks). */
+        private const val OTHER_RATE_MARGIN = 0.04
         private const val UPDATE_MIN_MS = 150.0
     }
 }

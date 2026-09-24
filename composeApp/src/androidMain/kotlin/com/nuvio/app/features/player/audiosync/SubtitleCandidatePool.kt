@@ -207,7 +207,9 @@ internal class SubtitleCandidatePool(
         var pinned: Pair<Reference, AnchorFit>? = null
         for (reference in refs) {
             val fit = reference.matcher.fit(words) ?: continue
-            if (!fit.isConfident) continue
+            // Placing the reference on the timeline needs its frame rate, known only from a long
+            // span of words (or once the words chose another rate).
+            if (!fit.isConfident || (fit.scale == 1.0 && fit.spanSec < RATE_SPAN_SEC)) continue
             if (pinned == null || fit.score > pinned.second.score) pinned = reference to fit
         }
         val (reference, fit) = pinned ?: return null
@@ -281,6 +283,7 @@ internal class SubtitleCandidatePool(
         /** A file for this video covers at least this share of it (end credits have no dialogue). */
         private const val MIN_LENGTH_COVERAGE = 0.5
         private const val PINNED_WINDOW_MS = 20 * 60_000.0
+        private const val RATE_SPAN_SEC = 180.0
         private const val PINNED_MIN_PEAK = 0.35
         private const val PINNED_MIN_PROMINENCE = 0.15
 
