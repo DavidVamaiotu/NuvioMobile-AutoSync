@@ -29,6 +29,10 @@ val releaseStorePassword = localProps.getProperty("NUVIO_RELEASE_STORE_PASSWORD"
 val releaseKeyAlias = localProps.getProperty("NUVIO_RELEASE_KEY_ALIAS")?.takeIf { it.isNotBlank() }
 val releaseKeyPassword = localProps.getProperty("NUVIO_RELEASE_KEY_PASSWORD")?.takeIf { it.isNotBlank() }
 val releaseKeystore = releaseStoreFile?.let(rootProject::file)
+val hasReleaseSigning = releaseKeystore != null &&
+    releaseStorePassword != null &&
+    releaseKeyAlias != null &&
+    releaseKeyPassword != null
 fun envOrLocalProperty(key: String): String? =
     providers.environmentVariable(key).orNull?.trim()?.takeIf { it.isNotBlank() }
         ?: localProps.getProperty(key)?.trim()?.takeIf { it.isNotBlank() }
@@ -56,7 +60,7 @@ android {
 
     signingConfigs {
         create("release") {
-            if (releaseKeystore != null && releaseStorePassword != null && releaseKeyAlias != null && releaseKeyPassword != null) {
+            if (hasReleaseSigning) {
                 storeFile = releaseKeystore
                 storePassword = releaseStorePassword
                 keyAlias = releaseKeyAlias
@@ -119,6 +123,13 @@ android {
     }
 
     buildTypes {
+        getByName("debug") {
+            // CI debug builds share the release key so each one installs over the last (and over
+            // releases) without losing data. Local builds without the key keep the default debug key.
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
         getByName("release") {
             val minifyRelease = providers.gradleProperty("releaseMinifyEnabled")
                 .map(String::toBooleanStrict)
