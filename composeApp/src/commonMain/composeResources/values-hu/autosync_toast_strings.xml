@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AutoSync toast messages. Generated; keep keys in sync across locales. -->
+<resources>
+    <string name="autosync_toast_analyzing">Auto Sync • Elemzés…</string>
+    <string name="autosync_toast_unsupported_renderer">Auto Sync • Nem támogatott feliratmegjelenítő</string>
+    <string name="autosync_toast_load_failed">Auto Sync • A felirat nem tölthető be</string>
+    <string name="autosync_toast_apply_failed">Auto Sync • Egyezés található, de a szinkronizálás nem alkalmazható</string>
+    <string name="autosync_toast_analyze_failed">Auto Sync • A felirat nem elemezhető</string>
+    <string name="autosync_toast_no_embedded_subtitles">Auto Sync • Nem található beágyazott felirat</string>
+    <string name="autosync_toast_no_reference">Auto Sync • Nincs használható referenciasáv</string>
+    <string name="autosync_toast_match_excellent">Auto Sync • Kiváló egyezés (%1$d%)</string>
+    <string name="autosync_toast_match_strong">Auto Sync • Erős egyezés (%1$d%)</string>
+    <string name="autosync_toast_match_possible">Auto Sync • Lehetséges egyezés (%1$d%)</string>
+    <string name="autosync_toast_match_weak">Auto Sync • Gyenge egyezés (%1$d%)</string>
+    <string name="autosync_toast_result_within_tolerance">szinkronban (%1$d ms tűréshatáron belül)</string>
+    <string name="autosync_toast_result_localized_ignored">lokalizációs eltérés figyelmen kívül hagyva</string>
+    <string name="autosync_toast_result_replaced">felirat lecserélve</string>
+    <string name="autosync_toast_result_drift_corrected">csúszás javítva</string>
+    <string name="autosync_toast_result_in_sync">már szinkronban</string>
+    <string name="autosync_toast_result_kept">eredeti időzítés megtartva</string>
+    <string name="autosync_toast_retry_weaker">Auto Sync • Az alternatív referencia gyengébb (%1$d%) • jelenlegi szinkron megtartva</string>
+    <string name="autosync_toast_retry_none">Auto Sync • Nem található jobb referencia</string>
+    <string name="autosync_toast_retry_matched">Auto Sync • Új referencia egyezik (%1$d%)</string>
+    <string name="autosync_toast_retry_failed">Auto Sync • Az újrapróbálkozás másik referenciával sikertelen • jelenlegi szinkron megtartva</string>
+</resources>

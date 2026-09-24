@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AutoSync toast messages. Generated; keep keys in sync across locales. -->
+<resources>
+    <string name="autosync_toast_analyzing">Auto Sync • Analýza…</string>
+    <string name="autosync_toast_unsupported_renderer">Auto Sync • Nepodporovaný vykresľovač titulkov</string>
+    <string name="autosync_toast_load_failed">Auto Sync • Titulky sa nepodarilo načítať</string>
+    <string name="autosync_toast_apply_failed">Auto Sync • Zhoda nájdená, ale synchronizáciu nemožno použiť</string>
+    <string name="autosync_toast_analyze_failed">Auto Sync • Titulky sa nepodarilo analyzovať</string>
+    <string name="autosync_toast_no_embedded_subtitles">Auto Sync • Nenašli sa vložené titulky</string>
+    <string name="autosync_toast_no_reference">Auto Sync • Žiadna použiteľná referenčná stopa</string>
+    <string name="autosync_toast_match_excellent">Auto Sync • Vynikajúca zhoda (%1$d%)</string>
+    <string name="autosync_toast_match_strong">Auto Sync • Silná zhoda (%1$d%)</string>
+    <string name="autosync_toast_match_possible">Auto Sync • Možná zhoda (%1$d%)</string>
+    <string name="autosync_toast_match_weak">Auto Sync • Slabá zhoda (%1$d%)</string>
+    <string name="autosync_toast_result_within_tolerance">synchronizované (v tolerancii %1$d ms)</string>
+    <string name="autosync_toast_result_localized_ignored">rozdiely lokalizácie ignorované</string>
+    <string name="autosync_toast_result_replaced">titulky nahradené</string>
+    <string name="autosync_toast_result_drift_corrected">posun opravený</string>
+    <string name="autosync_toast_result_in_sync">už synchronizované</string>
+    <string name="autosync_toast_result_kept">pôvodné časovanie zachované</string>
+    <string name="autosync_toast_retry_weaker">Auto Sync • Alternatívna referencia slabšia (%1$d%) • aktuálna synchronizácia zachovaná</string>
+    <string name="autosync_toast_retry_none">Auto Sync • Lepšia referencia sa nenašla</string>
+    <string name="autosync_toast_retry_matched">Auto Sync • Nová referencia sa zhoduje (%1$d%)</string>
+    <string name="autosync_toast_retry_failed">Auto Sync • Opakovanie s inou referenciou zlyhalo • aktuálna synchronizácia zachovaná</string>
+</resources>

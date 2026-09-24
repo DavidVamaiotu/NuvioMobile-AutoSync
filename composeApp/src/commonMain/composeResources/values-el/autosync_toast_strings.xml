@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AutoSync toast messages. Generated; keep keys in sync across locales. -->
+<resources>
+    <string name="autosync_toast_analyzing">Auto Sync • Ανάλυση…</string>
+    <string name="autosync_toast_unsupported_renderer">Auto Sync • Μη υποστηριζόμενη απόδοση υποτίτλων</string>
+    <string name="autosync_toast_load_failed">Auto Sync • Δεν ήταν δυνατή η φόρτωση των υποτίτλων</string>
+    <string name="autosync_toast_apply_failed">Auto Sync • Βρέθηκε αντιστοίχιση, αλλά ο συγχρονισμός δεν εφαρμόστηκε</string>
+    <string name="autosync_toast_analyze_failed">Auto Sync • Δεν ήταν δυνατή η ανάλυση των υποτίτλων</string>
+    <string name="autosync_toast_no_embedded_subtitles">Auto Sync • Δεν βρέθηκαν ενσωματωμένοι υπότιτλοι</string>
+    <string name="autosync_toast_no_reference">Auto Sync • Δεν υπάρχει χρήσιμο κομμάτι αναφοράς</string>
+    <string name="autosync_toast_match_excellent">Auto Sync • Εξαιρετική αντιστοίχιση (%1$d%)</string>
+    <string name="autosync_toast_match_strong">Auto Sync • Ισχυρή αντιστοίχιση (%1$d%)</string>
+    <string name="autosync_toast_match_possible">Auto Sync • Πιθανή αντιστοίχιση (%1$d%)</string>
+    <string name="autosync_toast_match_weak">Auto Sync • Αδύναμη αντιστοίχιση (%1$d%)</string>
+    <string name="autosync_toast_result_within_tolerance">συγχρονισμένο (εντός ανοχής %1$d ms)</string>
+    <string name="autosync_toast_result_localized_ignored">η διαφορά τοπικοποίησης αγνοήθηκε</string>
+    <string name="autosync_toast_result_replaced">οι υπότιτλοι αντικαταστάθηκαν</string>
+    <string name="autosync_toast_result_drift_corrected">η απόκλιση διορθώθηκε</string>
+    <string name="autosync_toast_result_in_sync">ήδη συγχρονισμένο</string>
+    <string name="autosync_toast_result_kept">διατηρήθηκε ο αρχικός χρονισμός</string>
+    <string name="autosync_toast_retry_weaker">Auto Sync • Η εναλλακτική αναφορά είναι πιο αδύναμη (%1$d%) • διατηρήθηκε ο τρέχων συγχρονισμός</string>
+    <string name="autosync_toast_retry_none">Auto Sync • Δεν βρέθηκε καλύτερη αναφορά</string>
+    <string name="autosync_toast_retry_matched">Auto Sync • Η νέα αναφορά αντιστοιχίστηκε (%1$d%)</string>
+    <string name="autosync_toast_retry_failed">Auto Sync • Η νέα προσπάθεια με άλλη αναφορά απέτυχε • διατηρήθηκε ο τρέχων συγχρονισμός</string>
+</resources>
