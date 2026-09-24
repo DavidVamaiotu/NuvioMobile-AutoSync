@@ -239,7 +239,9 @@ internal class SubtitleCandidatePool(
                 !it.atSearchEdge && it.peak >= PINNED_MIN_PEAK && it.prominence >= PINNED_MIN_PROMINENCE &&
                     it.cueCount >= MIN_CUES
             }
-        fits(target, SubtitleAudioAligner.CANDIDATE_SCALES)?.let { estimate ->
+        // The subtitle's own rate first: over a 20 minute window a slight stretch can split the
+        // difference of a scene the release adds, which is wrong on both sides of it.
+        (fits(target, doubleArrayOf(1.0)) ?: fits(target, SubtitleAudioAligner.CANDIDATE_SCALES))?.let { estimate ->
             // The chosen subtitle lines up with the reference where the words were heard, even if
             // the two files differ elsewhere (so no whole-file bridge was found): sync it with that.
             finish("the chosen subtitle matches the recognised reference: $estimate")

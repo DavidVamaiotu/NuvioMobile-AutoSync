@@ -1,9 +1,11 @@
 package com.nuvio.app.features.player.audiosync.asr
 
+import com.nuvio.app.features.player.audiosync.AudioSyncTracker
 import com.nuvio.app.features.player.audiosync.SileroVad
 import com.nuvio.app.features.player.audiosync.SpeechTimeline
 import com.nuvio.app.features.player.audiosync.SubtitleAudioAligner
 import com.nuvio.app.features.player.audiosync.SubtitleSpeechTrack
+import com.nuvio.app.features.player.audiosync.SubtitleSyncSegment
 import java.util.PriorityQueue
 import kotlin.math.abs
 
@@ -31,6 +33,11 @@ internal data class AsrLock(
     val fineTuned: Boolean,
     /** False while the frame rate is still assumed (short span, no bridge); an update may follow. */
     val final: Boolean,
+    /**
+     * The full mapping, in media order: one segment normally, several when the release and the
+     * subtitle differ by an inserted or removed scene (a different offset from some point on).
+     */
+    val segments: List<SubtitleSyncSegment> = listOf(SubtitleSyncSegment(0L, scale, shiftMs)),
 )
 
 /**
@@ -72,7 +79,7 @@ internal class AsrSyncEngine(
     @Volatile
     private var references: List<ReferenceSubtitle> = emptyList()
 
-    /** A final lock was reported; recognition pauses until the next session. */
+    /** A final lock was reported; from then on only speech near the playhead is recognised. */
     @Volatile
     private var locked = false
 
@@ -216,10 +223,13 @@ internal class AsrSyncEngine(
         runCatching(workerSetup)
         while (true) {
             val (segment, recognizer) = synchronized(lock) {
-                while (!released && (queue.isEmpty() || stt == null || target == null || locked)) lock.wait()
+                while (!released && (queue.isEmpty() || stt == null || target == null)) lock.wait()
                 if (released) return
                 nextSegment().also { queuedSamples -= it.samples.size } to stt!!
             }
+            // Once synced, keep listening just ahead of the playhead: a scene the release adds or
+            // cuts shows up as a new offset there before it is on screen.
+            if (locked && !segment.spread && !nearPlayhead(segment)) continue
             val words = try {
                 recognizer.transcribe(segment.samples)
             } catch (error: Throwable) {
@@ -237,23 +247,35 @@ internal class AsrSyncEngine(
         }
     }
 
+    private fun nearPlayhead(segment: Segment): Boolean {
+        val distance = segment.startFrame - playheadFrame
+        return distance >= -BEHIND_GRACE_FRAMES && distance <= MAINTAIN_AHEAD_FRAMES
+    }
+
     private fun evaluate() {
         val (words, refs, targetTrack) = synchronized(lock) {
-            if (locked) return
             Triple(heard.toList(), references, target ?: return)
         }
         if (words.isEmpty()) return
         var best: Pair<ReferenceSubtitle, AnchorFit>? = null
+        var bestLocals: List<AnchorFit> = emptyList()
         for (reference in refs) {
             val fit = reference.matcher.fit(words) ?: continue
-            if (!fit.isConfident) continue
-            if (best == null || fit.score > best.second.score) best = reference to fit
+            val locals = reference.matcher.localFits(words, fit.scale)
+            // A scene the release adds splits the words into two strong clusters, so one fit over
+            // all words looks ambiguous; regions that are each confident explain it.
+            if (!fit.isConfident && !explainsSteps(locals)) continue
+            if (best == null || fit.score > best.second.score) {
+                best = reference to fit
+                bestLocals = locals
+            }
         }
         val (reference, fit) = best ?: return
         val bridge = reference.bridge
         // Words over a short stretch pin where the reference is, not its frame rate relative to the
         // video: that is only known from a long span of words (or the words chose another rate).
-        val rateKnown = fit.spanSec >= FINAL_SPAN_SEC || fit.scale != 1.0
+        val localSpanSec = if (bestLocals.size >= 3) bestLocals.last().anchorSec - bestLocals.first().anchorSec else 0.0
+        val rateKnown = fit.spanSec >= FINAL_SPAN_SEC || fit.scale != 1.0 || localSpanSec >= FINAL_SPAN_SEC
         val (scale, coarseShiftMs, fine) = if (rateKnown) {
             // Compose target -> reference -> media.
             val scale = fit.scale * (bridge?.scale ?: 1.0)
@@ -262,29 +284,110 @@ internal class AsrSyncEngine(
         } else {
             mostLikelyRate(targetTrack, words, fit, bridge)
         }
+        val shiftMs = fine?.shiftMs ?: coarseShiftMs
+        val segments = piecewise(targetTrack, words, reference, fit, scale)
+            ?: listOf(SubtitleSyncSegment(0L, scale, shiftMs))
         val result = AsrLock(
             scale = scale,
-            shiftMs = fine?.shiftMs ?: coarseShiftMs,
+            shiftMs = segments.first().shiftMs,
             referenceKey = reference.key,
             anchorScore = fit.score,
             fineTuned = fine != null,
-            final = rateKnown,
+            final = rateKnown || locked,
+            segments = segments,
         )
         synchronized(lock) {
-            if (locked || target !== targetTrack) return
+            if (target !== targetTrack) return
             val previous = provisional
-            if (!result.final && previous != null && previous.scale == result.scale &&
-                abs(previous.shiftMs - result.shiftMs) < UPDATE_MIN_MS
-            ) {
-                return
-            }
-            if (result.final) locked = true else provisional = result
+            val tolerance = if (previous?.final == true) SETTLED_UPDATE_MIN_MS else UPDATE_MIN_MS
+            if (previous != null && previous.final == result.final && sameMapping(previous, result, tolerance)) return
+            if (result.final) locked = true
+            provisional = result
         }
         log(
             "words=${words.size} reference=${reference.key} fit=$fit bridge=$bridge " +
                 "coarse=${coarseShiftMs.toLong()}ms fine=${fine?.shiftMs?.toLong()} rateKnown=$rateKnown",
         )
         onLock(result)
+    }
+
+    /** Confident regions in at least two places, with enough evidence to trust a step. */
+    private fun explainsSteps(locals: List<AnchorFit>): Boolean =
+        locals.size >= 2 && locals.sumOf { it.segments } >= 2 * MIN_PART_SEGMENTS
+
+    /** Whether two results would place subtitles the same (within [toleranceMs] everywhere). */
+    private fun sameMapping(a: AsrLock, b: AsrLock, toleranceMs: Double): Boolean {
+        if (a.segments.size != b.segments.size) return false
+        return a.segments.zip(b.segments).all { (x, y) ->
+            x.scale == y.scale && abs(x.shiftMs - y.shiftMs) < toleranceMs &&
+                abs(x.fromMediaMs - y.fromMediaMs) < CHANGE_POINT_TOLERANCE_MS
+        }
+    }
+
+    /**
+     * When the words in different parts of the film put the subtitle at clearly different offsets
+     * (the release adds or cuts a scene the subtitle was not made for), maps each part with its
+     * own offset, switching where the detected speech shows the change. Null when one offset fits
+     * everywhere the words were heard.
+     */
+    private fun piecewise(
+        track: SubtitleSpeechTrack,
+        words: List<HeardWord>,
+        reference: ReferenceSubtitle,
+        fit: AnchorFit,
+        scale: Double,
+    ): List<SubtitleSyncSegment>? {
+        val locals = reference.matcher.localFits(words, fit.scale)
+        if (locals.size < 2) return null
+        val bridgeScale = reference.bridge?.scale ?: 1.0
+        val bridgeShiftSec = reference.bridge?.shiftSec ?: 0.0
+
+        // Target -> media shift each region implies at the chosen scale, through its anchor.
+        fun targetShiftMs(local: AnchorFit): Double {
+            val referenceSec = (local.anchorSec - local.shiftSec) / local.scale
+            val targetSec = (referenceSec - bridgeShiftSec) / bridgeScale
+            return (local.anchorSec - scale * targetSec) * 1_000.0
+        }
+
+        class Part(val fits: MutableList<AnchorFit>, var shiftMs: Double)
+        val parts = ArrayList<Part>()
+        for (local in locals) {
+            val shift = targetShiftMs(local)
+            val last = parts.lastOrNull()
+            if (last != null && abs(last.shiftMs - shift) <= STEP_TOLERANCE_MS) {
+                last.fits += local
+                last.shiftMs = last.fits.sumOf { targetShiftMs(it) * it.score } / last.fits.sumOf { it.score }
+            } else {
+                parts += Part(mutableListOf(local), shift)
+            }
+        }
+        // A step needs solid evidence on both sides; stray regions are ignored.
+        parts.removeAll { part -> part.fits.sumOf { it.segments } < MIN_PART_SEGMENTS }
+        if (parts.size < 2) return null
+        val frameMs = SpeechTimeline.FRAME_DURATION_MS
+        val tuned = parts.map { part ->
+            val fromFrame = ((part.fits.first().anchorSec - PART_CONTEXT_SEC) * 1_000 / frameMs).toInt().coerceAtLeast(0)
+            val toFrame = ((part.fits.last().anchorSec + PART_CONTEXT_SEC) * 1_000 / frameMs).toInt()
+            fineTune(track, scale, part.shiftMs, fromFrame, toFrame)?.shiftMs ?: part.shiftMs
+        }
+        val segments = ArrayList<SubtitleSyncSegment>()
+        segments += SubtitleSyncSegment(0L, scale, tuned.first())
+        for (i in 1 until parts.size) {
+            if (abs(tuned[i] - segments.last().shiftMs) <= STEP_TOLERANCE_MS) continue
+            val afterMs = parts[i - 1].fits.last().anchorSec * 1_000
+            val beforeMs = parts[i].fits.first().anchorSec * 1_000
+            val split = AudioSyncTracker.changePoint(
+                timeline = timeline,
+                track = track,
+                from = (afterMs / frameMs).toInt(),
+                to = (beforeMs / frameMs).toInt(),
+                scale = scale,
+                oldShiftMs = segments.last().shiftMs,
+                newShiftMs = tuned[i],
+            ) ?: ((afterMs + beforeMs) / 2).toLong()
+            segments += SubtitleSyncSegment(split.coerceAtLeast(segments.last().fromMediaMs + 1), scale, tuned[i])
+        }
+        return segments.takeIf { it.size >= 2 }
     }
 
     /**
@@ -343,8 +446,14 @@ internal class AsrSyncEngine(
      * Word anchors are exact about *which* line is spoken but only approximately about when inside
      * it; the speech timeline pins the edges. Search a narrow window so it cannot jump elsewhere.
      */
-    private fun fineTune(track: SubtitleSpeechTrack, scale: Double, coarseShiftMs: Double): SubtitleAudioAligner.Estimate? {
-        val segments = timeline.segments(maxFrames = FINE_TUNE_MAX_FRAMES)
+    private fun fineTune(
+        track: SubtitleSpeechTrack,
+        scale: Double,
+        coarseShiftMs: Double,
+        fromFrame: Int = 0,
+        toFrame: Int = Int.MAX_VALUE,
+    ): SubtitleAudioAligner.Estimate? {
+        val segments = timeline.segments(fromFrame = fromFrame, toFrame = toFrame, maxFrames = FINE_TUNE_MAX_FRAMES)
         if (segments.isEmpty()) return null
         val estimate = SubtitleAudioAligner.estimate(
             segments = segments,
@@ -386,5 +495,21 @@ internal class AsrSyncEngine(
         /** Heard audio needed before a stretch can be judged at all (5 minutes). */
         private val STRETCH_MIN_KNOWN_FRAMES = (5 * 60 * 1_000 / SpeechTimeline.FRAME_DURATION_MS).toInt()
         private const val UPDATE_MIN_MS = 150.0
+
+        /** Once synced, only a real change moves the subtitles, not fine-tuning jitter. */
+        private const val SETTLED_UPDATE_MIN_MS = 300.0
+
+        /** Offsets within this of each other are the same part of the film. */
+        private const val STEP_TOLERANCE_MS = 600.0
+
+        /** Word segments a part of the film needs before its offset counts. */
+        private const val MIN_PART_SEGMENTS = 4
+
+        /** Audio around a part's words used to fine-tune its offset. */
+        private const val PART_CONTEXT_SEC = 150.0
+        private const val CHANGE_POINT_TOLERANCE_MS = 5_000L
+
+        /** After syncing, speech up to this far ahead of the playhead is still recognised (3 min). */
+        private const val MAINTAIN_AHEAD_FRAMES = 5_625
     }
 }

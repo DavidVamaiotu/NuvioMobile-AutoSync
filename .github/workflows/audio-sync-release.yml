@@ -1,6 +1,6 @@
 name: Audio Sync Release
 
-# Release trigger: sync the chosen subtitle through the recognised reference, retry throttled downloads
+# Release trigger: piecewise sync for releases with added or cut scenes
 
 on:
   workflow_dispatch:

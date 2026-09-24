@@ -74,6 +74,20 @@ internal class WordAnchorMatcher(cues: List<Triple<Long, Long, String>>) {
         return best
     }
 
+    /**
+     * Confident fits of the words heard within each [windowSec] of the film, at [scale]: where a
+     * release differs from the subtitle by an inserted or removed scene, the offset differs between
+     * regions, which one fit over all words cannot show. Sorted by [AnchorFit.anchorSec].
+     */
+    fun localFits(heard: List<HeardWord>, scale: Double, windowSec: Double = LOCAL_WINDOW_SEC): List<AnchorFit> {
+        val anchors = anchors(heard)
+        if (anchors.isEmpty()) return emptyList()
+        return anchors.groupBy { (it.mediaSec / windowSec).toInt() }
+            .values
+            .mapNotNull { region -> cluster(region, scale, MAX_SHIFT_SEC)?.takeIf { it.isConfident } }
+            .sortedBy { it.anchorSec }
+    }
+
     private fun anchors(heard: List<HeardWord>): List<Anchor> {
         val normalized = heard.map { it.copy(text = normalize(it.text)) }
         val out = ArrayList<Anchor>()
@@ -148,6 +162,7 @@ internal class WordAnchorMatcher(cues: List<Triple<Long, Long, String>>) {
         private const val MAX_OCCURRENCES = 6
         private const val MIN_RATE_SPAN_SEC = 180.0
         private const val MIN_RATE_SEGMENTS = 5
+        private const val LOCAL_WINDOW_SEC = 120.0
         private const val RATE_MARGIN = 1.3
         private val RATE_CANDIDATES = doubleArrayOf(
             24_000.0 / 23_976.0,

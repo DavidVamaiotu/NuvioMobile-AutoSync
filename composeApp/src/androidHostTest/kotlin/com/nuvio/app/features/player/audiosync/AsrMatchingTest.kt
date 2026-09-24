@@ -108,6 +108,50 @@ class AsrMatchingTest {
     }
 
     @Test
+    fun sceneAddedByTheReleaseBecomesAStep() {
+        // Subtitle made for a cut without 2.4 s at 5:00: it is 1.5 s early before and 3.9 s after.
+        val subtitle = script(Random(9), 250)
+        val media = subtitle.map { (a, b, t) ->
+            val shift = if (a < 300_000L) 1_500L else 3_900L
+            Triple(a + shift, b + shift, t)
+        }
+        val target = SubtitleSpeechTrack.fromCues(subtitle.map { (a, b, _) -> Triple(a, b, "linie") })
+        val bridge = assertNotNull(SubtitleBridge.align(target, SubtitleSpeechTrack.fromCues(subtitle)))
+        val locks = java.util.Collections.synchronizedList(ArrayList<com.nuvio.app.features.player.audiosync.asr.AsrLock>())
+        val engine = AsrSyncEngine(speech(media), onLock = { locks += it })
+        engine.startSession(target, listOf(com.nuvio.app.features.player.audiosync.asr.ReferenceSubtitle("en", subtitle, bridge)))
+        // Words heard in three places, as from sampled spots.
+        val heardLines = media.indices.filter { media[it].first / 1_000 in 30..150 || media[it].first / 1_000 in 500..700 || media[it].first / 1_000 in 900..1_000 }
+        val frameMs = SpeechTimeline.FRAME_DURATION_MS
+        heardLines.forEach { line ->
+            engine.offerSegment((media[line].first / frameMs).toInt(), FloatArray(SileroVad.CHUNK_SAMPLES * 10) { line.toFloat() }, spread = true)
+        }
+        val random = Random(10)
+        val recognised = java.util.concurrent.atomic.AtomicInteger()
+        engine.setRecognizer { samples ->
+            recognised.incrementAndGet()
+            val (start, end, text) = media[samples[0].toInt()]
+            val segmentStartSec = (start / frameMs).toInt() * frameMs / 1_000.0
+            val words = text.split(' ')
+            words.mapIndexed { k, word ->
+                ((start + (end - start) * k / words.size) / 1_000.0 + random.nextDouble(-0.1, 0.1) - segmentStartSec) to word
+            }
+        }
+        val deadline = System.currentTimeMillis() + 60_000
+        while (recognised.get() < heardLines.size && System.currentTimeMillis() < deadline) Thread.sleep(20)
+        Thread.sleep(1_500)
+        engine.release()
+        val lock = locks.last()
+        assertTrue(lock.final, "lock $lock")
+        assertEquals(2, lock.segments.size, "segments ${lock.segments}")
+        val (before, after) = lock.segments
+        assertTrue(abs(before.shiftMs - 1_500.0) < 150.0, "before $before")
+        assertTrue(abs(after.shiftMs - 3_900.0) < 150.0, "after $after")
+        assertTrue(abs(after.fromMediaMs - 301_500L) < 20_000L, "step at ${after.fromMediaMs}")
+        assertEquals(1.0, before.scale, 1e-9)
+    }
+
+    @Test
     fun littleHeardAudioNeverStretches() {
         // As on a phone without sampling: about 70 s heard. Even if a stretch is right, it is not
         // applied on so little evidence; the subtitle keeps its own rate until more is heard.

@@ -73,6 +73,10 @@ internal class AudioSubtitleSyncController(
         val dialogue: List<Triple<Long, Long, String>>,
     ) {
         val tracker = AudioSyncTracker(track)
+
+        /** Recognition locked and keeps the mapping current; speech detection only listens. */
+        @Volatile
+        var maintainedByRecognition = false
     }
 
     /** An addon or stream subtitle: an English reference, or an alternative to the chosen one. */
@@ -891,10 +895,12 @@ internal class AudioSubtitleSyncController(
     private fun onAsrLock(result: AsrLock) {
         val current = session ?: return
         if (!enabled || released) return
-        val adopted = SubtitleSyncModel(listOf(SubtitleSyncSegment(0L, result.scale, result.shiftMs)))
+        val adopted = SubtitleSyncModel(result.segments)
         val previous = model
+        val wasFinal = current.maintainedByRecognition
         if (previous == null) manualDelayAtLockMs = manualDelayMs()
         current.tracker.adopt(adopted)
+        if (result.final) current.maintainedByRecognition = true
         model = adopted
         // Until the frame rate is known the mapping is an estimate: sampling across the film and
         // the search among other subtitles keep running, and nothing is remembered yet.
@@ -908,29 +914,46 @@ internal class AudioSubtitleSyncController(
         val offsetMs = adopted.delayUsAt(playbackPositionMs * 1_000L) / 1_000L
         SyncLog.i("RECOGNITION LOCK $adopted via ${result.referenceKey} fine=${result.fineTuned} final=${result.final}")
         val previousOffsetMs = previous?.delayUsAt(playbackPositionMs * 1_000L)?.div(1_000L)
+        val moved = previousOffsetMs == null || kotlin.math.abs(previousOffsetMs - offsetMs) >= NOTIFY_CHANGE_MS
         when {
+            result.final && wasFinal -> if (moved) notify(AudioSyncStatus.Adjusted(offsetMs = offsetMs))
             result.final -> notify(AudioSyncStatus.Synced(offsetMs = offsetMs, rateCorrected = result.scale != 1.0))
-            previousOffsetMs == null || kotlin.math.abs(previousOffsetMs - offsetMs) >= NOTIFY_CHANGE_MS ->
-                notify(AudioSyncStatus.Estimated(offsetMs = offsetMs))
+            moved -> notify(AudioSyncStatus.Estimated(offsetMs = offsetMs))
         }
     }
 
     private fun rememberKey(subtitleKey: String): String = "${sourceKey.hashCode()}:${subtitleKey.hashCode()}"
 
+    /** Stored as "fromMs,scale,shiftMs" per segment, separated by "|". */
     private fun remember(subtitleKey: String, synced: SubtitleSyncModel) {
-        val segment = synced.segments.firstOrNull() ?: return
-        runCatching {
-            preferences.edit().putString(rememberKey(subtitleKey), "${segment.scale};${segment.shiftMs}").apply()
+        val stored = synced.segments.joinToString("|") { "${it.fromMediaMs},${it.scale},${it.shiftMs}" }
+        runCatching { preferences.edit().putString(rememberKey(subtitleKey), stored).apply() }
+    }
+
+    private fun parseRemembered(stored: String): SubtitleSyncModel? {
+        // Older entries hold a single "scale;shiftMs".
+        if (';' in stored) {
+            val parts = stored.split(';')
+            val scale = parts.getOrNull(0)?.toDoubleOrNull() ?: return null
+            val shiftMs = parts.getOrNull(1)?.toDoubleOrNull() ?: return null
+            return SubtitleSyncModel(listOf(SubtitleSyncSegment(0L, scale, shiftMs)))
         }
+        val segments = stored.split('|').map { entry ->
+            val parts = entry.split(',')
+            SubtitleSyncSegment(
+                fromMediaMs = parts.getOrNull(0)?.toLongOrNull() ?: return null,
+                scale = parts.getOrNull(1)?.toDoubleOrNull() ?: return null,
+                shiftMs = parts.getOrNull(2)?.toDoubleOrNull() ?: return null,
+            )
+        }
+        return segments.takeIf { it.isNotEmpty() }?.let(::SubtitleSyncModel)
     }
 
     /** Applies the mapping found the last time this subtitle played on this stream. */
     private fun applyRemembered(current: Session): Boolean {
         val stored = runCatching { preferences.getString(rememberKey(current.key), null) }.getOrNull() ?: return false
-        val parts = stored.split(';')
-        val scale = parts.getOrNull(0)?.toDoubleOrNull() ?: return false
-        val shiftMs = parts.getOrNull(1)?.toDoubleOrNull() ?: return false
-        val restored = SubtitleSyncModel(listOf(SubtitleSyncSegment(0L, scale, shiftMs)))
+        val restored = parseRemembered(stored) ?: return false
+        val scale = restored.segments.first().scale
         manualDelayAtLockMs = manualDelayMs()
         current.tracker.adopt(restored)
         model = restored
@@ -1049,6 +1072,8 @@ internal class AudioSubtitleSyncController(
     }
 
     private fun align(current: Session, positionMs: Long) {
+        // Recognition maintains a confirmed mapping (including steps between parts of the film).
+        if (current.maintainedByRecognition) return
         val startedAt = SystemClock.elapsedRealtime()
         val outcome = current.tracker.update(timeline, positionMs)
         if (session !== current) return

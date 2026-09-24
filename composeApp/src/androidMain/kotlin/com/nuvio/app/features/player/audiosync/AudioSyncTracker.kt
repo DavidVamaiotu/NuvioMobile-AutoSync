@@ -345,50 +345,62 @@ internal class AudioSyncTracker(
         return Outcome.Refined(updated, neighbour)
     }
 
-    /**
-     * Returns the media time from which [newShiftMs] explains the speech better than the active
-     * segment, by maximising the evidence gained from switching at each frame.
-     */
+    /** Media time from which [newShiftMs] explains the speech better than the active segment. */
     private fun findChangePoint(
         timeline: SpeechTimeline,
         from: Int,
         to: Int,
         segment: SubtitleSyncSegment,
         newShiftMs: Double,
-    ): Long? {
-        val frameMs = SpeechTimeline.FRAME_DURATION_MS
-        val probabilities = timeline.snapshot(from, to)
-        var sum = 0.0
-        var count = 0
-        for (p in probabilities) if (!p.isNaN()) {
-            sum += p
-            count++
-        }
-        if (count == 0) return null
-        val mean = sum / count
-        val biasFrames = SubtitleAudioAligner.DETECTOR_BIAS_MS / frameMs
-        val oldLag = ((segment.shiftMs / frameMs) + biasFrames).roundToLong().toInt()
-        val newLag = ((newShiftMs / frameMs) + biasFrames).roundToLong().toInt()
-        val oldTrack = track.render(from - oldLag, to - oldLag, segment.scale)
-        val newTrack = track.render(from - newLag, to - newLag, segment.scale)
-        // Best split maximises the suffix sum of (new - old) agreement.
-        var suffix = 0.0
-        var bestSuffix = 0.0
-        var bestIndex = -1
-        for (i in probabilities.indices.reversed()) {
-            val p = probabilities[i]
-            if (!p.isNaN()) suffix += (p - mean) * (newTrack[i] - oldTrack[i])
-            if (suffix > bestSuffix) {
-                bestSuffix = suffix
-                bestIndex = i
-            }
-        }
-        if (bestIndex < 0) return null
-        val splitMs = ((from + bestIndex) * frameMs).roundToLong()
-        return splitMs.coerceAtLeast(segment.fromMediaMs + MIN_SEGMENT_MS)
-    }
+    ): Long? = changePoint(timeline, track, from, to, segment.scale, segment.shiftMs, newShiftMs)
+        ?.coerceAtLeast(segment.fromMediaMs + MIN_SEGMENT_MS)
 
     companion object {
+        /**
+         * Media time within frames [from, to) where the subtitle stops following [oldShiftMs] and
+         * starts following [newShiftMs] (same [scale]): the split that maximises the speech evidence
+         * gained by switching. Null when that stretch holds no known audio.
+         */
+        fun changePoint(
+            timeline: SpeechTimeline,
+            track: SubtitleSpeechTrack,
+            from: Int,
+            to: Int,
+            scale: Double,
+            oldShiftMs: Double,
+            newShiftMs: Double,
+        ): Long? {
+            val frameMs = SpeechTimeline.FRAME_DURATION_MS
+            val probabilities = timeline.snapshot(from, to)
+            var sum = 0.0
+            var count = 0
+            for (p in probabilities) if (!p.isNaN()) {
+                sum += p
+                count++
+            }
+            if (count == 0) return null
+            val mean = sum / count
+            val biasFrames = SubtitleAudioAligner.DETECTOR_BIAS_MS / frameMs
+            val oldLag = ((oldShiftMs / frameMs) + biasFrames).roundToLong().toInt()
+            val newLag = ((newShiftMs / frameMs) + biasFrames).roundToLong().toInt()
+            val oldTrack = track.render(from - oldLag, to - oldLag, scale)
+            val newTrack = track.render(from - newLag, to - newLag, scale)
+            // Best split maximises the suffix sum of (new - old) agreement.
+            var suffix = 0.0
+            var bestSuffix = 0.0
+            var bestIndex = -1
+            for (i in probabilities.indices.reversed()) {
+                val p = probabilities[i]
+                if (!p.isNaN()) suffix += (p - mean) * (newTrack[i] - oldTrack[i])
+                if (suffix > bestSuffix) {
+                    bestSuffix = suffix
+                    bestIndex = i
+                }
+            }
+            if (bestIndex < 0) return null
+            return ((from + bestIndex) * frameMs).roundToLong()
+        }
+
         /**
          * Whether [estimate] (from [segments] of speech, [knownFrames] of them known)
          * is strong enough to confirm [track]'s mapping: enough dialogue and speech, a clear peak,
