@@ -7,6 +7,7 @@ import android.util.Log
 import android.widget.Toast
 import androidx.media3.common.C
 import androidx.media3.exoplayer.ExoPlayer
+import com.nuvio.app.features.player.PlayerEngineController
 import com.nuvio.app.features.player.PlayerSubtitleUtils
 import com.nuvio.app.features.player.SidecarSubtitleController
 import kotlinx.coroutines.CancellationException
@@ -38,6 +39,7 @@ internal class AutoSyncPlayerCoordinator(
     private val onSubtitleDelayChanged: (Int) -> Unit,
 ) {
     private var job: Job? = null
+    private var selectedBodyJob: Job? = null
     private var retryJob: Job? = null
     private var retryContext: RetryContext? = null
     private var retryOperationToken = 0L
@@ -54,6 +56,9 @@ internal class AutoSyncPlayerCoordinator(
             EmbeddedSubtitleTimelineLoader.prefetch(scope, sourceUrl, sourceHeaders)
         }
     }
+
+    fun wrap(controller: PlayerEngineController): PlayerEngineController =
+        AutoSyncPlayerEngineController(base = controller, coordinator = this)
 
     fun setCandidates(value: List<AutoSyncSubtitleCandidate>) {
         candidates = value.distinctBy { it.url }
@@ -76,7 +81,26 @@ internal class AutoSyncPlayerCoordinator(
     fun cancel() {
         job?.cancel()
         job = null
+        selectedBodyJob?.cancel()
+        selectedBodyJob = null
         invalidateRetryContext()
+    }
+
+    /**
+     * Attaches [url] through Nuvio's own [attach] without AutoSync. If Nuvio rendered it with the
+     * sidecar, records its MIME type; otherwise Nuvio reloads the media item for it, so any
+     * previous sidecar subtitle is stopped to keep the two renderers from overlapping.
+     */
+    fun attachWithoutAutoSync(url: String, attach: (String) -> Unit) {
+        cancel()
+        val generationBefore = sidecar.currentGenerationFor(url)
+        attach(url)
+        val generationAfter = sidecar.currentGenerationFor(url)
+        if (generationAfter != null && generationAfter != generationBefore) {
+            onMimeTypeSelected(PlayerSubtitleUtils.mimeTypeFromUrl(url))
+        } else {
+            sidecar.stopSidecarAddonSubtitle(clearView = true)
+        }
     }
 
     fun onManualSubtitleDelayChanged() {
@@ -357,16 +381,17 @@ internal class AutoSyncPlayerCoordinator(
             return
         }
 
+        // One download feeds both the sidecar renderer and the analysis. It completes with null
+        // on failure or cancellation so neither side can wait on it forever.
+        val selectedSubtitleBodyDeferred = CompletableDeferred<String?>()
         if (
             !sidecar.startSidecarAddonSubtitle(
                 url = url,
                 headers = subtitleHeaders,
                 useLibass = useLibass,
                 rawBodyLoader = {
-                    AutomaticSubtitleSync.downloadSubtitleBody(
-                        url = url,
-                        headers = subtitleHeaders,
-                    )
+                    selectedSubtitleBodyDeferred.await()
+                        ?: throw IllegalStateException("Subtitle body unavailable")
                 },
             )
         ) {
@@ -379,7 +404,22 @@ internal class AutoSyncPlayerCoordinator(
             return
         }
 
-        val selectedSubtitleBodyDeferred = sidecar.rawBodyDeferredFor(url)
+        selectedBodyJob = scope.launch {
+            val body = try {
+                AutomaticSubtitleSync.downloadSubtitleBody(
+                    url = url,
+                    headers = subtitleHeaders,
+                )
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (error: Exception) {
+                Log.w(TAG, "selected subtitle download failed url=$url: ${error.message}")
+                null
+            }
+            selectedSubtitleBodyDeferred.complete(body)
+        }.also { download ->
+            download.invokeOnCompletion { selectedSubtitleBodyDeferred.complete(null) }
+        }
 
         fun restoreOriginalSubtitleIfSidecarFailed() {
             if (

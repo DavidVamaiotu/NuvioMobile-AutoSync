@@ -1,7 +1,10 @@
 package com.nuvio.app.features.player
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import com.nuvio.app.features.autosync.AutoSyncActivePlayer
+import com.nuvio.app.features.autosync.AutoSyncPlayerController
 import com.nuvio.app.features.autosync.AutoSyncPreferencesRepository
 import com.nuvio.app.features.autosync.AutoSyncSubtitleCandidate
 import kotlinx.coroutines.flow.collect
@@ -21,6 +24,7 @@ private fun PlayerScreenRuntime.currentAutoSyncCandidates(): List<AutoSyncSubtit
 internal fun PlayerScreenRuntime.configureAutoSyncController(
     controller: PlayerEngineController,
 ) {
+    AutoSyncActivePlayer.attach(controller as? AutoSyncPlayerController)
     controller.setAutoSyncSubtitleCandidates(currentAutoSyncCandidates())
     controller.setAutoSyncAppliedListener { subtitleUrl, delayMs ->
         val appliedSubtitle = addonSubtitles.firstOrNull { it.url == subtitleUrl }
@@ -46,6 +50,10 @@ internal fun PlayerScreenRuntime.configureAutoSyncController(
 
 @Composable
 internal fun PlayerScreenRuntime.BindAutoSyncRuntimeEffects() {
+    val activeController = playerController
+    DisposableEffect(activeController) {
+        onDispose { AutoSyncActivePlayer.detach(activeController) }
+    }
     LaunchedEffect(playerController, externalSubtitles) {
         val controller = playerController ?: return@LaunchedEffect
         SubtitleRepository.addonSubtitles.collect { repositorySubtitles ->
@@ -59,6 +67,12 @@ internal fun PlayerScreenRuntime.BindAutoSyncRuntimeEffects() {
     }
 }
 
+/** The user picked an addon subtitle: start from its own timing and let AutoSync check it. */
+internal fun PlayerScreenRuntime.attachSelectedAddonSubtitleWithAutoSync(url: String) {
+    subtitleAutoSyncState = SubtitleAutoSyncUiState()
+    setSubtitleDelay(0)
+    playerController?.setSubtitleUriWithSelectedAutoSync(url)
+}
 
 internal fun PlayerScreenRuntime.maybeAutoSyncRestoredSubtitleAtStart(url: String): Boolean {
     val controller = playerController ?: return false

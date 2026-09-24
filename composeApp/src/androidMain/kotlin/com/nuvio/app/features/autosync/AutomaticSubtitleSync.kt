@@ -1907,10 +1907,10 @@ internal object AutomaticSubtitleSync {
                 val parseAndNormalize: suspend () -> List<SubtitleSyncCue> = {
                     withContext(Dispatchers.Default) {
                         val parseContext = currentCoroutineContext()
+                        parseContext.ensureActive()
                         val parsed = PlayerSubtitleCueParser.parse(
                             text = text,
                             sourceUrl = url,
-                            cancellationCheck = { parseContext.ensureActive() },
                         )
                         parseContext.ensureActive()
                         markSubtitleLoadPhase(url, "NORMALIZE")
