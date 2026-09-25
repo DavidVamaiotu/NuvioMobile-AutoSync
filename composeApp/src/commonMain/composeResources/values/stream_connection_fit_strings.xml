@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_stream_connection_fit_title">Match streams to connection</string>
+    <string name="settings_stream_connection_fit_description">List the best stream your connection can play smoothly first, and move streams that would buffer to the end. Speed is learned from your own playback.</string>
+    <string name="settings_stream_connection_fit_learning">Learning your speed on this network. Play two streams for about 10 seconds each to start.</string>
+    <string name="settings_stream_connection_fit_measured">About %1$d Mbps measured on this network. The best stream that fits is listed first; streams that need more go last.</string>
+</resources>

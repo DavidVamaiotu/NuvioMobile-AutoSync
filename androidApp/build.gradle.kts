@@ -29,10 +29,6 @@ val releaseStorePassword = localProps.getProperty("NUVIO_RELEASE_STORE_PASSWORD"
 val releaseKeyAlias = localProps.getProperty("NUVIO_RELEASE_KEY_ALIAS")?.takeIf { it.isNotBlank() }
 val releaseKeyPassword = localProps.getProperty("NUVIO_RELEASE_KEY_PASSWORD")?.takeIf { it.isNotBlank() }
 val releaseKeystore = releaseStoreFile?.let(rootProject::file)
-val hasReleaseSigning = releaseKeystore != null &&
-    releaseStorePassword != null &&
-    releaseKeyAlias != null &&
-    releaseKeyPassword != null
 fun envOrLocalProperty(key: String): String? =
     providers.environmentVariable(key).orNull?.trim()?.takeIf { it.isNotBlank() }
         ?: localProps.getProperty(key)?.trim()?.takeIf { it.isNotBlank() }
@@ -48,11 +44,6 @@ val releaseAppVersionName = providers.gradleProperty("nuvio.app.versionName").or
 val releaseAppVersionCode = readXcconfigValue(appVersionConfigFile, "CURRENT_PROJECT_VERSION")
     ?.toIntOrNull()
     ?: error("CURRENT_PROJECT_VERSION is missing or invalid in ${appVersionConfigFile.path}")
-// Nuvio RS: releases also ship a universal "bridge" APK under the pre-rename id, so installs from
-// before the rename update in place and then hand their settings to Nuvio RS.
-val buildsLegacyBridge = providers.gradleProperty("nuvio.reshaped.legacyBridge")
-    .map(String::toBooleanStrict)
-    .getOrElse(false)
 val requestedTaskNames = gradle.startParameter.taskNames.map { it.substringAfterLast(':') }
 val buildsReleaseApks = requestedTaskNames.any {
     it.startsWith("assemble", ignoreCase = true) && it.endsWith("Release", ignoreCase = true)
@@ -65,7 +56,7 @@ android {
 
     signingConfigs {
         create("release") {
-            if (hasReleaseSigning) {
+            if (releaseKeystore != null && releaseStorePassword != null && releaseKeyAlias != null && releaseKeyPassword != null) {
                 storeFile = releaseKeystore
                 storePassword = releaseStorePassword
                 keyAlias = releaseKeyAlias
@@ -74,13 +65,8 @@ android {
         }
     }
 
-    buildFeatures {
-        resValues = true
-    }
-
     defaultConfig {
-        applicationId = if (buildsLegacyBridge) "com.nuvio.app" else "com.nuvioreshaped.app"
-        if (buildsLegacyBridge) resValue("string", "app_name", "Nuvio (old)")
+        applicationId = "com.nuvio.app"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         versionCode = releaseAppVersionCode
@@ -125,7 +111,7 @@ android {
 
     splits {
         abi {
-            isEnable = buildsReleaseApks && !buildsLegacyBridge
+            isEnable = buildsReleaseApks
             reset()
             include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
             isUniversalApk = false
@@ -133,13 +119,6 @@ android {
     }
 
     buildTypes {
-        getByName("debug") {
-            // CI debug builds share the release key so each one installs over the last (and over
-            // releases) without losing data. Local builds without the key keep the default debug key.
-            if (hasReleaseSigning) {
-                signingConfig = signingConfigs.getByName("release")
-            }
-        }
         getByName("release") {
             val minifyRelease = providers.gradleProperty("releaseMinifyEnabled")
                 .map(String::toBooleanStrict)
@@ -205,3 +184,5 @@ dependencies {
     androidTestImplementation("androidx.compose.ui:ui-test-junit4:${libs.versions.composeMultiplatform.get()}")
     debugImplementation("androidx.compose.ui:ui-test-manifest:${libs.versions.composeMultiplatform.get()}")
 }
+
+apply(from = "reshaped.gradle") // Nuvio RS hook: fork build settings

@@ -1,0 +1,21 @@
+// Nuvio RS fork build settings. Applied from the end of build.gradle.kts, so Nuvio's own build
+// file carries a single line; the values set here replace Nuvio's defaults.
+
+// Releases also ship a universal "bridge" APK under the pre-rename id, so installs from before
+// the rename update in place and then hand their settings to Nuvio RS.
+def buildsLegacyBridge = "true".equalsIgnoreCase(providers.gradleProperty("nuvio.reshaped.legacyBridge").getOrNull())
+
+android.buildFeatures.resValues = true
+android.defaultConfig.applicationId = buildsLegacyBridge ? "com.nuvio.app" : "com.nuvioreshaped.app"
+if (buildsLegacyBridge) {
+    android.defaultConfig.resValue("string", "app_name", "Nuvio (old)")
+    // The bridge is a single universal APK.
+    android.splits.abi.enable = false
+}
+
+// CI debug builds share the release key so each one installs over the last (and over releases)
+// without losing data. Local builds without the key keep the default debug key.
+def release = android.signingConfigs.getByName("release")
+if (release.storeFile != null && release.storePassword != null && release.keyAlias != null && release.keyPassword != null) {
+    android.buildTypes.getByName("debug").signingConfig = release
+}
