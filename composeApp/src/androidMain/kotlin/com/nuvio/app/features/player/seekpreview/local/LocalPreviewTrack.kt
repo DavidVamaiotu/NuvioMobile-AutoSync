@@ -104,6 +104,11 @@ internal class LocalPreviewTrack(
     private val sinceSave = AtomicInteger()
 
     private val decoder = KeyframeThumbnailDecoder()
+    private val decodeQueue = ArrayBlockingQueue<DecodeJob>(DECODE_QUEUE)
+    private val fetchTimes = RollingAverage()
+    private val decodeTimes = RollingAverage()
+    private val resolveLock = Any()
+    @Volatile private var resolved: Uri? = null
     private val tapExecutor = ThreadPoolExecutor(
         1, 1, 30, TimeUnit.SECONDS, ArrayBlockingQueue<Runnable>(TAP_QUEUE),
         { runnable -> Thread(runnable, "NuvioPreviewTap").apply { isDaemon = true } },
@@ -139,6 +144,7 @@ internal class LocalPreviewTrack(
                 notifyChanged()
                 return@launch
             }
+            Thread({ decodeLoop() }, "NuvioPreviewDecode").apply { isDaemon = true }.start()
             repeat(WORKERS) { index ->
                 val worker = Thread({ workerLoop() }, "NuvioPreviewFill$index").apply { isDaemon = true }
                 synchronized(workers) { workers += worker }
@@ -245,8 +251,9 @@ internal class LocalPreviewTrack(
     // ---- Background fill -----------------------------------------------------------------
 
     private fun workerLoop() {
-        Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
-        val uri: Uri = source.uri ?: return
+        // Slightly below normal: THREAD_PRIORITY_BACKGROUND puts threads in the background
+        // cgroup, which on many phones caps them at a sliver of one core and made fill crawl.
+        Process.setThreadPriority(Process.THREAD_PRIORITY_LESS_FAVORABLE * 2)
         val upstream = source.dataSourceFactory ?: return
         val counting = DataSource.Factory {
             upstream.createDataSource().apply { addTransferListener(ByteCounter(downloaded)) }
@@ -259,6 +266,7 @@ internal class LocalPreviewTrack(
             Thread.sleep(250L)
         }
         if (closed || source.released) return
+        val uri = resolvedUri(counting) ?: return
         val seekMaps = SeekMapCapturingExtractorsFactory(DefaultExtractorsFactory())
         val extractor = MediaExtractorCompat(seekMaps, BoundedRangeDataSourceFactory(counting))
         try {
@@ -272,6 +280,12 @@ internal class LocalPreviewTrack(
             }
             extractor.selectTrack(videoTrack)
             val format = extractor.getTrackFormat(videoTrack)
+            val seekMap = seekMaps.seekMap
+            if (seekMap == null || !seekMap.isSeekable) {
+                // Without an index every seek would read from the start of the file.
+                setPaused("no keyframe index: buffer only")
+                return
+            }
             var buffer = ByteBuffer.allocate(1 shl 20)
             while (!closed && !source.released) {
                 val reason = pauseReason()
@@ -283,7 +297,7 @@ internal class LocalPreviewTrack(
                 }
                 setPaused(null)
                 val slot = nextSlot() ?: break
-                buffer = fillSlot(extractor, seekMaps.seekMap, format, slot, buffer)
+                buffer = fillSlot(extractor, seekMap, format, slot, buffer)
             }
             if (!closed) setPaused(if (isComplete()) null else pausedReason)
         } catch (_: InterruptedException) {
@@ -296,10 +310,34 @@ internal class LocalPreviewTrack(
         }
     }
 
-    /** Fills [slot] with the keyframe nearest its start; returns the (possibly grown) buffer. */
+    /**
+     * The stream's final URL. Debrid links often redirect to a CDN; resolving that once saves a
+     * round trip on every one of the hundreds of range requests that follow.
+     */
+    private fun resolvedUri(factory: DataSource.Factory): Uri? {
+        val original = source.uri ?: return null
+        synchronized(resolveLock) {
+            resolved?.let { return it }
+            val result = runCatching {
+                val dataSource = factory.createDataSource()
+                try {
+                    dataSource.open(DataSpec.Builder().setUri(original).setPosition(0).setLength(1).build())
+                    dataSource.read(ByteArray(1), 0, 1)
+                    dataSource.uri
+                } finally {
+                    dataSource.close()
+                }
+            }.getOrNull()?.takeIf { it.scheme == "http" || it.scheme == "https" } ?: original
+            if (result != original) Log.i(TAG, "resolved stream redirect to ${result.host}")
+            resolved = result
+            return result
+        }
+    }
+
+    /** Fetches the keyframe nearest [slot]'s start and hands it to the decode thread. */
     private fun fillSlot(
         extractor: MediaExtractorCompat,
-        seekMap: SeekMap?,
+        seekMap: SeekMap,
         format: MediaFormat,
         slot: Int,
         initialBuffer: ByteBuffer,
@@ -307,10 +345,8 @@ internal class LocalPreviewTrack(
         var buffer = initialBuffer
         val targetUs = slot * SLOT_MS * 1_000L
         // The index names the keyframes around the target without downloading anything.
-        val keyUs = seekMap?.takeIf { it.isSeekable }?.let { map ->
-            val points = map.getSeekPoints(targetUs)
-            listOf(points.first.timeUs, points.second.timeUs).minByOrNull { abs(it - targetUs) }
-        } ?: targetUs
+        val points = seekMap.getSeekPoints(targetUs)
+        val keyUs = listOf(points.first.timeUs, points.second.timeUs).minByOrNull { abs(it - targetUs) } ?: targetUs
         val knownSlot = synchronized(lock) { keyframeSlots[keyUs / 1_000L] }
         if (knownSlot != null) {
             // Long-GOP encodes: this slot's nearest keyframe is already a thumbnail.
@@ -320,32 +356,46 @@ internal class LocalPreviewTrack(
                 return buffer
             }
         }
-        var seekUs = keyUs
-        var darkFrame: Pair<ByteArray, Long>? = null
-        for (attempt in 0 until 2) {
-            if (closed) break
-            extractor.seekTo(seekUs, if (attempt == 0) MediaExtractorCompat.SEEK_TO_PREVIOUS_SYNC else MediaExtractorCompat.SEEK_TO_NEXT_SYNC)
-            val timeUs = extractor.sampleTime
-            // The next keyframe after a dark one may be too far away to stand for this slot.
-            if (timeUs < 0 || (attempt > 0 && timeUs - targetUs > SLOT_MS * 1_000L)) break
-            val size = extractor.sampleSize.toInt()
-            if (size > buffer.capacity()) buffer = ByteBuffer.allocate(size + (size shr 2))
-            buffer.clear()
-            val read = extractor.readSampleData(buffer, 0)
-            if (read <= 0 || closed) break
-            val frame = decoder.decode(format, buffer.array(), buffer.arrayOffset(), read, timeUs) ?: break
-            if (frame.dark && attempt == 0) {
-                // A fade to black says nothing about the scene; try the next keyframe once.
-                darkFrame = frame.jpeg to timeUs / 1_000L
-                seekUs = timeUs + DARK_SKIP_US
-                continue
-            }
-            store(slot, frame.jpeg, timeUs / 1_000L)
+        val fetchStart = SystemClock.elapsedRealtime()
+        extractor.seekTo(keyUs, MediaExtractorCompat.SEEK_TO_PREVIOUS_SYNC)
+        val timeUs = extractor.sampleTime
+        // Landing far from the target means the seek did not work; never show a wrong frame.
+        if (timeUs < 0 || abs(timeUs - targetUs) > MAX_KEYFRAME_DISTANCE_US) {
+            markFailed(slot)
             return buffer
         }
-        val fallback = darkFrame
-        if (fallback != null) store(slot, fallback.first, fallback.second) else markFailed(slot)
+        val size = extractor.sampleSize.toInt()
+        if (size > buffer.capacity()) buffer = ByteBuffer.allocate(size + (size shr 2))
+        buffer.clear()
+        val read = extractor.readSampleData(buffer, 0)
+        if (read <= 0 || closed) {
+            markFailed(slot)
+            return buffer
+        }
+        fetchTimes.add(SystemClock.elapsedRealtime() - fetchStart)
+        val sample = buffer.array().copyOfRange(buffer.arrayOffset(), buffer.arrayOffset() + read)
+        // Blocks when the decoder is behind, so fetching never runs far ahead of it.
+        val job = DecodeJob(slot, format, sample, timeUs)
+        while (!closed && !decodeQueue.offer(job, 500L, TimeUnit.MILLISECONDS)) Unit
+        if (closed) markFailed(slot)
         return buffer
+    }
+
+    private class DecodeJob(val slot: Int, val format: MediaFormat, val sample: ByteArray, val timeUs: Long)
+
+    private fun decodeLoop() {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_LESS_FAVORABLE)
+        try {
+            while (!closed) {
+                val job = decodeQueue.poll(500L, TimeUnit.MILLISECONDS) ?: continue
+                val started = SystemClock.elapsedRealtime()
+                val frame = runCatching { decoder.decode(job.format, job.sample, 0, job.sample.size, job.timeUs) }.getOrNull()
+                decodeTimes.add(SystemClock.elapsedRealtime() - started)
+                if (frame != null) store(job.slot, frame.jpeg, job.timeUs / 1_000L) else markFailed(job.slot)
+            }
+        } catch (_: InterruptedException) {
+            // Closing.
+        }
     }
 
     private fun nextSlot(): Int? = synchronized(lock) {
@@ -441,6 +491,9 @@ internal class LocalPreviewTrack(
         fromBuffer = fromBuffer.get(),
         fromCache = fromCache.get(),
         pausedReason = pausedReason,
+        avgFetchMs = fetchTimes.average(),
+        avgDecodeMs = decodeTimes.average(),
+        decoder = decoder.activeDecoderLabel,
     )
 
     // ---- Disk cache ----------------------------------------------------------------------
@@ -521,11 +574,12 @@ internal class LocalPreviewTrack(
     companion object {
         private const val TAG = "NuvioLocalPreviews"
         const val SLOT_MS = 10_000L
-        private const val WORKERS = 2
+        private const val WORKERS = 3
+        private const val DECODE_QUEUE = 6
+        private const val MAX_KEYFRAME_DISTANCE_US = 2 * SLOT_MS * 1_000L
         private const val PRIORITY_RADIUS = 6
         private const val START_GRACE_MS = 2_000L
         private const val BYTE_BUDGET = 400L * 1_000_000L
-        private const val DARK_SKIP_US = 1_000_000L
         private const val MAX_DECODED = 48
         private const val TAP_QUEUE = 3
         private const val UI_UPDATE_INTERVAL_MS = 250L
@@ -590,4 +644,21 @@ private class SeekMapCapturingExtractorsFactory(private val delegate: Extractors
             override fun getUnderlyingImplementation(): Extractor = inner.underlyingImplementation
         }
     }
+}
+
+/** Average of the last few durations, for the debug readout. */
+private class RollingAverage(private val size: Int = 20) {
+    private val values = LongArray(size)
+    private var count = 0
+    private var next = 0
+
+    @Synchronized
+    fun add(value: Long) {
+        values[next] = value
+        next = (next + 1) % size
+        if (count < size) count++
+    }
+
+    @Synchronized
+    fun average(): Long = if (count == 0) 0L else values.take(count).sum() / count
 }

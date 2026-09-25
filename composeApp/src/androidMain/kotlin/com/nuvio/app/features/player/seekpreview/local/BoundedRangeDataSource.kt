@@ -19,7 +19,8 @@ import androidx.media3.datasource.TransferListener
  */
 internal class BoundedRangeDataSourceFactory(
     private val upstream: DataSource.Factory,
-    private val initialChunk: Long = 256L * 1024L,
+    // Most 1080p keyframes fit, so a thumbnail usually costs one request.
+    private val initialChunk: Long = 512L * 1024L,
     private val maxChunk: Long = 4L * 1024L * 1024L,
 ) : DataSource.Factory {
     override fun createDataSource(): DataSource =

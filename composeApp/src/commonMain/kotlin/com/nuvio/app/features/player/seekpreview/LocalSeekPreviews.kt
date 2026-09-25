@@ -24,6 +24,12 @@ internal data class LocalSeekPreviewStats(
     val fromCache: Int = 0,
     /** Why background fill is not running, or null while it runs or is done. */
     val pausedReason: String? = null,
+    /** Recent average time to fetch one keyframe over the network. */
+    val avgFetchMs: Long = 0,
+    /** Recent average time to decode one keyframe into a thumbnail. */
+    val avgDecodeMs: Long = 0,
+    /** "hw" or "sw" decoder, or null before the first frame. */
+    val decoder: String? = null,
 )
 
 /** User settings for on-device seek previews. */

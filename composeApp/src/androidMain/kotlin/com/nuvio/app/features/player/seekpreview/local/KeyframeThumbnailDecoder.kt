@@ -30,6 +30,10 @@ internal class KeyframeThumbnailDecoder(
     private var codecInputCapacity = 0
     private var needsFlush = false
     private var released = false
+
+    /** Which decoder is in use, for the debug readout ("hw" or "sw"), or null before the first. */
+    @Volatile var activeDecoderLabel: String? = null
+        private set
     private val rejectedDecoders = mutableSetOf<String>()
 
     @Synchronized
@@ -71,6 +75,7 @@ internal class KeyframeThumbnailDecoder(
                     codecInputCapacity = capacity
                     needsFlush = false
                     Log.i(TAG, "using $name for $mime")
+                    activeDecoderLabel = if (isSoftware(name)) "sw" else "hw"
                     return created
                 } catch (error: Exception) {
                     // Typically every hardware instance is taken by playback; try the next one.
@@ -208,6 +213,9 @@ internal class KeyframeThumbnailDecoder(
         val (software, hardware) = infos.partition { it.isSoftwareOnlyCompat() }
         return (hardware + software).map { it.name }
     }
+
+    private fun isSoftware(name: String): Boolean =
+        MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.firstOrNull { it.name == name }?.isSoftwareOnlyCompat() ?: false
 
     private fun MediaCodecInfo.isSoftwareOnlyCompat(): Boolean =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
