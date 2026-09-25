@@ -31,6 +31,10 @@ import com.nuvio.app.core.ui.FloatingNavigationBar
 import com.nuvio.app.core.ui.FloatingNavigationItem
 import com.nuvio.app.core.ui.PlatformBackHandler
 import com.nuvio.app.core.ui.rememberNuvioNavBarScrollState
+import com.nuvio.app.features.pillnav.PillNavRepository
+import com.nuvio.app.features.pillnav.PillNavigationBar
+import com.nuvio.app.features.pillnav.pillNavContent
+import com.nuvio.app.features.pillnav.rememberPillNavState
 import com.nuvio.app.features.profiles.NuvioProfile
 import com.nuvio.app.features.profiles.ProfileSwitcherTab
 import com.nuvio.app.features.settings.NavBarStyle
@@ -79,6 +83,9 @@ internal fun MainTabsDestination(
         val navBarHazeState = rememberHazeState()
         val navBarStyleSetting by remember { ThemeSettingsRepository.navBarStyle }.collectAsStateWithLifecycle()
         val navBarGlowEnabled by ThemeSettingsRepository.navBarGlowEnabled.collectAsStateWithLifecycle()
+        val pillNavEnabled by PillNavRepository.enabled.collectAsStateWithLifecycle() // Pill nav hook
+        val usePillNav = pillNavEnabled && !useNativeBottomTabs
+        val pillNavState = rememberPillNavState()
         val floatingNavigationItems = listOf(
             FloatingNavigationItem(
                 selected = selectedTab == AppScreenTab.Home,
@@ -122,7 +129,7 @@ internal fun MainTabsDestination(
             containerColor = Color.Transparent,
             contentWindowInsets = WindowInsets(0),
             bottomBar = {
-                if (!isTabletLayout && !useNativeBottomTabs && navBarStyleSetting == NavBarStyle.CLASSIC) {
+                if (!usePillNav && !isTabletLayout && !useNativeBottomTabs && navBarStyleSetting == NavBarStyle.CLASSIC) {
                     NuvioClassicNavigationBar {
                         NavItem(
                             selected = selectedTab == AppScreenTab.Home,
@@ -159,7 +166,7 @@ internal fun MainTabsDestination(
         ) { innerPadding ->
             Box(modifier = Modifier.fillMaxSize()) {
                 CompositionLocalProvider(
-                    LocalNuvioBottomNavigationOverlayPadding provides if (useNativeBottomTabs) 49.dp else if (!isTabletLayout && navBarStyleSetting != NavBarStyle.CLASSIC) 72.dp else 0.dp,
+                    LocalNuvioBottomNavigationOverlayPadding provides if (usePillNav) 0.dp else if (useNativeBottomTabs) 49.dp else if (!isTabletLayout && navBarStyleSetting != NavBarStyle.CLASSIC) 72.dp else 0.dp,
                     LocalNuvioNavBarScrollState provides navBarScrollState,
                 ) {
                     AppTabHost(
@@ -169,13 +176,14 @@ internal fun MainTabsDestination(
                         actions = tabActions,
                         modifier = Modifier
                             .fillMaxSize()
-                            .then(if (isTabletLayout || navBarStyleSetting != NavBarStyle.CLASSIC) Modifier.hazeSource(state = navBarHazeState) else Modifier)
+                            .then(if (usePillNav || isTabletLayout || navBarStyleSetting != NavBarStyle.CLASSIC) Modifier.hazeSource(state = navBarHazeState) else Modifier)
                             .then(if (navBarStyleSetting == NavBarStyle.ADAPTIVE) Modifier.nestedScroll(navBarScrollState.nestedScrollConnection) else Modifier)
+                            .then(if (usePillNav) Modifier.pillNavContent(pillNavState, selectedTab) else Modifier)
                             .padding(innerPadding),
                     )
                 }
 
-                if (isTabletLayout && !useNativeBottomTabs) {
+                if (!usePillNav && isTabletLayout && !useNativeBottomTabs) {
                     val tabletNavBarScrollState = remember { NuvioNavBarScrollState().apply { collapse() } }
                     FloatingNavigationBar(
                         modifier = Modifier.align(Alignment.TopCenter).widthIn(max = 416.dp),
@@ -191,7 +199,7 @@ internal fun MainTabsDestination(
                     )
                 }
 
-                if (!isTabletLayout && !useNativeBottomTabs && navBarStyleSetting != NavBarStyle.CLASSIC) {
+                if (!usePillNav && !isTabletLayout && !useNativeBottomTabs && navBarStyleSetting != NavBarStyle.CLASSIC) {
                     when (navBarStyleSetting) {
                         NavBarStyle.EXPANDED -> navBarScrollState.expand()
                         NavBarStyle.COMPACT -> navBarScrollState.collapse()
@@ -203,6 +211,18 @@ internal fun MainTabsDestination(
                         hazeState = navBarHazeState,
                         items = floatingNavigationItems,
                         glowEnabled = navBarGlowEnabled,
+                    )
+                }
+
+                if (usePillNav) {
+                    PillNavigationBar(
+                        selectedTab = selectedTab,
+                        onTabSelected = onTabSelected,
+                        onProfileSelected = onProfileSelected,
+                        onSwitchProfile = onAddProfileRequested,
+                        state = pillNavState,
+                        hazeState = navBarHazeState,
+                        modifier = Modifier.align(Alignment.TopCenter),
                     )
                 }
             }

@@ -68,6 +68,9 @@ internal fun LazyListScope.nuvioReshapedSettingsContent(isTablet: Boolean) {
         SeekPreviewSettingsSection(isTablet = isTablet)
     }
     item {
+        PillNavSettingsSection(isTablet = isTablet)
+    }
+    item {
         val streamSettings by remember {
             StreamBadgeSettingsRepository.ensureLoaded()
             StreamBadgeSettingsRepository.uiState

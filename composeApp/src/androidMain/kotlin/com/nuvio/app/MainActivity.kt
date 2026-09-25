@@ -19,6 +19,7 @@ import com.nuvio.app.features.addons.AddonHttpClientProvider
 import com.nuvio.app.features.addons.AddonStorage
 import com.nuvio.app.features.autosync.AutoSyncPreferencesAndroid
 import com.nuvio.app.features.player.seekpreview.SeekrKeyPreferencesAndroid
+import com.nuvio.app.features.pillnav.PillNavPreferencesAndroid
 import com.nuvio.app.features.collection.CollectionMobileSettingsStorage
 import com.nuvio.app.features.collection.CollectionStorage
 import com.nuvio.app.features.debrid.DebridSettingsStorage
@@ -105,6 +106,7 @@ open class MainActivity : AppCompatActivity() {
         PlayerSettingsStorage.initialize(applicationContext)
         AutoSyncPreferencesAndroid.initialize(applicationContext) // AutoSync hook
         SeekrKeyPreferencesAndroid.initialize(applicationContext) // Seekr hook
+        PillNavPreferencesAndroid.initialize(applicationContext) // Pill nav hook
         PlayerTrackPreferenceStorage.initialize(applicationContext)
         P2pSettingsStorage.initialize(applicationContext)
         P2pStreamingEngine.initialize(applicationContext)
