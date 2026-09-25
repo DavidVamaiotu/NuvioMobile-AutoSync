@@ -5,6 +5,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.platform.LocalContext
+import androidx.media3.datasource.DataSource
 import androidx.media3.exoplayer.ExoPlayer
 import com.nuvio.app.features.player.PlayerEngineController
 import com.nuvio.app.features.player.SidecarSubtitleController
@@ -28,6 +29,8 @@ internal fun rememberAutoSyncCoordinator(
     preferredSubtitleLanguage: String?,
     onMimeTypeSelected: (String) -> Unit,
     onSubtitleDelayChanged: (Int) -> Unit,
+    sourceAudioUrl: String? = null,
+    dataSourceFactory: DataSource.Factory? = null,
 ): AutoSyncPlayerCoordinator {
     val context = LocalContext.current
     val latestExternalSubtitles = rememberUpdatedState(externalSubtitles)
@@ -51,6 +54,8 @@ internal fun rememberAutoSyncCoordinator(
             getPreferredLanguage = { latestPreferredLanguage.value },
             onMimeTypeSelected = onMimeTypeSelected,
             onSubtitleDelayChanged = onSubtitleDelayChanged,
+            sourceAudioUrl = sourceAudioUrl,
+            dataSourceFactory = dataSourceFactory,
         )
     }
     DisposableEffect(coordinator) {
@@ -73,6 +78,8 @@ internal class AutoSyncPlayerEngineController(
 
     override fun setAutoSyncSubtitleCandidates(candidates: List<AutoSyncSubtitleCandidate>) =
         coordinator.setCandidates(candidates)
+
+    override fun setAutoSyncContent(type: String, videoId: String) = coordinator.setContent(type, videoId)
 
     override fun setAutoSyncAppliedListener(
         listener: ((subtitleUrl: String, delayMs: Int) -> Unit)?,

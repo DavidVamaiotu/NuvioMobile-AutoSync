@@ -10,6 +10,8 @@ import androidx.media3.exoplayer.ExoPlayer
 import com.nuvio.app.features.player.PlayerEngineController
 import com.nuvio.app.features.player.PlayerSubtitleUtils
 import com.nuvio.app.features.player.SidecarSubtitleController
+import com.nuvio.app.features.player.audiosync.AudioSyncFallback
+import androidx.media3.datasource.DataSource
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.autosync_toast_analyze_failed
 import nuvio.composeapp.generated.resources.autosync_toast_analyzing
@@ -60,6 +62,8 @@ internal class AutoSyncPlayerCoordinator(
     private val getPreferredLanguage: () -> String?,
     private val onMimeTypeSelected: (String) -> Unit,
     private val onSubtitleDelayChanged: (Int) -> Unit,
+    sourceAudioUrl: String? = null,
+    dataSourceFactory: DataSource.Factory? = null,
 ) {
     /** Shows an AutoSync toast in the app's language, resolving [message] off the call site. */
     private fun showToast(message: suspend () -> String) {
@@ -73,6 +77,22 @@ internal class AutoSyncPlayerCoordinator(
     private var retryOperationToken = 0L
     private var candidates: List<AutoSyncSubtitleCandidate> = emptyList()
     private var appliedListener: ((subtitleUrl: String, delayMs: Int) -> Unit)? = null
+    /** Syncs to the audio when AutoSync keeps a subtitle's original timing. */
+    private val audioFallback = AudioSyncFallback(
+        context = context,
+        scope = scope,
+        player = player,
+        sidecar = sidecar,
+        sourceUrl = sourceUrl,
+        sourceAudioUrl = sourceAudioUrl,
+        dataSourceFactory = dataSourceFactory,
+        getSubtitleHeaders = getSubtitleHeaders,
+        onSubtitleReplaced = { url ->
+            onMimeTypeSelected(PlayerSubtitleUtils.mimeTypeFromUrl(url))
+            onSubtitleDelayChanged(0)
+            appliedListener?.invoke(url, 0)
+        },
+    )
     private val _retryState = MutableStateFlow(AutoSyncRetryUiState())
     val retryState: StateFlow<AutoSyncRetryUiState> = _retryState.asStateFlow()
 
@@ -90,7 +110,10 @@ internal class AutoSyncPlayerCoordinator(
 
     fun setCandidates(value: List<AutoSyncSubtitleCandidate>) {
         candidates = value.distinctBy { it.url }
+        audioFallback.setCandidates(candidates.map { Triple(it.url, it.language, it.name) })
     }
+
+    fun setContent(type: String, videoId: String) = audioFallback.setContent(type, videoId)
 
     fun setAppliedListener(
         listener: ((subtitleUrl: String, delayMs: Int) -> Unit)?,
@@ -107,6 +130,7 @@ internal class AutoSyncPlayerCoordinator(
     }
 
     fun cancel() {
+        audioFallback.stop()
         job?.cancel()
         job = null
         selectedBodyJob?.cancel()
@@ -145,6 +169,7 @@ internal class AutoSyncPlayerCoordinator(
 
     fun dispose() {
         cancel()
+        audioFallback.release()
         appliedListener = null
     }
 
@@ -429,6 +454,7 @@ internal class AutoSyncPlayerCoordinator(
         }
 
         onMimeTypeSelected(PlayerSubtitleUtils.mimeTypeFromUrl(url))
+        audioFallback.arm()
         player.trackSelectionParameters = player.trackSelectionParameters
             .buildUpon()
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
@@ -460,6 +486,16 @@ internal class AutoSyncPlayerCoordinator(
 
             if (resolved == null) {
                 restoreOriginalSubtitleIfSidecarFailed()
+                // Original timing kept: sync it to the audio instead, when AutoSync found nothing
+                // to align to or only a weak match (not when the subtitle itself failed to load).
+                if (
+                    analysisOutcome != AutoSyncAnalysisOutcome.SUBTITLE_UNAVAILABLE &&
+                    sidecar.activeSidecarSubtitleKey == url
+                ) {
+                    audioFallback.takeOver(url)
+                } else {
+                    audioFallback.disarm()
+                }
                 if (AutoSyncDebugLog.ENABLED) {
                     AutoSyncDebugLog.finishAndCopy(
                         context = context,
@@ -522,6 +558,7 @@ internal class AutoSyncPlayerCoordinator(
                 )
             }
 
+            audioFallback.disarm()
             if (!applied) {
                 restoreOriginalSubtitleIfSidecarFailed()
                 if (AutoSyncDebugLog.ENABLED) {

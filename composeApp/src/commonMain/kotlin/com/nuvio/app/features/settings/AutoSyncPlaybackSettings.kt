@@ -5,9 +5,17 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nuvio.app.features.autosync.AutoSyncPreferencesRepository
+import com.nuvio.app.features.player.AudioSyncSettings
 import com.nuvio.app.features.player.SubtitleLanguageOption
+import com.nuvio.app.features.player.SubtitleSyncStatus
 import com.nuvio.app.isIos
 import nuvio.composeapp.generated.resources.Res
+import nuvio.composeapp.generated.resources.settings_playback_audio_sync_fallback
+import nuvio.composeapp.generated.resources.settings_playback_audio_sync_fallback_description
+import nuvio.composeapp.generated.resources.settings_playback_audio_sync_mobile_data
+import nuvio.composeapp.generated.resources.settings_playback_audio_sync_mobile_data_description
+import nuvio.composeapp.generated.resources.settings_playback_audio_sync_share_log
+import nuvio.composeapp.generated.resources.settings_playback_audio_sync_share_log_description
 import nuvio.composeapp.generated.resources.settings_playback_auto_sync_debug_logs
 import nuvio.composeapp.generated.resources.settings_playback_auto_sync_debug_logs_description
 import nuvio.composeapp.generated.resources.settings_playback_auto_sync_mode_aggressive
@@ -18,6 +26,11 @@ import nuvio.composeapp.generated.resources.settings_playback_auto_sync_toleranc
 import nuvio.composeapp.generated.resources.settings_playback_auto_sync_tolerance_description
 import nuvio.composeapp.generated.resources.settings_playback_auto_sync_tolerance_off
 import nuvio.composeapp.generated.resources.settings_playback_auto_sync_tolerance_value
+import nuvio.composeapp.generated.resources.settings_playback_speech_model
+import nuvio.composeapp.generated.resources.settings_playback_speech_model_downloading
+import nuvio.composeapp.generated.resources.settings_playback_speech_model_failed
+import nuvio.composeapp.generated.resources.settings_playback_speech_model_missing
+import nuvio.composeapp.generated.resources.settings_playback_speech_model_ready
 import nuvio.composeapp.generated.resources.settings_playback_subtitle_auto_sync
 import nuvio.composeapp.generated.resources.settings_playback_subtitle_auto_sync_description
 import org.jetbrains.compose.resources.stringResource
@@ -115,4 +128,66 @@ internal fun AutoSyncPlaybackSettingsRows(
         isTablet = isTablet,
         onCheckedChange = AutoSyncPreferencesRepository::setDebugLogsEnabled,
     )
+    AudioSyncFallbackSettingsRows(isTablet = isTablet, enabled = enabled && preferredSubtitleAutoSyncOnStart)
+}
+
+/** The audio sync fallback: it runs only after AutoSync, so it follows AutoSync's switch. */
+@Composable
+private fun AudioSyncFallbackSettingsRows(isTablet: Boolean, enabled: Boolean) {
+    val fallbackEnabled by AudioSyncSettings.fallbackEnabled.collectAsStateWithLifecycle()
+    val samplingOnMobileData by AudioSyncSettings.samplingOnMobileData.collectAsStateWithLifecycle()
+    val speechModel by SubtitleSyncStatus.speechModel.collectAsStateWithLifecycle()
+
+    SettingsGroupDivider(isTablet = isTablet)
+    SettingsSwitchRow(
+        title = stringResource(Res.string.settings_playback_audio_sync_fallback),
+        description = stringResource(Res.string.settings_playback_audio_sync_fallback_description),
+        checked = fallbackEnabled,
+        enabled = enabled,
+        isTablet = isTablet,
+        onCheckedChange = AudioSyncSettings::setFallbackEnabled,
+    )
+    val active = enabled && fallbackEnabled
+    if (speechModel.supported) {
+        SettingsGroupDivider(isTablet = isTablet)
+        SettingsNavigationRow(
+            title = stringResource(Res.string.settings_playback_speech_model, speechModel.sizeMb),
+            description = when {
+                speechModel.downloading -> stringResource(
+                    Res.string.settings_playback_speech_model_downloading,
+                    (speechModel.progress * 100).toInt(),
+                )
+                speechModel.downloaded -> stringResource(Res.string.settings_playback_speech_model_ready)
+                speechModel.error != null -> stringResource(
+                    Res.string.settings_playback_speech_model_failed,
+                    speechModel.error.orEmpty(),
+                )
+                else -> stringResource(Res.string.settings_playback_speech_model_missing)
+            },
+            enabled = active && !speechModel.downloading,
+            isTablet = isTablet,
+            onClick = {
+                val actions = SubtitleSyncStatus.modelActions
+                if (speechModel.downloaded) actions?.delete() else actions?.download()
+            },
+        )
+    }
+    SettingsGroupDivider(isTablet = isTablet)
+    SettingsSwitchRow(
+        title = stringResource(Res.string.settings_playback_audio_sync_mobile_data),
+        description = stringResource(Res.string.settings_playback_audio_sync_mobile_data_description),
+        checked = samplingOnMobileData,
+        enabled = active,
+        isTablet = isTablet,
+        onCheckedChange = AudioSyncSettings::setSamplingOnMobileData,
+    )
+    SubtitleSyncStatus.logActions?.let { logActions ->
+        SettingsGroupDivider(isTablet = isTablet)
+        SettingsNavigationRow(
+            title = stringResource(Res.string.settings_playback_audio_sync_share_log),
+            description = stringResource(Res.string.settings_playback_audio_sync_share_log_description),
+            isTablet = isTablet,
+            onClick = { logActions.share() },
+        )
+    }
 }

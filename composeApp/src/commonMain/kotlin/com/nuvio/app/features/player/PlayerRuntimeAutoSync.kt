@@ -56,6 +56,10 @@ internal fun PlayerScreenRuntime.BindAutoSyncRuntimeEffects() {
         activeController?.let { configureAutoSyncController(it) }
         onDispose { AutoSyncActivePlayer.detach(activeController) }
     }
+    LaunchedEffect(playerController, activeAddonSubtitleType, activeVideoId) {
+        val videoId = activeVideoId ?: return@LaunchedEffect
+        (playerController as? AutoSyncPlayerController)?.setAutoSyncContent(activeAddonSubtitleType, videoId)
+    }
     LaunchedEffect(playerController, externalSubtitles) {
         val controller = playerController ?: return@LaunchedEffect
         SubtitleRepository.addonSubtitles.collect { repositorySubtitles ->

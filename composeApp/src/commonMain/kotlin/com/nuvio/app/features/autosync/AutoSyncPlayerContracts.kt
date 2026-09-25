@@ -41,6 +41,8 @@ internal interface AutoSyncPlayerController {
     val autoSyncRetryState: StateFlow<AutoSyncRetryUiState>
     fun retryWithAnotherReference()
     fun setAutoSyncSubtitleCandidates(candidates: List<AutoSyncSubtitleCandidate>)
+    /** The title being played (e.g. "movie", "tt0103064"), so references can be looked up for it. */
+    fun setAutoSyncContent(type: String, videoId: String) {}
     fun setSubtitleUriWithAutoSync(url: String)
     fun setSubtitleUriWithSelectedAutoSync(url: String)
     fun setAutoSyncAppliedListener(

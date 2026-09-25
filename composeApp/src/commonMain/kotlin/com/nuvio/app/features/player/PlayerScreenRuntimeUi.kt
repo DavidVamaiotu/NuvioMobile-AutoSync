@@ -224,6 +224,8 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi() {
             )
         }
 
+        SubtitleSyncStatusPanel(horizontalSafePadding) // AutoSync hook: audio sync fallback status
+
         RenderPlayerControls(displayedPositionMs = displayedPositionMs, isEpisode = isEpisode)
         RenderPlaybackOverlays(
             runtime = runtime,
