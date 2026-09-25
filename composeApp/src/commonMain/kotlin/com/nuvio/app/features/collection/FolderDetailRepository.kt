@@ -345,7 +345,7 @@ object FolderDetailRepository {
             }.onSuccess { page ->
                 val posterPattern = com.nuvio.app.core.poster.CustomPosterUrlRepository.let { repo ->
                     repo.ensureLoaded()
-                    repo.pattern.value
+                    repo.patternForScreen(com.nuvio.app.core.poster.CustomPosterScreen.COLLECTIONS)
                 }
                 updateTab(index) { tab ->
                     val mergedItems = if (reset) {

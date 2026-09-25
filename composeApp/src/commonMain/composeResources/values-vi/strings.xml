@@ -790,6 +790,14 @@
     <string name="settings_custom_poster_none">Chưa thiết lập mẫu</string>
     <string name="settings_custom_poster_save">Lưu</string>
     <string name="settings_custom_poster_clear">Xóa</string>
+    <!-- Custom Poster URL - Screen Toggles -->
+    <string name="settings_custom_poster_apply_to">Áp dụng poster tùy chỉnh cho</string>
+    <string name="settings_custom_poster_screen_home">Trang chủ</string>
+    <string name="settings_custom_poster_screen_continue_watching">Tiếp tục xem</string>
+    <string name="settings_custom_poster_screen_collections">Bộ sưu tập</string>
+    <string name="settings_custom_poster_screen_library">Thư viện</string>
+    <string name="settings_custom_poster_screen_search">Tìm kiếm</string>
+    <string name="settings_custom_poster_screen_details">Màn hình chi tiết</string>
     <string name="settings_show_secret">Hiện giá trị</string>
     <string name="settings_continue_watching_resume_prompt_description">Hiển thị hộp thoại để tiếp tục từ chỗ đã dừng khi mở lại ứng dụng sau khi thoát khỏi trình phát.</string>
     <string name="settings_continue_watching_resume_prompt_title">Lời nhắc Tiếp tục xem</string>
@@ -1278,8 +1286,9 @@
     <string name="settings_tracking_trakt_progress_description">Xem tiếp với tiến trình phát lại từ Trakt.</string>
     <string name="settings_tracking_trakt_progress_required">Khả dụng khi chọn Trakt làm nguồn tiến trình xem.</string>
     <string name="settings_tracking_simkl_progress_description">Xem tiếp với tiến trình phát lại từ Simkl</string>
-    <string name="settings_tracking_tmdb_recommendations_description">Dùng đề xuất của TMDB trên trang chi tiết.</string>
-    <string name="settings_tracking_trakt_recommendations_description">Dùng các tiêu đề liên quan được cá nhân hóa từ Trakt.</string>
+    <string name="settings_tracking_tmdb_recommendations_description">Sử dụng đề xuất của TMDB trên trang chi tiết.</string>
+    <string name="settings_tracking_trakt_recommendations_description">Sử dụng các nội dung liên quan được cá nhân hóa từ Trakt.</string>
+    <string name="settings_tracking_simkl_recommendations_description">Sử dụng các nội dung tương tự và đề xuất từ cộng đồng của Simkl.</string>
     <string name="settings_tracking_anime_id_title">Tùy chọn anime ID</string>
     <string name="settings_tracking_anime_id_subtitle">Chọn ID bên ngoài nào sẽ được dùng làm định danh chính cho các mục anime.</string>
     <string name="settings_tracking_anime_id_dialog_title">Tùy chọn anime ID</string>
@@ -1342,6 +1351,7 @@
     <string name="trakt_more_like_this_source_dialog_subtitle">Chọn nguồn hiển thị nội dung gợi ý trên trang chi tiết</string>
     <string name="trakt_more_like_this_source_trakt">Trakt</string>
     <string name="trakt_more_like_this_source_tmdb">TMDB</string>
+    <string name="trakt_more_like_this_source_simkl">Simkl</string>
     <string name="trakt_continue_watching_window">Cửa sổ Tiếp tục xem</string>
     <string name="trakt_continue_watching_subtitle">Lịch sử Trakt được dùng cho mục Tiếp tục xem</string>
     <string name="trakt_cw_window_title">Cửa sổ Tiếp tục xem</string>
@@ -1489,6 +1499,7 @@
     <string name="details_more_like_this">Nội dung tương tự</string>
     <string name="detail_more_like_this_powered_by_tmdb">Cung cấp bởi TMDB</string>
     <string name="detail_more_like_this_powered_by_trakt">Cung cấp bởi Trakt</string>
+    <string name="detail_more_like_this_powered_by_simkl">Cung cấp bởi Simkl</string>
     <string name="details_seasons">Các mùa</string>
     <string name="details_series_missing_numbers">Tiện ích này đã trả về video cho loạt phim, nhưng không có video nào bao gồm số mùa hoặc số tập.</string>
     <string name="details_series_no_metadata">Tiện ích này không cung cấp siêu dữ liệu tập phim cho loạt phim này.</string>
@@ -1596,8 +1607,8 @@
     <string name="profile_select_avatar">Chọn ảnh đại diện cho hồ sơ</string>
     <string name="profile_set_pin_lock">Đặt mã PIN</string>
     <string name="profile_unnamed">Hồ sơ chưa đặt tên</string>
-    <string name="profile_use_primary_addons">Dùng tiện ích chính</string>
-    <string name="profile_use_primary_addons_description">Dùng cấu hình tiện ích của hồ sơ chính thay vì quản lý riêng</string>
+    <string name="profile_use_primary_addons">Sử dụng tiện ích chính</string>
+    <string name="profile_use_primary_addons_description">Dùng chung thiết lập tiện ích của hồ sơ chính thay vì quản lý một danh sách riêng.</string>
     <string name="profile_who_is_watching">Ai đang xem?</string>
     <string name="profile_already_active">Bạn đang trong hồ sơ &quot;%1$s&quot;</string>
     <string name="provider_downloaded">Đã tải xuống</string>
@@ -1620,7 +1631,7 @@
     <string name="streams_episode_fallback_title">Tập</string>
     <string name="streams_episode_title_with_name">M%1$dT%2$d - %3$s</string>
     <string name="streams_fetching">Đang truy xuất…</string>
-    <string name="streams_finding_source">Đang tìm nguồn…</string>
+    <string name="streams_finding_source">Đang tìm nguồn phát…</string>
     <string name="streams_loading_subtitles">Đang tải phụ đề từ tiện ích…</string>
     <string name="streams_loading_skip_segments">Đang tải các đoạn bỏ qua…</string>
     <string name="streams_finding_streams">Đang tìm luồng…</string>
@@ -1871,6 +1882,7 @@
     <string name="library_sort_added_asc">Đã thêm đầu tiên</string>
     <string name="library_sort_added_desc">Đã thêm gần đây</string>
     <string name="library_sort_title_asc">Tên A–Z</string>
+    <string name="library_error_sort_failed">Không thể tải thứ tự sắp xếp. Đang hiển thị theo thứ tự của nhà cung cấp.</string>
     <string name="library_sort_title_desc">Tên Z–A</string>
     <string name="library_sort_provider_order">Thứ tự nguồn theo dõi</string>
     <string name="library_source_cloud">Đám mây</string>

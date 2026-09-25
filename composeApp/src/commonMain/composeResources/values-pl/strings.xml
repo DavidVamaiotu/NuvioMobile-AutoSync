@@ -583,6 +583,14 @@
     <string name="settings_custom_poster_none">Brak skonfigurowanego wzorca</string>
     <string name="settings_custom_poster_save">Zapisz</string>
     <string name="settings_custom_poster_clear">Wyczyść</string>
+    <!-- Custom Poster URL - Screen Toggles -->
+    <string name="settings_custom_poster_apply_to">Stosuj niestandardowe plakaty w</string>
+    <string name="settings_custom_poster_screen_home">Strona główna</string>
+    <string name="settings_custom_poster_screen_continue_watching">Kontynuuj oglądanie</string>
+    <string name="settings_custom_poster_screen_collections">Kolekcje</string>
+    <string name="settings_custom_poster_screen_library">Biblioteka</string>
+    <string name="settings_custom_poster_screen_search">Wyszukiwanie</string>
+    <string name="settings_custom_poster_screen_details">Strona szczegółów</string>
     <string name="settings_show_secret">Pokaż wartość</string>
     <string name="settings_continue_watching_resume_prompt_description">Pokaż okno kontynuowania od miejsca, w którym skończyłeś, po otwarciu aplikacji po wyjściu z odtwarzacza.</string>
     <string name="settings_continue_watching_resume_prompt_title">Monit o wznowienie przy uruchomieniu</string>
@@ -1555,6 +1563,7 @@
     <string name="compose_settings_root_streams_description">Wyświetlanie wyników źródeł i reguły badge URL.</string>
     <string name="detail_more_like_this_powered_by_tmdb">Napędzane przez TMDB</string>
     <string name="detail_more_like_this_powered_by_trakt">Napędzane przez Trakt</string>
+    <string name="detail_more_like_this_powered_by_simkl">Napędzane przez Simkl</string>
     <string name="details_actions_menu_label">Więcej akcji</string>
     <string name="details_comments_trakt_load_failed_with_code">Nie udało się załadować komentarzy Trakt (%1$d)</string>
     <string name="details_runtime_hours_minutes">%1$dh %2$dm</string>
@@ -1862,6 +1871,7 @@
     <string name="trakt_more_like_this_source_subtitle">Wybierz skąd pochodzą rekomendacje na stronach szczegółów</string>
     <string name="trakt_more_like_this_source_title">Źródło Podobnych</string>
     <string name="trakt_more_like_this_source_tmdb">TMDB</string>
+    <string name="trakt_more_like_this_source_simkl">Simkl</string>
     <string name="trakt_more_like_this_source_trakt">Trakt</string>
     <string name="trakt_public_list">Publiczna lista Trakt</string>
     <string name="trakt_public_list_enter_valid_id_or_url">Wprowadź prawidłowy ID lub URL listy Trakt</string>
@@ -2153,6 +2163,7 @@
     <string name="settings_tracking_simkl_progress_description">Wznawiaj z postępem odtwarzania z Simkl.</string>
     <string name="settings_tracking_tmdb_recommendations_description">Używaj rekomendacji TMDB na stronach szczegółów.</string>
     <string name="settings_tracking_trakt_recommendations_description">Używaj spersonalizowanych powiązanych tytułów z Trakt.</string>
+    <string name="settings_tracking_simkl_recommendations_description">Używaj podobnych tytułów i rekomendacji społeczności z Simkl.</string>
     <string name="settings_tracking_anime_id_title">Preferencja ID anime</string>
     <string name="settings_tracking_anime_id_subtitle">Wybierz, który zewnętrzny ID jest głównym identyfikatorem wpisów anime.</string>
     <string name="settings_tracking_anime_id_dialog_title">Preferencja ID anime</string>

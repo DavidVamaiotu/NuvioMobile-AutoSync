@@ -17,6 +17,7 @@ import com.nuvio.app.features.tmdb.TmdbSettingsRepository
 import com.nuvio.app.features.trakt.TraktAuthRepository
 import com.nuvio.app.features.trakt.TraktConnectionMode
 import com.nuvio.app.features.trakt.TraktRelatedRepository
+import com.nuvio.app.features.trakt.MoreLikeThisSourcePreference
 import com.nuvio.app.features.tracking.TrackingSettingsRepository
 import com.nuvio.app.features.trakt.shouldUseTraktMoreLikeThis
 import com.nuvio.app.features.watchprogress.CurrentDateProvider
@@ -419,6 +420,28 @@ object MetaDetailsRepository {
 
         val trackingSettings = TrackingSettingsRepository.uiState.value
         val isTraktAuthenticated = TraktAuthRepository.uiState.value.mode == TraktConnectionMode.CONNECTED
+
+        // Simkl source
+        if (shouldUseSimklMoreLikeThis(trackingSettings.moreLikeThisSource) &&
+            supportsMoreLikeThis(meta, fallbackItemType)
+        ) {
+            val items = runCatching {
+                com.nuvio.app.features.simkl.SimklRelatedRepository.getRelated(
+                    meta = meta,
+                    fallbackItemId = fallbackItemId,
+                    fallbackItemType = fallbackItemType,
+                )
+            }.onFailure { error ->
+                log.w { "Failed to load Simkl related titles for ${meta.id}: ${error.message}" }
+            }.getOrDefault(emptyList())
+
+            return meta.copy(
+                moreLikeThis = items,
+                moreLikeThisSource = MoreLikeThisSource.SIMKL.takeIf { items.isNotEmpty() },
+            )
+        }
+
+        // Trakt source
         val shouldUseTrakt = shouldUseTraktMoreLikeThis(
             isAuthenticated = isTraktAuthenticated,
             source = trackingSettings.moreLikeThisSource,
@@ -505,6 +528,12 @@ object MetaDetailsRepository {
     private fun supportsMoreLikeThis(meta: MetaDetails, fallbackItemType: String): Boolean =
         normalizeMoreLikeThisType(meta.type) != null || normalizeMoreLikeThisType(fallbackItemType) != null
 
+    private fun shouldUseSimklMoreLikeThis(source: MoreLikeThisSourcePreference): Boolean {
+        if (source != MoreLikeThisSourcePreference.SIMKL) return false
+        com.nuvio.app.features.simkl.SimklAuthRepository.ensureLoaded()
+        return com.nuvio.app.features.simkl.SimklAuthRepository.isAuthenticated.value
+    }
+
     private fun normalizeMoreLikeThisType(value: String?): String? =
         when (value?.trim()?.lowercase()) {
             "movie", "film" -> "movie"
@@ -515,7 +544,7 @@ object MetaDetailsRepository {
     private fun MetaDetails.withUnreleasedFilter(): MetaDetails {
         val posterPattern = com.nuvio.app.core.poster.CustomPosterUrlRepository.let {
             it.ensureLoaded()
-            it.pattern.value
+            it.patternForScreen(com.nuvio.app.core.poster.CustomPosterScreen.DETAILS)
         }
         val base = withCustomPosterUrls(posterPattern)
         if (!HomeCatalogSettingsRepository.snapshot().hideUnreleasedContent) return base

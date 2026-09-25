@@ -453,7 +453,7 @@ object SearchRepository {
         ).withUnreleasedFilter()
         val posterPattern = com.nuvio.app.core.poster.CustomPosterUrlRepository.let {
             it.ensureLoaded()
-            it.pattern.value
+            it.patternForScreen(com.nuvio.app.core.poster.CustomPosterScreen.SEARCH)
         }
         val items = page.items.withCustomPosterUrls(posterPattern)
         require(items.isNotEmpty()) {
@@ -532,7 +532,7 @@ object SearchRepository {
                     }.let { items ->
                         val pattern = com.nuvio.app.core.poster.CustomPosterUrlRepository.let { repo ->
                             repo.ensureLoaded()
-                            repo.pattern.value
+                            repo.patternForScreen(com.nuvio.app.core.poster.CustomPosterScreen.SEARCH)
                         }
                         items.withCustomPosterUrls(pattern)
                     }

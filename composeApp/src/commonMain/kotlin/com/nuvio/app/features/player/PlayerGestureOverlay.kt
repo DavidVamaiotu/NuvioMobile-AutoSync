@@ -8,6 +8,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -19,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeContent
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -46,6 +49,7 @@ import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.compose_player_brightness
 import nuvio.composeapp.generated.resources.compose_player_volume
 import org.jetbrains.compose.resources.stringResource
+import kotlin.math.roundToInt
 
 @Composable
 internal fun PlayerGestureOverlay(
@@ -104,26 +108,47 @@ private fun PlayerGestureFeedback(
                     val level = feedback.level?.coerceIn(0f, 1f) ?: 0f
                     val trackHeight = minOf(maxHeight / 4, 104.dp)
                     val animatedLevel by animateFloatAsState(level, tween(80), label = "playerGestureLevel")
-                    Box(
+                    val percent = (level * 100f).roundToInt()
+                    Column(
                         modifier = Modifier
                             .align(if (isBrightness) Alignment.CenterStart else Alignment.CenterEnd)
                             .padding(horizontal = horizontalSafePadding + 8.dp)
-                            .semantics {
-                                contentDescription = description
-                                progressBarRangeInfo = ProgressBarRangeInfo(level, 0f..1f)
-                            }
-                            .width(6.dp)
-                            .height(trackHeight)
-                            .clip(RoundedCornerShape(3.dp))
-                            .background(Color.White.copy(alpha = 0.3f)),
+                            .width(6.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        Box(
-                            Modifier
-                                .align(Alignment.BottomCenter)
-                                .fillMaxWidth()
-                                .fillMaxHeight(animatedLevel)
-                                .background(MaterialTheme.themePalette.accentBrush()),
+                        // Centered on the bar; unbounded width lets the digits overflow the 6dp
+                        // column evenly on both sides so the bar itself never moves.
+                        Text(
+                            text = percent.toString(),
+                            color = Color.White,
+                            style = MaterialTheme.nuvioTypeScale.bodySm.copy(
+                                fontWeight = FontWeight.SemiBold,
+                                shadow = Shadow(Color.Black.copy(alpha = 0.8f), blurRadius = 8f),
+                            ),
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.wrapContentWidth(unbounded = true),
                         )
+                        Spacer(Modifier.height(6.dp))
+                        Box(
+                            modifier = Modifier
+                                .semantics {
+                                    contentDescription = description
+                                    progressBarRangeInfo = ProgressBarRangeInfo(level, 0f..1f)
+                                }
+                                .width(6.dp)
+                                .height(trackHeight)
+                                .clip(RoundedCornerShape(3.dp))
+                                .background(Color.White.copy(alpha = 0.3f)),
+                        ) {
+                            Box(
+                                Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .fillMaxWidth()
+                                    .fillMaxHeight(animatedLevel)
+                                    .background(MaterialTheme.themePalette.accentBrush()),
+                            )
+                        }
                     }
                 }
                 GestureFeedbackIcon.Speed -> {

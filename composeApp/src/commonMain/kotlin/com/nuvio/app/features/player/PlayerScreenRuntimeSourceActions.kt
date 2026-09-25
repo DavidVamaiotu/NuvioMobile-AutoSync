@@ -380,8 +380,18 @@ internal fun PlayerScreenRuntime.switchToDownloadedEpisode(downloadItem: Downloa
     controlsVisible = true
 }
 
-internal fun PlayerScreenRuntime.playNextEpisode() {
+internal fun PlayerScreenRuntime.playNextEpisode(automatic: Boolean = false) {
     if (nextEpisodeAutoPlaySearching || nextEpisodeAutoPlayCountdown != null) return
+    val playbackKey = activePlaybackKey
+    val nextVideoId = nextEpisodeInfo?.takeIf { it.hasAired }?.videoId ?: return
+    fun isCurrentRequest(): Boolean = playbackKey == activePlaybackKey &&
+        nextEpisodeInfo?.videoId == nextVideoId &&
+        (!automatic || (
+            playerSettingsUiState.streamAutoPlayNextEpisodeEnabled &&
+                !nextEpisodeCardDismissed && isAtNextEpisodeThreshold()
+            ))
+    if (!isCurrentRequest()) return
+    nextEpisodeAutoPlayAutomatic = automatic
 
     scope.launchPlayerNextEpisodeAutoPlay(
         previousJob = nextEpisodeAutoPlayJob,
@@ -392,20 +402,34 @@ internal fun PlayerScreenRuntime.playNextEpisode() {
         contentType = contentType,
         settings = playerSettingsUiState,
         currentStreamBingeGroup = currentStreamBingeGroup,
-        onDownloadedEpisodeSelected = { item, episode -> switchToDownloadedEpisode(item, episode) },
-        onEpisodeStreamSelected = { stream, episode -> switchToEpisodeStream(stream, episode) },
-        onManualSelectionRequired = { nextVideo ->
-            nextEpisodeCardDismissed = true
-            episodeStreamsPanelState = EpisodeStreamsPanelState(
-                showStreams = true,
-                selectedEpisode = nextVideo,
-            )
-            showEpisodesPanel = true
+        onDownloadedEpisodeSelected = { item, episode ->
+            if (isCurrentRequest()) switchToDownloadedEpisode(item, episode)
         },
-        onSearchingChanged = { nextEpisodeAutoPlaySearching = it },
-        onSourceNameChanged = { nextEpisodeAutoPlaySourceName = it },
-        onCountdownChanged = { nextEpisodeAutoPlayCountdown = it },
-        onNextEpisodeCardVisibleChanged = { showNextEpisodeCard = it },
+        onEpisodeStreamSelected = { stream, episode ->
+            if (isCurrentRequest()) switchToEpisodeStream(stream, episode)
+        },
+        onManualSelectionRequired = { nextVideo ->
+            if (isCurrentRequest()) {
+                nextEpisodeCardDismissed = true
+                episodeStreamsPanelState = EpisodeStreamsPanelState(
+                    showStreams = true,
+                    selectedEpisode = nextVideo,
+                )
+                showEpisodesPanel = true
+            }
+        },
+        onSearchingChanged = {
+            if (playbackKey == activePlaybackKey) nextEpisodeAutoPlaySearching = it
+        },
+        onSourceNameChanged = {
+            if (playbackKey == activePlaybackKey) nextEpisodeAutoPlaySourceName = it
+        },
+        onCountdownChanged = {
+            if (playbackKey == activePlaybackKey) nextEpisodeAutoPlayCountdown = it
+        },
+        onNextEpisodeCardVisibleChanged = {
+            if (playbackKey == activePlaybackKey) showNextEpisodeCard = it
+        },
     )?.let { job ->
         nextEpisodeAutoPlayJob = job
     }
@@ -442,10 +466,7 @@ private fun PlayerScreenRuntime.resetEpisodePanelAndNextEpisodeState() {
     showSourcesPanel = false
     showEpisodesPanel = false
     episodeStreamsPanelState = EpisodeStreamsPanelState()
-    nextEpisodeAutoPlayJob?.cancel()
-    nextEpisodeAutoPlaySearching = false
-    nextEpisodeAutoPlaySourceName = null
-    nextEpisodeAutoPlayCountdown = null
+    cancelNextEpisodeAutoPlay()
     PlayerStreamsRepository.clearEpisodeStreams()
 }
 

@@ -52,6 +52,8 @@ internal fun PlayerScreenRuntime.configureAutoSyncController(
 internal fun PlayerScreenRuntime.BindAutoSyncRuntimeEffects() {
     val activeController = playerController
     DisposableEffect(activeController) {
+        // Runs once playerController is set, which Nuvio only does for the live playback key.
+        activeController?.let { configureAutoSyncController(it) }
         onDispose { AutoSyncActivePlayer.detach(activeController) }
     }
     LaunchedEffect(playerController, externalSubtitles) {

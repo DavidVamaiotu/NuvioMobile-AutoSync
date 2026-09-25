@@ -132,6 +132,13 @@ import nuvio.composeapp.generated.resources.settings_custom_poster_placeholder
 import nuvio.composeapp.generated.resources.settings_custom_poster_active
 import nuvio.composeapp.generated.resources.settings_custom_poster_save
 import nuvio.composeapp.generated.resources.settings_custom_poster_clear
+import nuvio.composeapp.generated.resources.settings_custom_poster_apply_to
+import nuvio.composeapp.generated.resources.settings_custom_poster_screen_home
+import nuvio.composeapp.generated.resources.settings_custom_poster_screen_continue_watching
+import nuvio.composeapp.generated.resources.settings_custom_poster_screen_collections
+import nuvio.composeapp.generated.resources.settings_custom_poster_screen_library
+import nuvio.composeapp.generated.resources.settings_custom_poster_screen_search
+import nuvio.composeapp.generated.resources.settings_custom_poster_screen_details
 import org.jetbrains.compose.resources.stringResource
 
 internal fun LazyListScope.posterCustomizationSettingsContent(
@@ -229,6 +236,31 @@ internal fun LazyListScope.posterCustomizationSettingsContent(
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary,
                         )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = stringResource(Res.string.settings_custom_poster_apply_to),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        val enabledScreens by CustomPosterUrlRepository.enabledScreens.collectAsState()
+                        val screenEntries = listOf(
+                            com.nuvio.app.core.poster.CustomPosterScreen.HOME to stringResource(Res.string.settings_custom_poster_screen_home),
+                            com.nuvio.app.core.poster.CustomPosterScreen.CONTINUE_WATCHING to stringResource(Res.string.settings_custom_poster_screen_continue_watching),
+                            com.nuvio.app.core.poster.CustomPosterScreen.COLLECTIONS to stringResource(Res.string.settings_custom_poster_screen_collections),
+                            com.nuvio.app.core.poster.CustomPosterScreen.LIBRARY to stringResource(Res.string.settings_custom_poster_screen_library),
+                            com.nuvio.app.core.poster.CustomPosterScreen.SEARCH to stringResource(Res.string.settings_custom_poster_screen_search),
+                            com.nuvio.app.core.poster.CustomPosterScreen.DETAILS to stringResource(Res.string.settings_custom_poster_screen_details),
+                        )
+                        screenEntries.forEach { (screen, label) ->
+                            PosterToggleRow(
+                                title = label,
+                                checked = screen in enabledScreens,
+                                onCheckedChange = { enabled ->
+                                    CustomPosterUrlRepository.setScreenEnabled(screen, enabled)
+                                },
+                            )
+                        }
                     }
                 }
             }
