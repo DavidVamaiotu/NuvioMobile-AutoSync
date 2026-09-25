@@ -27,6 +27,7 @@ internal fun rememberAutoSyncCoordinator(
     externalSubtitles: List<StreamSubtitle>,
     useLibass: Boolean,
     preferredSubtitleLanguage: String?,
+    secondaryPreferredSubtitleLanguage: String?,
     onMimeTypeSelected: (String) -> Unit,
     onSubtitleDelayChanged: (Int) -> Unit,
     sourceAudioUrl: String? = null,
@@ -36,6 +37,7 @@ internal fun rememberAutoSyncCoordinator(
     val latestExternalSubtitles = rememberUpdatedState(externalSubtitles)
     val latestUseLibass = rememberUpdatedState(useLibass)
     val latestPreferredLanguage = rememberUpdatedState(preferredSubtitleLanguage)
+    val latestSecondaryLanguage = rememberUpdatedState(secondaryPreferredSubtitleLanguage)
     val coordinator = remember(playerSourceKey, player, sidecar, scope) {
         AutoSyncPlayerCoordinator(
             context = context,
@@ -52,6 +54,7 @@ internal fun rememberAutoSyncCoordinator(
             },
             getUseLibass = { latestUseLibass.value },
             getPreferredLanguage = { latestPreferredLanguage.value },
+            getSecondaryLanguage = { latestSecondaryLanguage.value },
             onMimeTypeSelected = onMimeTypeSelected,
             onSubtitleDelayChanged = onSubtitleDelayChanged,
             sourceAudioUrl = sourceAudioUrl,

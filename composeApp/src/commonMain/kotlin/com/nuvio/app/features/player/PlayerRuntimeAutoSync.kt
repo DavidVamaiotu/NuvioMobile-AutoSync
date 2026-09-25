@@ -28,11 +28,17 @@ internal fun PlayerScreenRuntime.configureAutoSyncController(
     controller.setAutoSyncSubtitleCandidates(currentAutoSyncCandidates())
     controller.setAutoSyncAppliedListener { subtitleUrl, delayMs ->
         val appliedSubtitle = addonSubtitles.firstOrNull { it.url == subtitleUrl }
+        val previousSubtitle = addonSubtitles.firstOrNull { it.selectionKey == selectedAddonSubtitleId }
         selectedAddonSubtitleId = appliedSubtitle?.selectionKey ?: subtitleUrl
         selectedSubtitleIndex = -1
         useCustomSubtitles = true
         preferredSubtitleSelectionApplied = true
-        if (appliedSubtitle != null) {
+        // A secondary-language fallback is for this playback only: the next episode should still
+        // start from the first language, so the saved subtitle preference is left as it was.
+        val switchedLanguage = previousSubtitle != null && appliedSubtitle != null &&
+            previousSubtitle.language.isNotBlank() && appliedSubtitle.language.isNotBlank() &&
+            !SubtitleLanguageMatching.matchesLanguageCode(appliedSubtitle.language, previousSubtitle.language)
+        if (appliedSubtitle != null && !switchedLanguage) {
             persistAddonSubtitlePreference(appliedSubtitle)
         }
 

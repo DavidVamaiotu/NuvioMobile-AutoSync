@@ -60,6 +60,7 @@ internal class AutoSyncPlayerCoordinator(
     private val getSubtitleHeaders: (String) -> Map<String, String>,
     private val getUseLibass: () -> Boolean,
     private val getPreferredLanguage: () -> String?,
+    private val getSecondaryLanguage: () -> String?,
     private val onMimeTypeSelected: (String) -> Unit,
     private val onSubtitleDelayChanged: (Int) -> Unit,
     sourceAudioUrl: String? = null,
@@ -210,7 +211,7 @@ internal class AutoSyncPlayerCoordinator(
                     selectedSubtitleUrl = snapshot.subtitleUrl,
                     selectedSubtitleHeaders = snapshot.subtitleHeaders,
                     selectedSubtitleBodyDeferred = CompletableDeferred(snapshot.originalBody),
-                    preferredLanguage = getPreferredLanguage(),
+                    preferredLanguage = snapshot.preferredLanguage,
                     alternativeSubtitles = emptyList(),
                     alternativeSubtitlesProvider = null,
                     excludedReferenceKeys = rejectedKeys,
@@ -463,13 +464,14 @@ internal class AutoSyncPlayerCoordinator(
         job = scope.launch {
             var analysisOutcome: AutoSyncAnalysisOutcome? = null
             var rejectedAssessment: AutoSyncMatchAssessment? = null
-            val resolved = AutomaticSubtitleSync.findTimelineRetime(
+            var searchLanguage = getPreferredLanguage()
+            var resolved = AutomaticSubtitleSync.findTimelineRetime(
                 sourceKey = sourceUrl,
                 sourceHeaders = sourceHeaders,
                 selectedSubtitleUrl = url,
                 selectedSubtitleHeaders = subtitleHeaders,
                 selectedSubtitleBodyDeferred = selectedSubtitleBodyDeferred,
-                preferredLanguage = getPreferredLanguage(),
+                preferredLanguage = searchLanguage,
                 alternativeSubtitles = candidateScope.alternativeCandidates(candidates),
                 alternativeSubtitlesProvider = if (candidateScope.usesAlternativeProvider) {
                     { candidates }
@@ -482,6 +484,56 @@ internal class AutoSyncPlayerCoordinator(
             )
             AutoSyncDebugLog.info {
                 "candidateScope=${candidateScope.name}"
+            }
+
+            // No match in the first language: search the secondary subtitle language before the
+            // audio fallback. Only when a subtitle could still match (not without a reference),
+            // and never over a subtitle the user picked themselves.
+            val secondarySeed =
+                if (
+                    resolved == null &&
+                    candidateScope == AutoSyncCandidateScope.STARTUP_SEARCH &&
+                    (
+                        analysisOutcome == null ||
+                            analysisOutcome == AutoSyncAnalysisOutcome.SUBTITLE_UNAVAILABLE
+                        )
+                ) {
+                    secondaryLanguageSearchSeed(
+                        candidates = candidates,
+                        selectedUrl = url,
+                        searchedLanguage =
+                            candidates.firstOrNull { it.url == url }
+                                ?.language
+                                ?.takeIf { it.isNotBlank() }
+                                ?: searchLanguage,
+                        secondaryLanguage = getSecondaryLanguage(),
+                    )
+                } else {
+                    null
+                }
+            if (secondarySeed != null) {
+                searchLanguage = secondarySeed.language
+                resolved = AutomaticSubtitleSync.findTimelineRetime(
+                    sourceKey = sourceUrl,
+                    sourceHeaders = sourceHeaders,
+                    selectedSubtitleUrl = secondarySeed.url,
+                    selectedSubtitleHeaders = getSubtitleHeaders(secondarySeed.url),
+                    preferredLanguage = searchLanguage,
+                    alternativeSubtitles = candidates,
+                    alternativeSubtitlesProvider = { candidates },
+                    onMatchAssessment = { assessment ->
+                        val previous = rejectedAssessment
+                        if (previous == null || assessment.confidencePercent > previous.confidencePercent) {
+                            rejectedAssessment = assessment
+                        }
+                    },
+                    continueDebugSession = true,
+                )
+                val matched = resolved != null
+                val secondaryLanguage = searchLanguage
+                AutoSyncDebugLog.info {
+                    "secondaryLanguage=$secondaryLanguage matched=$matched"
+                }
             }
 
             if (resolved == null) {
@@ -590,6 +642,7 @@ internal class AutoSyncPlayerCoordinator(
                         appliedReference = resolved.reference,
                         rejectedReferenceKeys = emptySet(),
                         expectedGeneration = referenceGeneration,
+                        preferredLanguage = searchLanguage,
                     )
                 } else {
                     null
@@ -653,6 +706,7 @@ internal class AutoSyncPlayerCoordinator(
         val appliedReference: AutoSyncReferenceIdentity,
         val rejectedReferenceKeys: Set<String>,
         val expectedGeneration: Long,
+        val preferredLanguage: String?,
     )
 }
 
