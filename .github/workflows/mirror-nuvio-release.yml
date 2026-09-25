@@ -390,8 +390,7 @@ jobs:
             -Pnuvio.app.versionName="$AUTOSYNC_TAG" \
             --stacktrace
 
-          # NuvioRS-<tag>-<alias>.apk: the aliases avoid the ABI names and "universal"/"all" that
-          # updaters from before the rename match, so those pick the bridge APK below instead.
+          # NuvioRS-<tag>-<alias>.apk. The legacy bridge APK (pre-rename app id) is no longer built.
           mkdir -p dist
           for pair in arm64-v8a:arm64 armeabi-v7a:arm32 x86_64:x64 x86:x32; do
             abi="${pair%%:*}"
@@ -404,30 +403,13 @@ jobs:
             mv "$apk" "dist/NuvioRS-${AUTOSYNC_TAG}-${alias}.apk"
           done
 
-      - name: Build signed legacy bridge APK
-        if: steps.version.outputs.already_exists == 'false'
-        env:
-          AUTOSYNC_TAG: ${{ steps.version.outputs.autosync_tag }}
-        run: |
-          # Same app under the pre-rename id: old installs update to it in place, then it installs
-          # Nuvio RS and hands over its settings.
-          rm -rf androidApp/build/outputs/apk/full/release
-          # A fresh daemon: two R8 runs in one daemon can exhaust the runner's memory.
-          ./gradlew --stop
-          ./gradlew :androidApp:assembleFullRelease \
-            -Pnuvio.app.versionName="$AUTOSYNC_TAG" \
-            -Pnuvio.reshaped.legacyBridge=true \
-            --stacktrace
-          apk="$(find androidApp/build/outputs/apk/full/release -maxdepth 1 -name '*.apk' -print -quit)"
-          mv "$apk" "dist/NuvioAutoSync-${AUTOSYNC_TAG}-bridge-universal.apk"
-
       - name: Verify APKs exist
         if: steps.version.outputs.already_exists == 'false'
         run: |
           ls -l dist
           APK_COUNT="$(find dist -maxdepth 1 -type f -name '*.apk' | wc -l)"
-          if [[ "$APK_COUNT" -ne 5 ]]; then
-            echo "Expected 5 APKs (4 Nuvio RS + bridge), found $APK_COUNT"
+          if [[ "$APK_COUNT" -ne 4 ]]; then
+            echo "Expected 4 Nuvio RS APKs, found $APK_COUNT"
             exit 1
           fi
 
