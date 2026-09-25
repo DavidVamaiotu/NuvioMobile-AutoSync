@@ -1,2 +1,4 @@
-- **AutoSync toasts follow the app language.** All AutoSync messages (analyzing, match found, sync applied or kept, reference retries, errors) now use the language picked in Nuvio's settings, with translations for all 23 languages the app ships. English wording is unchanged.
-- **AutoSync settings are remembered again.** The Auto Sync toggle, tolerance, mode and debug-log settings reset on every restart and update since the Nuvio 0.5.0 sync; they are saved properly again. Set them once more after updating and they will stick.
+- **Nuvio AutoSync is now Nuvio RS.** New name, new logo, and its own app ID (`com.nuvioreshaped.app`), so it installs next to the official Nuvio instead of replacing it.
+- **Moving over is automatic.** Updating the old app installs a last "Nuvio (old)" version that offers to install Nuvio RS. On first launch Nuvio RS brings over your settings, addons, profiles, library and watch progress, then offers to uninstall the old app. MDBList and Simkl need to be connected again, and offline downloads stay in the old app.
+- **Which APK to download:** `NuvioRS-…-arm64.apk` for most phones, `arm32` for older ones, `x64`/`x32` for emulators. The `…-bridge-universal.apk` is only for updating the old app.
+- **MDBList sign-in works.** Fork builds were missing an MDBList client ID, so sign-in reported missing credentials.
