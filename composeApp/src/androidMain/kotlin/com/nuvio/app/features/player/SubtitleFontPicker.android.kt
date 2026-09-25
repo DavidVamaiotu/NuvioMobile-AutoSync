@@ -4,6 +4,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -11,7 +12,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.settings_playback_subtitle_font_invalid
 import org.jetbrains.compose.resources.stringResource
@@ -21,7 +24,8 @@ actual fun rememberSubtitleFontPicker(): SubtitleFontPickerState? {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val invalidMessage = stringResource(Res.string.settings_playback_subtitle_font_invalid)
-    remember(context) { SubtitleFontStore.current(context) }
+    // First read touches disk, so keep it off the main thread.
+    LaunchedEffect(context) { withContext(Dispatchers.IO) { SubtitleFontStore.current(context) } }
     val font by SubtitleFontStore.font.collectAsState()
     var isImporting by remember { mutableStateOf(false) }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
