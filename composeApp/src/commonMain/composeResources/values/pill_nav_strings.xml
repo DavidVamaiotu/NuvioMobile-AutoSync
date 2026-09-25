@@ -3,5 +3,4 @@
     <string name="settings_pill_nav_section">Navigation</string>
     <string name="settings_pill_nav_title">Pill menu</string>
     <string name="settings_pill_nav_description">A floating text menu at the top of the screen with a sliding highlight. Replaces the navigation bar.</string>
-    <string name="pill_nav_switch_profile">Switch profile</string>
 </resources>
