@@ -108,6 +108,10 @@ internal class AudioSyncFallback(
         player.addListener(trackListener)
         controller.onAudioTrackSelected(player.currentTracks.selectedAudioFormat())
         AudioSyncTaps.attach(controller)
+        // Turned off in Settings mid-playback: the subtitle goes back to AutoSync's (original) timing.
+        scope.launch {
+            AudioSyncSettings.fallbackEnabled.collect { enabled -> if (!enabled && target.get() != null) stop() }
+        }
     }
 
     /** Subtitles offered for this title: same-language alternatives and English references. */
@@ -179,7 +183,15 @@ internal class AudioSyncFallback(
         takeOverJob = null
         ticker?.cancel()
         ticker = null
-        target.set(null)
+        target.getAndSet(null)?.let { previous ->
+            // Leave the subtitle on its original timing if it is still the one shown.
+            sidecar.commitPreparedSidecarSubtitle(
+                expectedCurrentUrl = previous.url,
+                newUrl = previous.url,
+                cues = previous.cues,
+                expectedGeneration = previous.generation,
+            )
+        }
         appliedModel = null
         controller.listensBeforeSession = false
         controller.stopSession()
