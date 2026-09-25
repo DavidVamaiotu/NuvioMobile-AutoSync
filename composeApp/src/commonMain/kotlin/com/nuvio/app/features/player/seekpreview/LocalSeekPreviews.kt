@@ -37,6 +37,12 @@ internal data class LocalSeekPreviewStats(
     val decoder: String? = null,
     /** Which stream background fill reads, e.g. "1.4 GB" or "playing". */
     val fillSource: String? = null,
+    /** Keyframes being fetched at once. */
+    val workers: Int = 0,
+    /** Playback stalls that made fill slow down. */
+    val stalls: Int = 0,
+    /** Playback is buffering right now; fill runs one worker meanwhile. */
+    val buffering: Boolean = false,
 )
 
 /** User settings for on-device seek previews. */

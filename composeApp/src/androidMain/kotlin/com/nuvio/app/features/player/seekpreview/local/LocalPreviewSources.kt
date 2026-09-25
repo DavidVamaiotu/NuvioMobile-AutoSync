@@ -27,6 +27,10 @@ internal class LocalPreviewSource(
     /** Uptime at which playback first became ready, or 0 before that. */
     @Volatile var readyAtMs = 0L
     @Volatile var buffering = false
+    /** Uptime of the last user seek; buffering right after one is expected, not a stall. */
+    @Volatile var lastSeekAtMs = 0L
+    /** Counts buffering episodes, so fill reacts once per stall rather than every poll. */
+    @Volatile var bufferingEpisode = 0
     @Volatile var released = false
     @Volatile var track: LocalPreviewTrack? = null
     var listener: Player.Listener? = null
@@ -67,11 +71,21 @@ internal object LocalPreviewSources {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) = update(playbackState)
 
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int,
+            ) {
+                if (reason == Player.DISCONTINUITY_REASON_SEEK) source.lastSeekAtMs = SystemClock.uptimeMillis()
+            }
+
             fun update(playbackState: Int) {
                 if (playbackState == Player.STATE_READY && source.readyAtMs == 0L) {
                     source.readyAtMs = SystemClock.uptimeMillis()
                 }
-                source.buffering = playbackState == Player.STATE_BUFFERING
+                val buffering = playbackState == Player.STATE_BUFFERING
+                if (buffering && !source.buffering) source.bufferingEpisode++
+                source.buffering = buffering
             }
         }
         listener.update(player.playbackState)

@@ -116,6 +116,9 @@ internal class LocalPreviewTrack(
     @Volatile private var allowedWorkers = START_WORKERS
     private var fetchesSinceAdjust = 0
     private var baselineFetchMs = 0L
+    private var handledBufferingEpisode = 0
+    /** Stalls fill backed off for, for the debug readout. */
+    @Volatile private var stalls = 0
     @Volatile private var fillSource: FillSource? = null
     private var fillChosen = false
     /** Fill-stream keyframe time (µs) → slot holding it; its timeline may differ from playback's. */
@@ -303,8 +306,10 @@ internal class LocalPreviewTrack(
                     Thread.sleep(500L)
                     continue
                 }
-                if (index >= allowedWorkers) {
-                    Thread.sleep(500L)
+                // While playback buffers, one worker keeps going so fill never stops outright.
+                val limit = if (source.buffering) 1 else allowedWorkers
+                if (index >= limit) {
+                    Thread.sleep(200L)
                     continue
                 }
                 setPaused(null)
@@ -571,24 +576,34 @@ internal class LocalPreviewTrack(
             if (++fetchesSinceAdjust < ADJUST_EVERY) return
             fetchesSinceAdjust = 0
             val average = fetchTimes.average()
-            if (baselineFetchMs == 0L || average < baselineFetchMs) baselineFetchMs = average
+            // The baseline follows the lowest recent average but may drift up slowly, so one
+            // lucky early burst does not make every later fetch look congested.
+            baselineFetchMs = when {
+                baselineFetchMs == 0L || average < baselineFetchMs -> average
+                else -> minOf(average, baselineFetchMs + baselineFetchMs / 8)
+            }
             if (average <= baselineFetchMs * 3 / 2 && allowedWorkers < MAX_WORKERS) allowedWorkers++
             else if (average > baselineFetchMs * 2 && allowedWorkers > MIN_WORKERS) allowedWorkers--
-        }
-    }
-
-    private fun backOff() {
-        synchronized(concurrencyLock) {
-            allowedWorkers = maxOf(MIN_WORKERS, allowedWorkers / 2)
-            fetchesSinceAdjust = 0
         }
     }
 
     private fun pauseReason(): String? {
         if (downloaded.get() >= BYTE_BUDGET) return REASON_BUDGET
         if (source.buffering) {
-            backOff()
-            return "playback buffering"
+            // Buffering right after a seek is playback refilling, not fill starving it: keep the
+            // worker count. A stall during normal playback halves it, once per stall.
+            val episode = source.bufferingEpisode
+            val afterSeek = SystemClock.uptimeMillis() - source.lastSeekAtMs < SEEK_GRACE_MS
+            synchronized(concurrencyLock) {
+                if (episode != handledBufferingEpisode) {
+                    handledBufferingEpisode = episode
+                    if (!afterSeek) {
+                        stalls++
+                        allowedWorkers = maxOf(MIN_WORKERS, allowedWorkers / 2)
+                        fetchesSinceAdjust = 0
+                    }
+                }
+            }
         }
         if (!LocalSeekPreviewSettings.mobileData.value && isMetered()) return "mobile data: buffer only"
         return null
@@ -657,7 +672,10 @@ internal class LocalPreviewTrack(
         avgFetchMs = fetchTimes.average(),
         avgDecodeMs = decodeTimes.average(),
         decoder = decoder.activeDecoderLabel,
-        fillSource = fillSource?.label?.let { "$it ×$allowedWorkers" },
+        fillSource = fillSource?.label,
+        workers = if (source.buffering) 1 else allowedWorkers,
+        stalls = stalls,
+        buffering = source.buffering,
     )
 
     // ---- Disk cache ----------------------------------------------------------------------
@@ -741,7 +759,8 @@ internal class LocalPreviewTrack(
         private const val MIN_WORKERS = 2
         private const val START_WORKERS = 3
         private const val MAX_WORKERS = 8
-        private const val ADJUST_EVERY = 8
+        private const val ADJUST_EVERY = 4
+        private const val SEEK_GRACE_MS = 5_000L
         private const val DECODE_QUEUE = 6
         private const val CANDIDATE_WAIT_MS = 8_000L
         private const val MAX_PROBES = 5
