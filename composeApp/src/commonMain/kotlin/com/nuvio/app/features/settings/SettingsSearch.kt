@@ -48,6 +48,14 @@ import com.nuvio.app.core.ui.nuvio
 import com.nuvio.app.isIos
 import com.nuvio.app.supportsPosterNavigationMotion
 import nuvio.composeapp.generated.resources.*
+import androidx.compose.material.icons.rounded.AutoAwesome
+import nuvio.composeapp.generated.resources.settings_nuvio_reshaped
+import nuvio.composeapp.generated.resources.settings_nuvio_reshaped_autosync_section
+import nuvio.composeapp.generated.resources.settings_nuvio_reshaped_description
+import nuvio.composeapp.generated.resources.settings_playback_subtitle_auto_sync
+import nuvio.composeapp.generated.resources.settings_playback_subtitle_auto_sync_description
+import nuvio.composeapp.generated.resources.settings_seekr_api_key
+import nuvio.composeapp.generated.resources.settings_seek_preview_section
 import org.jetbrains.compose.resources.stringResource
 
 internal sealed class SettingsSearchTarget {
@@ -520,14 +528,42 @@ internal fun settingsSearchEntries(
         section = stringResource(Res.string.settings_stream_display_section),
         icon = Icons.Rounded.Style,
     )
+    // Nuvio RS hook: the Nuvio Reshaped page and its rows
+    val nuvioReshapedPage = stringResource(Res.string.settings_nuvio_reshaped)
+    addPage(
+        page = SettingsPage.NuvioReshaped,
+        key = "nuvio-reshaped",
+        title = nuvioReshapedPage,
+        description = stringResource(Res.string.settings_nuvio_reshaped_description),
+        icon = Icons.Rounded.AutoAwesome,
+    )
+    if (!isIos) {
+        addRow(
+            page = SettingsPage.NuvioReshaped,
+            key = "nuvio-reshaped-auto-sync",
+            title = stringResource(Res.string.settings_playback_subtitle_auto_sync),
+            description = stringResource(Res.string.settings_playback_subtitle_auto_sync_description),
+            pageLabel = nuvioReshapedPage,
+            section = stringResource(Res.string.settings_nuvio_reshaped_autosync_section),
+            icon = Icons.Rounded.AutoAwesome,
+        )
+        addRow(
+            page = SettingsPage.NuvioReshaped,
+            key = "nuvio-reshaped-seekr-key",
+            title = stringResource(Res.string.settings_seekr_api_key),
+            pageLabel = nuvioReshapedPage,
+            section = stringResource(Res.string.settings_seek_preview_section),
+            icon = Icons.Rounded.AutoAwesome,
+        )
+    }
     addRow(
-        page = SettingsPage.Streams,
+        page = SettingsPage.NuvioReshaped,
         key = "stream-connection-fit",
         title = stringResource(Res.string.settings_stream_connection_fit_title),
         description = stringResource(Res.string.settings_stream_connection_fit_description),
-        pageLabel = streamsPage,
-        section = stringResource(Res.string.settings_stream_display_section),
-        icon = Icons.Rounded.Style,
+        pageLabel = nuvioReshapedPage,
+        section = streamsPage,
+        icon = Icons.Rounded.AutoAwesome,
     )
     if (!isTablet) {
         addRow(

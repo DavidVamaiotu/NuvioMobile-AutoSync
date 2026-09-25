@@ -52,7 +52,6 @@ internal fun AutoSyncPlaybackSettingsRows(
             preferredSubtitleLanguage != SubtitleLanguageOption.NONE &&
             preferredSubtitleLanguage != SubtitleLanguageOption.FORCED
 
-    SettingsGroupDivider(isTablet = isTablet)
     SettingsSwitchRow(
         title = stringResource(Res.string.settings_playback_subtitle_auto_sync),
         description = stringResource(

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_nuvio_reshaped">Nuvio Reshaped</string>
+    <string name="settings_nuvio_reshaped_description">Subtitle AutoSync, seek previews and stream matching</string>
+    <string name="settings_nuvio_reshaped_autosync_section">Subtitle AutoSync</string>
+</resources>

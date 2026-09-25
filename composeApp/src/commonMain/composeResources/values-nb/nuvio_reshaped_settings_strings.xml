@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_nuvio_reshaped_description">Undertekst-AutoSync, forhåndsvisning ved spoling og valg av strømmer</string>
+    <string name="settings_nuvio_reshaped_autosync_section">Undertekst-AutoSync</string>
+</resources>

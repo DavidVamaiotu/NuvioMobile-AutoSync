@@ -90,17 +90,12 @@ import nuvio.composeapp.generated.resources.settings_stream_size_badges_descript
 import nuvio.composeapp.generated.resources.settings_stream_size_badges_title
 import nuvio.composeapp.generated.resources.settings_stream_addon_logo_title
 import nuvio.composeapp.generated.resources.settings_stream_addon_logo_description
-import nuvio.composeapp.generated.resources.settings_stream_connection_fit_learning
-import nuvio.composeapp.generated.resources.settings_stream_connection_fit_measured
-import nuvio.composeapp.generated.resources.settings_stream_connection_fit_title
 import nuvio.composeapp.generated.resources.settings_stream_display_section
 import nuvio.composeapp.generated.resources.settings_stream_background_title
 import nuvio.composeapp.generated.resources.settings_stream_background_description
 import nuvio.composeapp.generated.resources.settings_meta_background_mode_cinematic
 import nuvio.composeapp.generated.resources.settings_meta_background_mode_normal
 import org.jetbrains.compose.resources.stringResource
-import com.nuvio.app.features.streams.ConnectionSpeedEstimator
-import kotlin.math.roundToInt
 
 internal fun LazyListScope.streamsSettingsContent(isTablet: Boolean) {
     item {
@@ -167,13 +162,6 @@ internal fun LazyListScope.streamsSettingsContent(isTablet: Boolean) {
                     isTablet = isTablet,
                     onCheckedChange = StreamBadgeSettingsRepository::setShowAddonLogo,
                 )
-                SettingsSwitchRow(
-                    title = stringResource(Res.string.settings_stream_connection_fit_title),
-                    description = connectionFitStatus(),
-                    checked = currentSettings.preferConnectionFit,
-                    isTablet = isTablet,
-                    onCheckedChange = StreamBadgeSettingsRepository::setPreferConnectionFit,
-                )
             }
         }
 
@@ -205,16 +193,6 @@ internal fun LazyListScope.streamsSettingsContent(isTablet: Boolean) {
                 onDismiss = { showBadgePositionDialog = false },
             )
         }
-    }
-}
-
-@Composable
-private fun connectionFitStatus(): String {
-    val connectionMbps = remember { ConnectionSpeedEstimator.estimateMbps() }
-    return if (connectionMbps == null) {
-        stringResource(Res.string.settings_stream_connection_fit_learning)
-    } else {
-        stringResource(Res.string.settings_stream_connection_fit_measured, connectionMbps.roundToInt())
     }
 }
 

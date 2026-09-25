@@ -465,8 +465,6 @@ private fun PlaybackSettingsSection(
             }
         }
 
-        SeekPreviewSettingsSection(isTablet = isTablet) // Seekr hook
-
         SettingsSection(
             title = stringResource(Res.string.settings_playback_section_subtitle_audio),
             isTablet = isTablet,
@@ -523,11 +521,6 @@ private fun PlaybackSettingsSection(
                     enabled = subtitleLanguageEnabled,
                     isTablet = isTablet,
                     onClick = { showSecondarySubtitleDialog = true },
-                )
-                AutoSyncPlaybackSettingsRows( // AutoSync hook
-                    isTablet = isTablet,
-                    enabled = otherSubtitleOptionsEnabled,
-                    preferredSubtitleLanguage = preferredSubtitleLanguage,
                 )
                 SettingsGroupDivider(isTablet = isTablet)
                 SettingsSwitchRow(
