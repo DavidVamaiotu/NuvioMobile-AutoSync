@@ -2,7 +2,9 @@ package com.nuvio.app.features.settings
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nuvio.app.features.autosync.AutoSyncPreferencesRepository
 import com.nuvio.app.features.player.AudioSyncSettings
@@ -57,6 +59,8 @@ internal fun AutoSyncPlaybackSettingsRows(
         AutoSyncPreferencesRepository.ensureLoaded()
         AutoSyncPreferencesRepository.syncToleranceMs
     }.collectAsStateWithLifecycle()
+    val speechModel by SubtitleSyncStatus.speechModel.collectAsStateWithLifecycle()
+    var offerSpeechModel by remember { mutableStateOf(false) }
 
     if (isIos) return
 
@@ -73,8 +77,20 @@ internal fun AutoSyncPlaybackSettingsRows(
         checked = preferredSubtitleAutoSyncOnStart,
         enabled = enabled && preferredLanguageAvailable,
         isTablet = isTablet,
-        onCheckedChange = AutoSyncPreferencesRepository::setPreferredSubtitleAutoSyncOnStart,
+        onCheckedChange = { on ->
+            AutoSyncPreferencesRepository.setPreferredSubtitleAutoSyncOnStart(on)
+            // The audio fallback that comes with it works best with the speech model: offer it.
+            offerSpeechModel = on && AudioSyncSettings.fallbackEnabled.value && speechModel.supported &&
+                !speechModel.downloaded && !speechModel.downloading
+        },
     )
+    if (offerSpeechModel) {
+        SpeechModelOfferDialog(
+            sizeMb = speechModel.sizeMb,
+            onDownload = { SubtitleSyncStatus.modelActions?.download() },
+            onDismiss = { offerSpeechModel = false },
+        )
+    }
     SettingsGroupDivider(isTablet = isTablet)
     SettingsSwitchRow(
         title = stringResource(

@@ -20,4 +20,8 @@
     <string name="settings_playback_audio_sync_mobile_data_description">Syncs much faster by reading a few short parts of the film ahead of playback. Uses up to 150 MB per film</string>
     <string name="settings_playback_audio_sync_share_log">Share audio sync log</string>
     <string name="settings_playback_audio_sync_share_log_description">Timings and decisions of recent syncs, for reporting a problem. Links are shortened and no audio or subtitle text is included</string>
+    <string name="audio_sync_speech_model_offer_title">Download the speech model?</string>
+    <string name="audio_sync_speech_model_offer_body">When a stream has no embedded subtitles or AutoSync's match is too weak, subtitles can still be synced by listening to the dialogue. Recognising the spoken words makes this much faster and more precise. The model is %1$s MB and is downloaded once; Wi-Fi is best.</string>
+    <string name="audio_sync_speech_model_offer_later">Not now</string>
+    <string name="audio_sync_speech_model_offer_download">Download</string>
 </resources>
