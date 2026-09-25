@@ -94,8 +94,8 @@ internal class AutoSyncPlayerCoordinator(
             appliedListener?.invoke(url, 0)
         },
     )
-    /** Lets on-device seek previews read this stream and follow playback state. */
-    private val localPreviewSource = LocalPreviewSources.register(context, player, sourceUrl, dataSourceFactory)
+    /** Lets on-device seek previews collect this stream's keyframes as playback demuxes them. */
+    private val localPreviewSource = LocalPreviewSources.register(context, sourceUrl)
     private val _retryState = MutableStateFlow(AutoSyncRetryUiState())
     val retryState: StateFlow<AutoSyncRetryUiState> = _retryState.asStateFlow()
 
@@ -173,7 +173,7 @@ internal class AutoSyncPlayerCoordinator(
     fun dispose() {
         cancel()
         audioFallback.release()
-        LocalPreviewSources.unregister(localPreviewSource, player)
+        LocalPreviewSources.unregister(localPreviewSource)
         appliedListener = null
     }
 

@@ -3,37 +3,17 @@
 package com.nuvio.app.features.player.seekpreview.local
 
 import android.content.Context
-import android.net.Uri
-import android.os.SystemClock
 import androidx.media3.common.Format
-import androidx.media3.common.Player
-import androidx.media3.datasource.DataSource
-import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.extractor.ExtractorsFactory
 import com.nuvio.app.features.player.seekpreview.SeekPreviewTrack
 
-/**
- * The stream an ExoPlayer is showing, as far as on-device previews need it: where to read it
- * from in the background, and whether playback is ready or starving.
- */
+/** The stream an ExoPlayer is showing, as far as on-device previews need it. */
 internal class LocalPreviewSource(
     val sourceKey: String,
     val context: Context,
-    /** Where background fill reads from; null when it must not run (see [backgroundBlockedReason]). */
-    val uri: Uri?,
-    val dataSourceFactory: DataSource.Factory?,
-    val backgroundBlockedReason: String?,
 ) {
-    /** Uptime at which playback first became ready, or 0 before that. */
-    @Volatile var readyAtMs = 0L
-    @Volatile var buffering = false
-    /** Uptime of the last user seek; buffering right after one is expected, not a stall. */
-    @Volatile var lastSeekAtMs = 0L
-    /** Counts buffering episodes, so fill reacts once per stall rather than every poll. */
-    @Volatile var bufferingEpisode = 0
     @Volatile var released = false
     @Volatile var track: LocalPreviewTrack? = null
-    var listener: Player.Listener? = null
 }
 
 /**
@@ -44,61 +24,15 @@ internal class LocalPreviewSource(
 internal object LocalPreviewSources {
     @Volatile private var current: LocalPreviewSource? = null
 
-    fun register(
-        context: Context,
-        player: ExoPlayer,
-        sourceUrl: String,
-        dataSourceFactory: DataSource.Factory?,
-    ): LocalPreviewSource {
-        val uri = runCatching { Uri.parse(sourceUrl) }.getOrNull()
-        val path = uri?.path.orEmpty().lowercase()
-        val host = uri?.host.orEmpty()
-        val blocked = when {
-            dataSourceFactory == null -> "no data source"
-            uri == null || (uri.scheme != "http" && uri.scheme != "https") -> "not an http stream"
-            // Seeking a torrent far ahead makes the engine fetch those pieces, slowing playback.
-            host == "localhost" || host.startsWith("127.") || host == "[::1]" -> "torrent: buffer only"
-            path.endsWith(".m3u8") || path.endsWith(".mpd") -> "playlist: buffer only"
-            else -> null
-        }
-        val source = LocalPreviewSource(
-            sourceKey = sourceUrl,
-            context = context.applicationContext,
-            uri = uri.takeIf { blocked == null },
-            dataSourceFactory = dataSourceFactory.takeIf { blocked == null },
-            backgroundBlockedReason = blocked,
-        )
-        val listener = object : Player.Listener {
-            override fun onPlaybackStateChanged(playbackState: Int) = update(playbackState)
-
-            override fun onPositionDiscontinuity(
-                oldPosition: Player.PositionInfo,
-                newPosition: Player.PositionInfo,
-                reason: Int,
-            ) {
-                if (reason == Player.DISCONTINUITY_REASON_SEEK) source.lastSeekAtMs = SystemClock.uptimeMillis()
-            }
-
-            fun update(playbackState: Int) {
-                if (playbackState == Player.STATE_READY && source.readyAtMs == 0L) {
-                    source.readyAtMs = SystemClock.uptimeMillis()
-                }
-                val buffering = playbackState == Player.STATE_BUFFERING
-                if (buffering && !source.buffering) source.bufferingEpisode++
-                source.buffering = buffering
-            }
-        }
-        listener.update(player.playbackState)
-        player.addListener(listener)
-        source.listener = listener
+    fun register(context: Context, sourceUrl: String): LocalPreviewSource {
+        val source = LocalPreviewSource(sourceKey = sourceUrl, context = context.applicationContext)
         current?.takeIf { it.sourceKey != sourceUrl }?.let { stale -> stale.track?.close() }
         current = source
         return source
     }
 
-    fun unregister(source: LocalPreviewSource, player: ExoPlayer) {
+    fun unregister(source: LocalPreviewSource) {
         source.released = true
-        source.listener?.let(player::removeListener)
         source.track?.close()
         source.track = null
         if (current === source) current = null

@@ -66,25 +66,27 @@ internal class SeekPreviewSession {
         suggestedOffsetMs = 0L
         showSyncPanel = false
         if (durationMs <= 0L) return
-        // Thumbnails made from the playing stream always line up, so they win over Seekr.
+        // On-device thumbnails always line up but only cover what playback has buffered; Seekr
+        // covers the rest. Either works alone when the other is unavailable.
+        var local: SeekPreviewTrack? = null
         if (LocalSeekPreviewSettings.enabled.value) {
             val cacheKey = localSeekPreviewCacheKey(contentId, season, episode, durationMs)
-            val local = openLocalSeekPreviewTrack(cacheKey, durationMs)
+            local = openLocalSeekPreviewTrack(cacheKey, durationMs)
             if (local != null) {
                 if (loadGeneration != generation) {
                     local.close()
                     return
                 }
+                // Show on-device frames at once; Seekr joins when it has loaded.
                 track = local
                 local.prefetch()
-                return
             }
         }
         if (apiKey.isBlank()) return
         val content = seekrContentFor(contentId, contentType, season, episode) ?: return
         val loaded = SeekrClient(apiKey).loadTrack(content, durationMs) ?: return
         if (loadGeneration != generation) return
-        track = loaded
+        track = if (local != null) HybridSeekPreviewTrack(local, loaded) else loaded
         suggestedOffsetMs = if (loaded.sourceDurationMs > 0L) loaded.sourceDurationMs - durationMs else 0L
         loaded.prefetch()
     }

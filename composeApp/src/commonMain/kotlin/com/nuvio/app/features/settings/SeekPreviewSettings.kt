@@ -34,8 +34,6 @@ import nuvio.composeapp.generated.resources.action_cancel
 import nuvio.composeapp.generated.resources.action_save
 import nuvio.composeapp.generated.resources.settings_seek_preview_local
 import nuvio.composeapp.generated.resources.settings_seek_preview_local_description
-import nuvio.composeapp.generated.resources.settings_seek_preview_local_mobile_data
-import nuvio.composeapp.generated.resources.settings_seek_preview_local_mobile_data_description
 import nuvio.composeapp.generated.resources.settings_seek_preview_section
 import nuvio.composeapp.generated.resources.settings_seekr_api_key
 import nuvio.composeapp.generated.resources.settings_seekr_api_key_builtin
@@ -50,7 +48,6 @@ internal fun SeekPreviewSettingsSection(isTablet: Boolean) {
     if (isIos) return
     val userKey by SeekrKeyRepository.userKey.collectAsStateWithLifecycle()
     val localEnabled by LocalSeekPreviewSettings.enabled.collectAsStateWithLifecycle()
-    val localMobileData by LocalSeekPreviewSettings.mobileData.collectAsStateWithLifecycle()
     var showDialog by remember { mutableStateOf(false) }
 
     SettingsSection(
@@ -64,14 +61,6 @@ internal fun SeekPreviewSettingsSection(isTablet: Boolean) {
                 checked = localEnabled,
                 isTablet = isTablet,
                 onCheckedChange = LocalSeekPreviewSettings::setEnabled,
-            )
-            SettingsSwitchRow(
-                title = stringResource(Res.string.settings_seek_preview_local_mobile_data),
-                description = stringResource(Res.string.settings_seek_preview_local_mobile_data_description),
-                checked = localMobileData,
-                enabled = localEnabled,
-                isTablet = isTablet,
-                onCheckedChange = LocalSeekPreviewSettings::setMobileData,
             )
             SettingsNavigationRow(
                 title = stringResource(Res.string.settings_seekr_api_key),

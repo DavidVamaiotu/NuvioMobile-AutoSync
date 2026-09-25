@@ -9,7 +9,5 @@
     <string name="player_seek_preview_frame_at">frame %1$s</string>
     <string name="cd_seek_preview_sync">Preview sync</string>
     <string name="settings_seek_preview_local">Generate previews on device</string>
-    <string name="settings_seek_preview_local_description">Makes thumbnails from the stream you are watching, so they always line up. Uses what playback already downloaded first, then small reads in the background.</string>
-    <string name="settings_seek_preview_local_mobile_data">Background fill on mobile data</string>
-    <string name="settings_seek_preview_local_mobile_data_description">Off: on mobile data, thumbnails only come from what playback already downloaded.</string>
+    <string name="settings_seek_preview_local_description">Makes thumbnails from what playback already downloaded, so they always line up and cost no extra data. Seekr fills in the parts you have not watched yet.</string>
 </resources>

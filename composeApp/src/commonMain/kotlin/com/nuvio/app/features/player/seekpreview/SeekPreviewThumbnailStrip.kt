@@ -383,24 +383,10 @@ internal fun formatScrubTime(millis: Long): String {
 private val NoRevision = MutableStateFlow(0)
 private val NoLocalStats = MutableStateFlow(LocalSeekPreviewStats())
 
-/** Debug readout for on-device previews: progress, data used and where frames came from. */
+/** Debug readout for on-device previews: progress and where frames came from. */
 private fun LocalSeekPreviewStats.debugLine(): String = buildString {
-    // First line: progress and what fill is doing now; second: which stream it reads.
     append("On device ").append(filled).append('/').append(total)
-    append(" · ").append(downloadedBytes / 1_000_000L).append(" MB")
     if (fromBuffer > 0) append(" · ").append(fromBuffer).append(" buffer")
     if (fromCache > 0) append(" · ").append(fromCache).append(" cached")
-    when {
-        pausedReason != null -> append(" · ").append(pausedReason)
-        buffering -> append(" · playback buffering, ×1")
-        workers > 0 -> append(" · ×").append(workers)
-    }
-    if (stalls > 0) append(" · ").append(stalls).append(" stalls")
-    if (avgFetchMs > 0) append(" · fetch ").append(avgFetchMs).append("ms")
-    if (avgDecodeMs > 0) append(" · ").append(decoder ?: "?").append(' ').append(avgDecodeMs).append("ms")
-    fillSource?.let { append("\nsrc ").append(it) }
-    if (readErrors > 0) {
-        append("\n").append(readErrors).append(" read errors, retrying")
-        lastError?.let { append(": ").append(it.take(60)) }
-    }
+    decoder?.let { append(" · ").append(it) }
 }
