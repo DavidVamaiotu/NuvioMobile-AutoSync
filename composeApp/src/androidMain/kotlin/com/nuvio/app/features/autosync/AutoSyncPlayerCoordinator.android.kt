@@ -47,6 +47,18 @@ internal class AutoSyncPlayerCoordinator(
     private var appliedListener: ((subtitleUrl: String, delayMs: Int) -> Unit)? = null
     private val _retryState = MutableStateFlow(AutoSyncRetryUiState())
     val retryState: StateFlow<AutoSyncRetryUiState> = _retryState.asStateFlow()
+    private val audioFallback = AutoSyncAudioFallback(
+        context = context,
+        scope = scope,
+        player = player,
+        sidecar = sidecar,
+        sourceUrl = sourceUrl,
+        sourceHeaders = sourceHeaders,
+        onApplied = { subtitleUrl ->
+            onSubtitleDelayChanged(0)
+            appliedListener?.invoke(subtitleUrl, 0)
+        },
+    )
 
     init {
         // The coordinator is created when the stream opens. Start the embedded index download
@@ -81,6 +93,7 @@ internal class AutoSyncPlayerCoordinator(
     fun cancel() {
         job?.cancel()
         job = null
+        audioFallback.stop()
         selectedBodyJob?.cancel()
         selectedBodyJob = null
         invalidateRetryContext()
@@ -462,6 +475,15 @@ internal class AutoSyncPlayerCoordinator(
             }
 
             if (resolved == null) {
+                if (audioFallback.startIfNoEmbeddedReference(analysisOutcome, url)) {
+                    if (AutoSyncDebugLog.ENABLED) {
+                        AutoSyncDebugLog.finishAndCopy(
+                            context = context,
+                            decision = "NO EMBEDDED REFERENCE - syncing to the audio",
+                        )
+                    }
+                    return@launch
+                }
                 restoreOriginalSubtitleIfSidecarFailed()
                 if (AutoSyncDebugLog.ENABLED) {
                     AutoSyncDebugLog.finishAndCopy(
