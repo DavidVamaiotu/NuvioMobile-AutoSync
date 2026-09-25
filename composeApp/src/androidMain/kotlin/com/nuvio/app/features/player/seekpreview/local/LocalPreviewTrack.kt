@@ -10,7 +10,6 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.media3.common.Format
 import androidx.media3.common.util.MediaFormatUtil
-import com.nuvio.app.features.player.seekpreview.LocalSeekPreviewStats
 import com.nuvio.app.features.player.seekpreview.SeekPreviewTrack
 import com.nuvio.app.features.player.seekpreview.SeekrThumbnail
 import java.io.DataInputStream
@@ -66,8 +65,6 @@ internal class LocalPreviewTrack(
     }
     @Volatile private var closed = false
 
-    private val fromBuffer = AtomicInteger()
-    private val fromCache = AtomicInteger()
     private val sinceSave = AtomicInteger()
 
     private val decoder = KeyframeThumbnailDecoder()
@@ -81,8 +78,6 @@ internal class LocalPreviewTrack(
 
     private val _revision = MutableStateFlow(0)
     override val revision: StateFlow<Int> = _revision.asStateFlow()
-    private val _stats = MutableStateFlow(LocalSeekPreviewStats(total = slotCount))
-    override val localStats: StateFlow<LocalSeekPreviewStats> = _stats.asStateFlow()
 
     private val cacheFile: File = File(File(source.context.cacheDir, CACHE_DIR), sha1(cacheKey) + ".bin")
 
@@ -91,7 +86,6 @@ internal class LocalPreviewTrack(
         scope.launch {
             for (unit in changes) {
                 _revision.value = _revision.value + 1
-                _stats.value = snapshotStats()
                 delay(UI_UPDATE_INTERVAL_MS)
             }
         }
@@ -179,7 +173,6 @@ internal class LocalPreviewTrack(
                 }.getOrNull()
                 if (frame != null) {
                     store(slot, frame.jpeg, keyMs)
-                    fromBuffer.incrementAndGet()
                 } else {
                     release(slot)
                 }
@@ -228,14 +221,6 @@ internal class LocalPreviewTrack(
         changes.trySend(Unit)
     }
 
-    private fun snapshotStats(): LocalSeekPreviewStats = LocalSeekPreviewStats(
-        filled = synchronized(lock) { filledCount },
-        total = slotCount,
-        fromBuffer = fromBuffer.get(),
-        fromCache = fromCache.get(),
-        decoder = decoder.activeDecoderLabel,
-    )
-
     // ---- Disk cache ----------------------------------------------------------------------
 
     private fun loadCache() {
@@ -257,7 +242,6 @@ internal class LocalPreviewTrack(
                             frameMs[slot] = keyMs
                             keyframeSlots.putIfAbsent(keyMs, slot)
                         }
-                        fromCache.incrementAndGet()
                     }
                 }
             }

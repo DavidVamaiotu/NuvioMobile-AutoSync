@@ -12,18 +12,6 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 internal expect fun openLocalSeekPreviewTrack(cacheKey: String, durationMs: Long): SeekPreviewTrack?
 
-/** Progress of on-device generation for one title, for the debug readout. */
-internal data class LocalSeekPreviewStats(
-    val filled: Int = 0,
-    val total: Int = 0,
-    /** Thumbnails taken from what playback downloaded this session. */
-    val fromBuffer: Int = 0,
-    /** Thumbnails restored from the disk cache. */
-    val fromCache: Int = 0,
-    /** "hw" or "sw" decoder, or null before the first frame. */
-    val decoder: String? = null,
-)
-
 /** User setting for on-device seek previews. */
 internal object LocalSeekPreviewSettings {
     private val _enabled = MutableStateFlow(true)

@@ -17,9 +17,6 @@ internal interface SeekPreviewTrack {
     /** Bumped whenever thumbnails are added, so a visible preview re-reads its frames. */
     val revision: StateFlow<Int> get() = StaticRevision
 
-    /** Progress of on-device generation, for the debug readout; null for Seekr. */
-    val localStats: StateFlow<LocalSeekPreviewStats>? get() = null
-
     /** The thumbnail covering [positionMs] (after [offsetMs]) with its cue window, or null. */
     suspend fun thumbnailFor(positionMs: Long): SeekrThumbnail?
 

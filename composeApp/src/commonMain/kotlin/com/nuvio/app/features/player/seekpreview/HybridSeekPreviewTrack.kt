@@ -22,8 +22,6 @@ internal class HybridSeekPreviewTrack(
 
     override val revision: StateFlow<Int> get() = local.revision
 
-    override val localStats: StateFlow<LocalSeekPreviewStats>? get() = local.localStats
-
     override suspend fun thumbnailFor(positionMs: Long): SeekrThumbnail? {
         val own = local.thumbnailFor(positionMs)
         if (own != null && !own.approximate) return own
