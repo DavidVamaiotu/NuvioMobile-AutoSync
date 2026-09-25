@@ -7,12 +7,18 @@ import kotlin.math.sqrt
  * Chooses where to sample a film's audio ahead of playback. Subtitle files show where people talk
  * even when their timing is off, so each spot goes where the available subtitles agree on dense,
  * irregular dialogue (varied line lengths and pauses make the most distinctive timing pattern);
- * spots are spread over the film so frame-rate drift and edited cuts show up at once.
+ * spots are spread over the film so frame-rate drift and edited cuts show up at once. On a
+ * high-bitrate stream only a spot's opening seconds may be read, so spots also start inside long
+ * stretches of dialogue, where the opening finds speech even if the subtitle's timing is off.
  */
 internal object DialogueSpotPlanner {
     /** Slack around a spot for subtitles that are off by this much. */
     private const val TIMING_SLACK_MS = 10_000L
     private const val STEP_MS = 5_000L
+
+    /** A spot's opening that is read on any stream, and the timing error it should survive. */
+    private const val OPENING_MS = 8_000L
+    private const val OPENING_SLACK_MS = 20_000L
 
     /** Opening and closing credits rarely have dialogue. */
     private const val SKIP_START_MS = 3 * 60_000L
@@ -46,7 +52,7 @@ internal object DialogueSpotPlanner {
                 var bestScore = 0.0
                 var start = sectionStart
                 while (start <= sectionEnd) {
-                    val score = usable.sumOf { score(it, start, start + spotMs) } / usable.size
+                    val score = usable.sumOf { score(it, start, start + spotMs) * (0.5 + openingShare(it, start)) } / usable.size
                     if (score > bestScore) {
                         bestScore = score
                         best = start
@@ -93,6 +99,22 @@ internal object DialogueSpotPlanner {
         val mean = sum / (lines - 1)
         val variation = if (mean > 0) sqrt((squares / (lines - 1) - mean * mean).coerceAtLeast(0.0)) / mean else 0.0
         return covered * (1.0 + variation.coerceAtMost(1.0))
+    }
+
+    /** Share of the stretch around a spot's opening (with [OPENING_SLACK_MS] either side) that is dialogue. */
+    private fun openingShare(track: SubtitleSpeechTrack, startMs: Long): Double {
+        val fromMs = startMs - OPENING_SLACK_MS
+        val toMs = startMs + OPENING_MS + OPENING_SLACK_MS
+        val starts = track.startsMs
+        val ends = track.endsMs
+        var index = starts.binarySearch(fromMs).let { if (it < 0) -it - 1 else it }
+        while (index > 0 && ends[index - 1] > fromMs) index--
+        var covered = 0.0
+        while (index < starts.size && starts[index] < toMs) {
+            covered += overlap(starts[index], ends[index], fromMs, toMs)
+            index++
+        }
+        return (covered / (toMs - fromMs)).coerceAtMost(1.0)
     }
 
     private fun overlap(a: Long, b: Long, from: Long, to: Long): Double =

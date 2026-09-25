@@ -439,7 +439,10 @@ internal class AudioSubtitleSyncController(
             SyncLog.i("sampling audio at ${spots.map { it / 1_000 }}s")
             spotStatus = "sampling ${spots.size} dialogue spots…"
             val startedAt = SystemClock.elapsedRealtime()
-            val sampler = AudioSpotSampler(source.uri, source.dataSourceFactory, MAX_SPOT_BYTES)
+            // On mobile data the target is also the cap; on other networks a high-bitrate file may
+            // use more so each spot still holds whole sentences.
+            val maxBytes = if (AsrModel.isUnmetered(appContext)) MAX_SPOT_BYTES else TARGET_SPOT_BYTES
+            val sampler = AudioSpotSampler(source.uri, source.dataSourceFactory, TARGET_SPOT_BYTES, maxBytes, MIN_SPOT_AUDIO_MS)
             val result = sampler.run(
                 spotsMs = spots,
                 spotMs = SPOT_MS,
@@ -1165,7 +1168,11 @@ internal class AudioSubtitleSyncController(
         /** One connection per spot, so every spot arrives in the same round. */
         private const val SPOT_WORKERS = SPOT_COUNT
         private const val SPOT_MS = 30_000L
-        private const val MAX_SPOT_BYTES = 150L * 1_000_000L
+        private const val TARGET_SPOT_BYTES = 150L * 1_000_000L
+        private const val MAX_SPOT_BYTES = 400L * 1_000_000L
+
+        /** Enough for a few whole sentences, which speech recognition needs. */
+        private const val MIN_SPOT_AUDIO_MS = 8_000L
         private const val MIN_SAMPLED_FILM_MS = 20 * 60_000L
         private const val RESUME_THRESHOLD_MS = 10 * 60_000L
         private const val SPOT_BACKOFF_MS = 5L

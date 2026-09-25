@@ -22,13 +22,17 @@ import kotlin.math.abs
  * The audio itself is delivered by the extractors factories (wrapped with an audio tap) while this
  * class only seeks and advances. Each worker reads spots over its own connection, so two far-apart
  * spots arrive together. Containers interleave audio with video, so each spot costs its share of
- * the whole stream: spots are cut short to stay within [maxBytes] in total. Blocking; run it on a
- * background thread.
+ * the whole stream: a spot stops at its share of [targetBytes]. On a high-bitrate file that share
+ * can hold only a few seconds, too little for whole sentences, so a spot keeps reading until it has
+ * [minSpotMs] of audio when the connection is clearly faster than the stream (playback keeps its
+ * bandwidth), never past [maxBytes] in total. Blocking; run it on a background thread.
  */
 internal class AudioSpotSampler(
     private val uri: Uri,
     dataSourceFactory: DataSource.Factory,
+    private val targetBytes: Long,
     private val maxBytes: Long,
+    private val minSpotMs: Long,
 ) {
     class Result(val sampled: Int, val bytes: Long, val failure: String?)
 
@@ -53,6 +57,7 @@ internal class AudioSpotSampler(
         val sampled = AtomicInteger(0)
         val failure = AtomicReference<String?>(null)
         val stop = { isCancelled() || failure.get() != null || bytes.get() >= maxBytes }
+        val startedNs = System.nanoTime()
 
         fun work(extractorsFactory: ExtractorsFactory) {
             val extractor = MediaExtractorCompat(extractorsFactory, countingFactory)
@@ -74,7 +79,7 @@ internal class AudioSpotSampler(
                     val index = next.getAndIncrement()
                     if (index >= spotsMs.size) return
                     val spotStartMs = spotsMs[index]
-                    val budget = (maxBytes - bytes.get()) / (spotsMs.size - index)
+                    val share = (targetBytes - bytes.get()).coerceAtLeast(0L) / (spotsMs.size - index)
                     val spotStartBytes = bytes.get()
                     extractor.seekTo(spotStartMs * 1_000L, MediaExtractorCompat.SEEK_TO_PREVIOUS_SYNC)
                     val firstUs = extractor.sampleTime
@@ -86,7 +91,8 @@ internal class AudioSpotSampler(
                     while (!stop()) {
                         val timeUs = extractor.sampleTime
                         if (timeUs < 0 || timeUs >= endUs) break
-                        if (bytes.get() - spotStartBytes >= budget) break
+                        val spotBytes = bytes.get() - spotStartBytes
+                        if (spotBytes >= share && !wantsMore(spotBytes, timeUs - firstUs, startedNs)) break
                         if (!extractor.advance()) break
                     }
                     onSpot(sampled.incrementAndGet(), bytes.get())
@@ -112,6 +118,19 @@ internal class AudioSpotSampler(
         return Result(sampled.get(), bytes.get(), failure.get())
     }
 
+    /**
+     * Whether a spot past its share keeps reading: only while it has less than [minSpotMs] of audio
+     * ([readUs] so far, costing [spotBytes]) and all workers together download at least
+     * [MIN_SPEED_RATIO] times faster than the stream plays.
+     */
+    private fun wantsMore(spotBytes: Long, readUs: Long, startedNs: Long): Boolean {
+        if (readUs <= 0 || readUs >= minSpotMs * 1_000L) return false
+        val streamBytesPerSec = spotBytes * 1_000_000.0 / readUs
+        val elapsedSec = (System.nanoTime() - startedNs) / 1e9
+        val downloadBytesPerSec = if (elapsedSec > 0) bytes.get() / elapsedSec else 0.0
+        return downloadBytesPerSec >= MIN_SPEED_RATIO * streamBytesPerSec
+    }
+
     private class ByteCounter(private val bytes: AtomicLong) : TransferListener {
         override fun onTransferInitializing(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) = Unit
 
@@ -127,5 +146,8 @@ internal class AudioSpotSampler(
     private companion object {
         /** A seek landing further than this from the target means the stream has no usable index. */
         const val MAX_SEEK_MISS_MS = 30_000L
+
+        /** Download speed over stream bitrate needed to read past a spot's share. */
+        const val MIN_SPEED_RATIO = 3.0
     }
 }

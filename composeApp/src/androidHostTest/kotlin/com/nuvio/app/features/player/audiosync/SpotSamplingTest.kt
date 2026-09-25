@@ -28,6 +28,25 @@ class SpotSamplingTest {
     }
 
     @Test
+    fun spotOpeningsFindSpeechWhenTheSubtitleIsOff() {
+        // Each part of the film has a short dense exchange and a long conversation; the subtitle
+        // used for planning is 15 s early. On a high-bitrate stream only a spot's first 8 s are
+        // read, so those must be speech, which only the long conversations guarantee.
+        val spoken = (0 until 4).flatMap { part ->
+            val base = (8 + part * 22) * 60_000L
+            cues(Random(70L + part), base, base + 25_000L) +
+                cues(Random(80L + part), base + 9 * 60_000L, base + 12 * 60_000L)
+        }
+        val earlySubtitle = SubtitleSpeechTrack.fromCues(spoken.map { (a, b, t) -> Triple(a - 15_000L, b - 15_000L, t) })
+        val spots = DialogueSpotPlanner.plan(listOf(earlySubtitle), filmMs, count = 4, spotMs = 30_000L)
+        assertEquals(4, spots.size)
+        for (spot in spots) {
+            val speech = spoken.sumOf { (a, b, _) -> overlap(a, b, spot, spot + 8_000L) }
+            assertTrue(speech > 4_000L, "spot at ${spot / 1_000}s opens with only ${speech / 1_000}s of dialogue")
+        }
+    }
+
+    @Test
     fun spotsAreEvenlySpreadWithoutSubtitles() {
         val spots = DialogueSpotPlanner.plan(emptyList(), filmMs, count = 4, spotMs = 30_000L, notBeforeMs = 5 * 60_000L)
         assertEquals(4, spots.size)
