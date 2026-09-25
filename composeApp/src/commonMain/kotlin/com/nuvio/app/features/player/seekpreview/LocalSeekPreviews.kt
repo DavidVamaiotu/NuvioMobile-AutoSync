@@ -43,6 +43,9 @@ internal data class LocalSeekPreviewStats(
     val stalls: Int = 0,
     /** Playback is buffering right now; fill runs one worker meanwhile. */
     val buffering: Boolean = false,
+    /** Network or parse errors fill recovered from, and the latest one's message. */
+    val readErrors: Int = 0,
+    val lastError: String? = null,
 )
 
 /** User settings for on-device seek previews. */

@@ -29,6 +29,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -232,6 +233,23 @@ internal fun SeekPreviewThumbnailStrip(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
+                // Drawn above the frames without taking layout space, so the frames stay where
+                // they were; below them the lines ran into the seek bar and were cut off.
+                if (localStats != null) {
+                    Text(
+                        text = localStats.debugLine(),
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                        color = Color.White.copy(alpha = 0.8f),
+                        modifier = Modifier
+                            .layout { measurable, constraints ->
+                                val placeable = measurable.measure(constraints)
+                                layout(placeable.width, 0) { placeable.place(0, -placeable.height - 4.dp.roundToPx()) }
+                            }
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(Color.Black.copy(alpha = 0.45f))
+                            .padding(horizontal = 6.dp, vertical = 1.dp),
+                    )
+                }
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(FrameGap),
                     verticalAlignment = Alignment.CenterVertically,
@@ -267,17 +285,6 @@ internal fun SeekPreviewThumbnailStrip(
                         .background(Color.Black.copy(alpha = 0.55f))
                         .padding(horizontal = 6.dp, vertical = 2.dp),
                 )
-                if (localStats != null) {
-                    Text(
-                        text = localStats.debugLine(),
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                        color = Color.White.copy(alpha = 0.7f),
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(Color.Black.copy(alpha = 0.45f))
-                            .padding(horizontal = 6.dp, vertical = 1.dp),
-                    )
-                }
                 if (showFrameLabel && frameTs != null) {
                     Text(
                         text = stringResource(Res.string.player_seek_preview_frame_at, formatScrubTime(frameTs)),
@@ -392,4 +399,8 @@ private fun LocalSeekPreviewStats.debugLine(): String = buildString {
     if (avgFetchMs > 0) append(" · fetch ").append(avgFetchMs).append("ms")
     if (avgDecodeMs > 0) append(" · ").append(decoder ?: "?").append(' ').append(avgDecodeMs).append("ms")
     fillSource?.let { append("\nsrc ").append(it) }
+    if (readErrors > 0) {
+        append("\n").append(readErrors).append(" read errors, retrying")
+        lastError?.let { append(": ").append(it.take(60)) }
+    }
 }

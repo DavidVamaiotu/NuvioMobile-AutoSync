@@ -119,6 +119,8 @@ internal class LocalPreviewTrack(
     private var handledBufferingEpisode = 0
     /** Stalls fill backed off for, for the debug readout. */
     @Volatile private var stalls = 0
+    private val readErrors = AtomicInteger()
+    @Volatile private var lastError: String? = null
     @Volatile private var fillSource: FillSource? = null
     private var fillChosen = false
     /** Fill-stream keyframe time (µs) → slot holding it; its timeline may differ from playback's. */
@@ -273,36 +275,69 @@ internal class LocalPreviewTrack(
         // Extra workers join only once the controller sees the connection can take them.
         while (!closed && !source.released && index >= allowedWorkers) Thread.sleep(500L)
         if (closed || source.released) return
-        val fill = chooseFillSource()
-        if (fill == null) {
-            setPaused(source.backgroundBlockedReason ?: "no stream to read")
-            return
-        }
-        val seekMaps = SeekMapCapturingExtractorsFactory(DefaultExtractorsFactory())
-        val extractor = MediaExtractorCompat(seekMaps, BoundedRangeDataSourceFactory(fill.factory))
-        try {
-            extractor.setDataSource(fill.uri, 0L)
-            val videoTrack = (0 until extractor.trackCount).firstOrNull { index ->
-                extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME).orEmpty().startsWith("video/")
-            }
-            if (videoTrack == null) {
-                setPaused("no video track")
+        var failures = 0
+        while (!closed && !source.released) {
+            val fill = chooseFillSource()
+            if (fill == null) {
+                setPaused(source.backgroundBlockedReason ?: "no stream to read")
                 return
             }
+            when (val outcome = runFill(index, fill)) {
+                FillOutcome.Finished -> return
+                FillOutcome.Switched -> failures = 0
+                is FillOutcome.Stopped -> {
+                    setPaused(outcome.reason)
+                    return
+                }
+                is FillOutcome.Failed -> {
+                    // Debrid CDNs drop connections and throttle now and then; one error must not
+                    // end fill. Retry with growing waits and, if a smaller stream keeps failing,
+                    // go back to reading the playing one.
+                    failures = if (outcome.madeProgress) 1 else failures + 1
+                    readErrors.incrementAndGet()
+                    lastError = outcome.message
+                    Log.w(TAG, "fill worker $index error ($failures): ${outcome.message}")
+                    if (failures >= SWITCH_AFTER_FAILURES) abandonFillSource(fill)
+                    val waitMs = (RETRY_BASE_MS shl (failures - 1).coerceAtMost(4)).coerceAtMost(RETRY_MAX_MS)
+                    val until = SystemClock.uptimeMillis() + waitMs
+                    while (!closed && SystemClock.uptimeMillis() < until) Thread.sleep(200L)
+                }
+            }
+        }
+    }
+
+    private sealed class FillOutcome {
+        object Finished : FillOutcome()
+        object Switched : FillOutcome()
+        class Stopped(val reason: String) : FillOutcome()
+        class Failed(val message: String, val madeProgress: Boolean) : FillOutcome()
+    }
+
+    /** Reads keyframes from [fill] until done or an error; a fresh extractor per attempt. */
+    private fun runFill(index: Int, fill: FillSource): FillOutcome {
+        val seekMaps = SeekMapCapturingExtractorsFactory(DefaultExtractorsFactory())
+        val extractor = MediaExtractorCompat(seekMaps, BoundedRangeDataSourceFactory(fill.factory))
+        var slot = -1
+        var madeProgress = false
+        try {
+            extractor.setDataSource(fill.uri, 0L)
+            val videoTrack = (0 until extractor.trackCount).firstOrNull { track ->
+                extractor.getTrackFormat(track).getString(MediaFormat.KEY_MIME).orEmpty().startsWith("video/")
+            } ?: return FillOutcome.Stopped("no video track")
             extractor.selectTrack(videoTrack)
             val format = extractor.getTrackFormat(videoTrack)
             val seekMap = seekMaps.seekMap
             if (seekMap == null || !seekMap.isSeekable) {
                 // Without an index every seek would read from the start of the file.
-                setPaused("no keyframe index: buffer only")
-                return
+                return FillOutcome.Stopped("no keyframe index: buffer only")
             }
             var buffer = ByteBuffer.allocate(1 shl 20)
             while (!closed && !source.released) {
+                if (fillSource !== fill) return FillOutcome.Switched
                 val reason = pauseReason()
                 if (reason != null) {
                     setPaused(reason)
-                    if (reason == REASON_BUDGET) return
+                    if (reason == REASON_BUDGET) return FillOutcome.Stopped(reason)
                     Thread.sleep(500L)
                     continue
                 }
@@ -313,17 +348,34 @@ internal class LocalPreviewTrack(
                     continue
                 }
                 setPaused(null)
-                val slot = nextSlot() ?: break
+                slot = nextSlot() ?: break
                 buffer = fillSlot(extractor, seekMap, format, slot, buffer, fill.scale)
+                slot = -1
+                madeProgress = true
             }
-            if (!closed) setPaused(if (isComplete()) null else pausedReason)
+            if (!closed && isComplete()) setPaused(null)
+            return FillOutcome.Finished
         } catch (_: InterruptedException) {
-            // Closing.
+            return FillOutcome.Finished
         } catch (error: Exception) {
-            Log.w(TAG, "background fill stopped: ${error.message}")
-            setPaused("cannot read stream")
+            // Hand the slot back so another attempt fills it.
+            if (slot >= 0) release(slot)
+            return FillOutcome.Failed(error.message ?: error.javaClass.simpleName, madeProgress)
         } finally {
             runCatching { extractor.release() }
+        }
+    }
+
+    /** Stops using a smaller stream that keeps failing; workers fall back to the playing one. */
+    private fun abandonFillSource(failed: FillSource) {
+        synchronized(resolveLock) {
+            if (fillSource !== failed || failed.isPlaying) return
+            val uri = source.uri
+            val upstream = source.dataSourceFactory
+            if (uri == null || upstream == null) return
+            val factory = counting(upstream)
+            fillSource = FillSource(uri, factory, 1.0, "playing (${failed.label.substringBefore(" (")} kept failing)", isPlaying = true)
+            notifyChanged()
         }
     }
 
@@ -334,6 +386,7 @@ internal class LocalPreviewTrack(
         /** Fill-stream time = playback time × scale (1.0, or a PAL speed-up ratio). */
         val scale: Double,
         val label: String,
+        val isPlaying: Boolean = false,
     )
 
     private fun counting(upstream: DataSource.Factory) = DataSource.Factory {
@@ -385,7 +438,7 @@ internal class LocalPreviewTrack(
                 val upstream = source.dataSourceFactory
                 if (uri != null && upstream != null) {
                     val factory = counting(upstream)
-                    chosen = FillSource(resolveRedirect(uri, factory), factory, 1.0, "playing ($why)")
+                    chosen = FillSource(resolveRedirect(uri, factory), factory, 1.0, "playing ($why)", isPlaying = true)
                 }
             }
             fillSource = chosen
@@ -675,6 +728,8 @@ internal class LocalPreviewTrack(
         fillSource = fillSource?.label,
         workers = if (source.buffering) 1 else allowedWorkers,
         stalls = stalls,
+        readErrors = readErrors.get(),
+        lastError = lastError,
         buffering = source.buffering,
     )
 
@@ -761,6 +816,9 @@ internal class LocalPreviewTrack(
         private const val MAX_WORKERS = 8
         private const val ADJUST_EVERY = 4
         private const val SEEK_GRACE_MS = 5_000L
+        private const val RETRY_BASE_MS = 1_000L
+        private const val RETRY_MAX_MS = 15_000L
+        private const val SWITCH_AFTER_FAILURES = 3
         private const val DECODE_QUEUE = 6
         private const val CANDIDATE_WAIT_MS = 8_000L
         private const val MAX_PROBES = 5
