@@ -33,58 +33,8 @@ jobs:
           git remote add upstream https://github.com/NuvioMedia/NuvioMobile.git
           git fetch upstream cmp-rewrite
 
-      - name: Apply upstream delta
-        run: |
-          set -euo pipefail
-
-          BASE_FILE=".github/nuvio-upstream-base"
-          if [[ ! -f "$BASE_FILE" ]]; then
-            echo "Missing $BASE_FILE; refusing to guess the last synced upstream commit." >&2
-            exit 1
-          fi
-
-          UPSTREAM_BASE="$(tr -d '[:space:]' < "$BASE_FILE")"
-          UPSTREAM_HEAD="$(git rev-parse upstream/cmp-rewrite)"
-
-          if [[ -z "$UPSTREAM_BASE" ]]; then
-            echo "$BASE_FILE is empty." >&2
-            exit 1
-          fi
-
-          if ! git cat-file -e "$UPSTREAM_BASE^{commit}" 2>/dev/null; then
-            echo "Recorded upstream base $UPSTREAM_BASE is not available locally." >&2
-            exit 1
-          fi
-
-          if ! git merge-base --is-ancestor "$UPSTREAM_BASE" "$UPSTREAM_HEAD"; then
-            echo "Recorded upstream base $UPSTREAM_BASE is not an ancestor of $UPSTREAM_HEAD." >&2
-            echo "Upstream may have been rewritten; refusing an unsafe automatic sync." >&2
-            exit 1
-          fi
-
-          if [[ "$UPSTREAM_BASE" == "$UPSTREAM_HEAD" ]]; then
-            echo "Already synced to upstream $UPSTREAM_HEAD."
-          else
-            echo "Applying upstream delta $UPSTREAM_BASE..$UPSTREAM_HEAD"
-
-            git diff --binary --full-index "$UPSTREAM_BASE" "$UPSTREAM_HEAD" -- \
-              . ':(exclude).github/workflows/**' > /tmp/nuvio-upstream.patch
-
-            if [[ -s /tmp/nuvio-upstream.patch ]]; then
-              git apply --3way --index /tmp/nuvio-upstream.patch
-            else
-              echo "Upstream delta only changed excluded fork-owned workflow files."
-            fi
-
-            printf '%s\n' "$UPSTREAM_HEAD" > "$BASE_FILE"
-            git add "$BASE_FILE"
-          fi
-
-          if git diff --cached --quiet; then
-            echo "No upstream source changes to commit."
-          else
-            git commit -m "Sync Nuvio upstream"
-          fi
+      - name: Merge upstream
+        run: .github/scripts/merge-nuvio-upstream.sh upstream/cmp-rewrite "Sync Nuvio upstream"
 
       - name: Set up Java
         uses: actions/setup-java@v5
