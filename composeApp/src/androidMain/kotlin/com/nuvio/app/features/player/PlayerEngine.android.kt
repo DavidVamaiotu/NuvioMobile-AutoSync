@@ -1357,6 +1357,7 @@ private class NuvioLibmpvView(
         mpv.setOptionString("demuxer-max-bytes", "$aheadBytes").logIfMpvError("demuxer-max-bytes")
         mpv.setOptionString("demuxer-max-back-bytes", "$backBytes").logIfMpvError("demuxer-max-back-bytes")
         mpv.setOptionString("vd-lavc-film-grain", "cpu")
+        mpv.setOptionString("sub-fonts-dir", SubtitleFontStore.fontsDir(context).path)
         mpv.setPropertyBoolean("keep-open", true)
         mpv.setPropertyBoolean("input-default-bindings", true)
         mpv.setPropertyBoolean("audio-fallback-to-null", true)
@@ -1668,6 +1669,10 @@ private class NuvioLibmpvView(
                     mpv.setPropertyString("sub-border-color", style.outlineColor.toMpvColor())
                     mpv.setPropertyString("sub-border-style", style.toMpvSubtitleBorderStyle())
                     mpv.setPropertyString("sub-bold", if (style.bold) "yes" else "no")
+                    mpv.setPropertyString(
+                        "sub-font",
+                        SubtitleFontStore.current(context)?.familyName ?: "sans-serif",
+                    )
                     mpv.setPropertyInt("sub-font-size", style.toMpvSubtitleFontSize())
                     mpv.setPropertyInt("sub-outline-size", style.toMpvSubtitleOutlineSize())
                     mpv.setPropertyInt("sub-border-size", style.toMpvSubtitleOutlineSize())
@@ -2030,7 +2035,9 @@ private fun PlayerView.applySubtitleStyle(style: SubtitleStyleState, pipScale: F
                 android.graphics.Color.TRANSPARENT,
                 if (style.outlineEnabled) CaptionStyleCompat.EDGE_TYPE_OUTLINE else CaptionStyleCompat.EDGE_TYPE_NONE,
                 style.outlineColor.toArgb(),
-                if (style.bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT,
+                SubtitleFontStore.current(context)?.typeface
+                    ?.let { if (style.bold) Typeface.create(it, Typeface.BOLD) else it }
+                    ?: if (style.bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT,
             )
         )
         setFixedTextSize(TypedValue.COMPLEX_UNIT_SP, style.fontSizeSp.toFloat() * pipScale)
