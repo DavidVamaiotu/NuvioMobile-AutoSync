@@ -1,6 +1,9 @@
 package com.nuvio.app.features.player.seekpreview
 
+import com.nuvio.app.features.debrid.DirectDebridPlayableResult
+import com.nuvio.app.features.debrid.DirectDebridPlaybackResolver
 import com.nuvio.app.features.streams.StreamDebridCacheState
+import com.nuvio.app.features.streams.StreamItem
 import com.nuvio.app.features.streams.StreamsUiState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -83,10 +86,13 @@ internal fun localSeekPreviewCacheKey(
 ).joinToString("|")
 
 /** Another stream of the same title that background fill may read keyframes from. */
-internal data class LocalPreviewStreamCandidate(
-    val url: String,
+internal class LocalPreviewStreamCandidate(
+    /** Direct URL when the addon gave one; debrid streams get theirs from [resolveUrl]. */
+    val url: String?,
     val requestHeaders: Map<String, String>,
     val sizeBytes: Long,
+    /** Asks the debrid service for a playable link; only for streams it reports cached. */
+    val resolveUrl: (suspend () -> String?)? = null,
 )
 
 /**
@@ -95,36 +101,105 @@ internal data class LocalPreviewStreamCandidate(
  */
 internal object LocalSeekPreviewStreams {
     val candidates = MutableStateFlow<List<LocalPreviewStreamCandidate>>(emptyList())
+    /** Why streams were left out, for the debug readout, e.g. "12 streams, 3 no size". */
+    val summary = MutableStateFlow<String?>(null)
 }
 
-/** Direct HTTP streams with a known size, smallest first. */
-internal fun StreamsUiState.localPreviewCandidates(): List<LocalPreviewStreamCandidate> =
-    groups.asSequence()
-        .flatMap { it.streams.asSequence() }
-        .mapNotNull { stream ->
-            val url = stream.playableDirectUrl ?: return@mapNotNull null
-            val lowerUrl = url.lowercase()
-            if (!lowerUrl.startsWith("http://") && !lowerUrl.startsWith("https://")) return@mapNotNull null
-            val host = lowerUrl.substringAfter("://").substringBefore('/').substringBefore(':')
-            if (host == "localhost" || host.startsWith("127.")) return@mapNotNull null
-            val path = lowerUrl.substringBefore('?')
-            if (path.endsWith(".m3u8") || path.endsWith(".mpd")) return@mapNotNull null
+/** Usable streams with a known size, smallest first, plus a note on what was left out. */
+internal fun StreamsUiState.localPreviewCandidates(
+    season: Int?,
+    episode: Int?,
+): Pair<List<LocalPreviewStreamCandidate>, String> {
+    val all = groups.flatMap { it.streams }
+    var noLink = 0
+    var noSize = 0
+    var uncached = 0
+    var other = 0
+    val usable = all.mapNotNull { stream ->
+        if (stream.debridCacheStatus?.state == StreamDebridCacheState.NOT_CACHED || stream.looksUncached()) {
             // Opening an uncached debrid link would make the service start downloading it.
-            if (stream.debridCacheStatus?.state == StreamDebridCacheState.NOT_CACHED) return@mapNotNull null
-            val text = listOfNotNull(stream.name, stream.title, stream.description).joinToString(" ").lowercase()
-            if ("download" in text) return@mapNotNull null
-            val size = stream.clientResolve?.stream?.raw?.size
-                ?: stream.behaviorHints.videoSize
-                ?: stream.debridCacheStatus?.cachedSize
-                ?: return@mapNotNull null
-            // Samples and trailers are tiny but useless.
-            if (size < MIN_CANDIDATE_BYTES) return@mapNotNull null
-            LocalPreviewStreamCandidate(url, stream.behaviorHints.proxyHeaders?.request.orEmpty(), size)
+            uncached++
+            return@mapNotNull null
         }
-        .distinctBy { it.url }
+        val size = stream.clientResolve?.stream?.raw?.size
+            ?: stream.behaviorHints.videoSize
+            ?: stream.debridCacheStatus?.cachedSize
+            ?: stream.sizeFromText()
+        if (size == null) {
+            noSize++
+            return@mapNotNull null
+        }
+        // Samples and trailers are tiny but useless.
+        if (size < MIN_CANDIDATE_BYTES) {
+            other++
+            return@mapNotNull null
+        }
+        val headers = stream.behaviorHints.proxyHeaders?.request.orEmpty()
+        val url = stream.playableDirectUrl
+        when {
+            url != null -> {
+                if (!url.isUsableHttpStream()) {
+                    other++
+                    null
+                } else {
+                    LocalPreviewStreamCandidate(url, headers, size)
+                }
+            }
+            stream.isAddonDebridCandidate && (stream.isDirectDebridStream || stream.isCachedDebridTorrentStream) ->
+                LocalPreviewStreamCandidate(null, headers, size, resolveUrl = {
+                    (DirectDebridPlaybackResolver.resolveToPlayableStream(stream, season, episode) as? DirectDebridPlayableResult.Success)
+                        ?.stream?.playableDirectUrl
+                        ?.takeIf { it.isUsableHttpStream() }
+                })
+            else -> {
+                noLink++
+                null
+            }
+        }
+    }
+        .distinctBy { it.url ?: it.hashCode().toString() }
         .sortedBy { it.sizeBytes }
         .take(MAX_CANDIDATES)
-        .toList()
+    val summary = buildString {
+        append(all.size).append(" streams")
+        if (noSize > 0) append(", ").append(noSize).append(" no size")
+        if (noLink > 0) append(", ").append(noLink).append(" no link")
+        if (uncached > 0) append(", ").append(uncached).append(" uncached")
+        if (other > 0) append(", ").append(other).append(" other")
+    }
+    return usable to summary
+}
+
+private fun String.isUsableHttpStream(): Boolean {
+    val lower = lowercase()
+    if (!lower.startsWith("http://") && !lower.startsWith("https://")) return false
+    val host = lower.substringAfter("://").substringBefore('/').substringBefore(':')
+    if (host == "localhost" || host.startsWith("127.")) return false
+    val path = lower.substringBefore('?')
+    return !path.endsWith(".m3u8") && !path.endsWith(".mpd")
+}
+
+private val UncachedMarker = Regex("""\[[^\]]*download[^\]]*]|uncached|⏳""", RegexOption.IGNORE_CASE)
+private val SizeInText = Regex("""(\d+(?:[.,]\d+)?)\s*(TB|GB|GiB|MB|MiB)\b""", RegexOption.IGNORE_CASE)
+
+/** Addon markers like "[RD download]" for torrents the debrid service has not cached. */
+private fun StreamItem.looksUncached(): Boolean =
+    listOfNotNull(name, title, description).any { UncachedMarker.containsMatchIn(it) }
+
+/** Many addons only print the size, e.g. "💾 2.3 GB"; take the first one mentioned. */
+private fun StreamItem.sizeFromText(): Long? {
+    val match = listOfNotNull(title, description, name)
+        .firstNotNullOfOrNull { SizeInText.find(it) } ?: return null
+    val value = match.groupValues[1].replace(',', '.').toDoubleOrNull() ?: return null
+    val multiplier = when (match.groupValues[2].uppercase()) {
+        "TB" -> 1e12
+        "GB" -> 1e9
+        "GIB" -> 1_073_741_824.0
+        "MIB" -> 1_048_576.0
+        else -> 1e6
+    }
+    return (value * multiplier).toLong()
+}
 
 private const val MIN_CANDIDATE_BYTES = 150L * 1_000_000L
-private const val MAX_CANDIDATES = 6
+private const val MAX_CANDIDATES = 8

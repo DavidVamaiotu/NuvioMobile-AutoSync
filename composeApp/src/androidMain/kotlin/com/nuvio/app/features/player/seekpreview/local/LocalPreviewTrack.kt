@@ -57,6 +57,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 
 /**
@@ -351,22 +352,28 @@ internal class LocalPreviewTrack(
             val candidates = LocalSeekPreviewStreams.candidates.value
             val playingSize = candidates.firstOrNull { it.url == source.sourceKey }?.sizeBytes
             var chosen: FillSource? = null
-            var probed = 0
+            val rejected = mutableListOf<String>()
             for (candidate in candidates.take(MAX_PROBES)) {
                 if (closed) break
                 // Nothing smaller than the playing stream is left to try.
-                if (candidate.url == source.sourceKey) break
+                if (candidate.url != null && candidate.url == source.sourceKey) break
                 if (playingSize != null && candidate.sizeBytes >= playingSize) break
                 setPaused("checking ${formatSize(candidate.sizeBytes)} stream")
-                probed++
-                chosen = probe(candidate)
-                if (chosen != null) break
+                val result = probe(candidate)
+                if (result is ProbeResult.Accepted) {
+                    chosen = result.source
+                    break
+                }
+                rejected += "${formatSize(candidate.sizeBytes)}: ${(result as ProbeResult.Rejected).reason}"
             }
-            // Say why the playing stream is read, so a test run shows what to fix next.
+            // Say what happened to the smaller streams, so a test run shows what to fix next.
+            val listNote = LocalSeekPreviewStreams.summary.value ?: "no stream list"
+            val skipNote = if (rejected.isEmpty()) "" else " · skipped " + rejected.joinToString(", ")
+            chosen = chosen?.let { FillSource(it.uri, it.factory, it.scale, "${it.label} ($listNote$skipNote)") }
             val why = when {
-                candidates.isEmpty() -> "no stream list"
-                probed == 0 -> "already smallest"
-                else -> "$probed smaller did not match"
+                candidates.isEmpty() -> listNote
+                rejected.isEmpty() -> "already smallest; $listNote"
+                else -> "$listNote$skipNote"
             }
             if (chosen == null && !closed) {
                 val uri = source.uri
@@ -383,8 +390,16 @@ internal class LocalPreviewTrack(
         }
     }
 
+    private sealed class ProbeResult {
+        class Accepted(val source: FillSource) : ProbeResult()
+        class Rejected(val reason: String) : ProbeResult()
+    }
+
     /** Opens [candidate] and accepts it only when its runtime matches what is playing. */
-    private fun probe(candidate: LocalPreviewStreamCandidate): FillSource? {
+    private fun probe(candidate: LocalPreviewStreamCandidate): ProbeResult {
+        val url = candidate.url
+            ?: runCatching { runBlocking { candidate.resolveUrl?.invoke() } }.getOrNull()
+            ?: return ProbeResult.Rejected("no link")
         val factory = counting(
             PlatformPlaybackDataSourceFactory.create(
                 context = source.context,
@@ -393,7 +408,7 @@ internal class LocalPreviewTrack(
                 useYoutubeChunkedPlayback = false,
             ),
         )
-        val uri = resolveRedirect(Uri.parse(candidate.url), factory)
+        val uri = resolveRedirect(Uri.parse(url), factory)
         val seekMaps = SeekMapCapturingExtractorsFactory(DefaultExtractorsFactory())
         val extractor = MediaExtractorCompat(seekMaps, BoundedRangeDataSourceFactory(factory))
         return try {
@@ -404,23 +419,21 @@ internal class LocalPreviewTrack(
             val seekMap = seekMaps.seekMap
             val candidateMs = seekMap?.durationUs?.takeIf { it != C.TIME_UNSET && it > 0 }?.div(1_000L)
             if (!hasVideo || seekMap == null || !seekMap.isSeekable || candidateMs == null) {
-                Log.i(TAG, "smaller stream rejected: not seekable")
-                return null
+                return ProbeResult.Rejected("no index")
             }
             val scale = matchingScale(candidateMs)
-            if (scale == null) {
-                Log.i(TAG, "smaller stream rejected: runtime ${candidateMs}ms vs ${durationMs}ms")
-                return null
-            }
+                ?: return ProbeResult.Rejected("runtime ${signedSeconds(candidateMs - durationMs)}")
             Log.i(TAG, "reading keyframes from ${formatSize(candidate.sizeBytes)} stream, scale $scale")
-            FillSource(uri, factory, scale, formatSize(candidate.sizeBytes))
+            ProbeResult.Accepted(FillSource(uri, factory, scale, formatSize(candidate.sizeBytes)))
         } catch (error: Exception) {
             Log.i(TAG, "smaller stream rejected: ${error.message}")
-            null
+            ProbeResult.Rejected("unreadable")
         } finally {
             runCatching { extractor.release() }
         }
     }
+
+    private fun signedSeconds(ms: Long): String = (if (ms >= 0) "+" else "") + (ms / 1_000L) + "s"
 
     /**
      * How another release's timeline maps onto playback's, or null when it may be a different
@@ -731,8 +744,8 @@ internal class LocalPreviewTrack(
         private const val ADJUST_EVERY = 8
         private const val DECODE_QUEUE = 6
         private const val CANDIDATE_WAIT_MS = 8_000L
-        private const val MAX_PROBES = 3
-        private const val SAME_RUNTIME_TOLERANCE_MS = 3_000L
+        private const val MAX_PROBES = 5
+        private const val SAME_RUNTIME_TOLERANCE_MS = 5_000L
         private const val PAL_RATIO = 25.0 / (24_000.0 / 1_001.0)
         private const val PAL_TOLERANCE = 0.002
 

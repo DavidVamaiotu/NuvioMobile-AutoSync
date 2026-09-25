@@ -107,8 +107,10 @@ private fun PlayerScreenRuntime.BindSeekPreviewEffects() {
             episode = activeEpisodeNumber,
         )
     }
-    LaunchedEffect(sourceStreamsState) {
-        LocalSeekPreviewStreams.candidates.value = sourceStreamsState.localPreviewCandidates()
+    LaunchedEffect(sourceStreamsState, activeSeasonNumber, activeEpisodeNumber) {
+        val (candidates, summary) = sourceStreamsState.localPreviewCandidates(activeSeasonNumber, activeEpisodeNumber)
+        LocalSeekPreviewStreams.candidates.value = candidates
+        LocalSeekPreviewStreams.summary.value = summary
     }
     // Once the preview resolves a new cue, park an in-progress scrub on the frame it shows.
     LaunchedEffect(seekPreview.previewCue) {
