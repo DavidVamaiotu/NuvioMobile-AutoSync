@@ -1173,11 +1173,6 @@
     <string name="settings_playback_subtitle_background_color">Background Color</string>
     <string name="settings_playback_subtitle_bold">Bold</string>
     <string name="settings_playback_subtitle_bold_description">Use a heavier subtitle font weight.</string>
-    <string name="settings_playback_subtitle_font">Subtitle font</string>
-    <string name="settings_playback_subtitle_font_default">Default. Tap to import a .ttf or .otf file</string>
-    <string name="settings_playback_subtitle_font_importing">Importing font…</string>
-    <string name="settings_playback_subtitle_font_reset">Reset</string>
-    <string name="settings_playback_subtitle_font_invalid">That file isn't a usable TTF or OTF font.</string>
     <string name="settings_playback_subtitle_color_transparent">Transparent</string>
     <string name="settings_playback_subtitle_outline">Outline</string>
     <string name="settings_playback_subtitle_outline_color">Outline Color</string>

@@ -73,7 +73,6 @@ import com.nuvio.app.features.player.SubtitleLanguageOption
 import com.nuvio.app.features.player.formatPlaybackSpeedLabel
 import com.nuvio.app.features.player.languageLabelForCode
 import com.nuvio.app.features.player.subtitleFontSizeRangeSp
-import com.nuvio.app.features.player.rememberSubtitleFontPicker
 import com.nuvio.app.features.player.toStorageHexString
 import com.nuvio.app.features.p2p.P2pConsentDialog
 import com.nuvio.app.features.p2p.P2pCacheClearResult
@@ -608,34 +607,6 @@ private fun PlaybackSettingsSection(
                         PlayerSettingsRepository.setSubtitleStyle(subtitleStyle.copy(bold = enabled))
                     },
                 )
-                val subtitleFontPicker = rememberSubtitleFontPicker()
-                if (subtitleFontPicker != null) {
-                    SettingsGroupDivider(isTablet = isTablet)
-                    SettingsNavigationRow(
-                        title = stringResource(Res.string.settings_playback_subtitle_font),
-                        description = when {
-                            subtitleFontPicker.isImporting ->
-                                stringResource(Res.string.settings_playback_subtitle_font_importing)
-                            subtitleFontPicker.fontName != null -> subtitleFontPicker.fontName
-                            else -> stringResource(Res.string.settings_playback_subtitle_font_default)
-                        },
-                        enabled = subtitleRenderingEnabled && !subtitleFontPicker.isImporting,
-                        isTablet = isTablet,
-                        trailingContent = if (subtitleFontPicker.fontName != null) {
-                            {
-                                TextButton(
-                                    onClick = subtitleFontPicker.reset,
-                                    enabled = subtitleRenderingEnabled,
-                                ) {
-                                    Text(stringResource(Res.string.settings_playback_subtitle_font_reset))
-                                }
-                            }
-                        } else {
-                            null
-                        },
-                        onClick = subtitleFontPicker.pick,
-                    )
-                }
                 SettingsGroupDivider(isTablet = isTablet)
                 SettingsNavigationRow(
                     title = stringResource(Res.string.settings_playback_subtitle_text_color),

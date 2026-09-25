@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="settings_nuvio_reshaped">Nuvio Reshaped</string>
-    <string name="settings_nuvio_reshaped_description">Subtitle AutoSync, seek previews and stream matching</string>
+    <string name="settings_nuvio_reshaped_description">Subtitle AutoSync, subtitle fonts, seek previews and stream matching</string>
     <string name="settings_nuvio_reshaped_autosync_section">Subtitle AutoSync</string>
+    <string name="settings_nuvio_reshaped_subtitle_section">Subtitles</string>
+    <string name="settings_playback_subtitle_font">Subtitle font</string>
+    <string name="settings_playback_subtitle_font_default">Default. Tap to import a .ttf or .otf file</string>
+    <string name="settings_playback_subtitle_font_importing">Importing font…</string>
+    <string name="settings_playback_subtitle_font_reset">Reset</string>
+    <string name="settings_playback_subtitle_font_invalid">That file isn't a usable TTF or OTF font.</string>
 </resources>
