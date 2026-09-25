@@ -175,14 +175,23 @@ internal object AutomaticSubtitleSync {
         excludedReferenceKeys: Set<String> = emptySet(),
         requiredReferenceSource: AutoSyncReferenceSource? = null,
         onReferenceSearchOutcome: ((AutoSyncReferenceSearchOutcome) -> Unit)? = null,
+        /** A follow-up search in another language: log into the current debug session. */
+        continueDebugSession: Boolean = false,
     ): AutoSyncResolvedTimeline? {
         AutoSyncPreferencesRepository.ensureLoaded()
         val aggressiveMode = AutoSyncPreferencesRepository.aggressiveMode.value
 
-        AutoSyncDebugLog.start(
-            sourceKey = sourceKey,
-            subtitleUrl = selectedSubtitleUrl,
-        )
+        if (continueDebugSession) {
+            AutoSyncDebugLog.section { "SECONDARY LANGUAGE SEARCH" }
+            AutoSyncDebugLog.info {
+                "language=${preferredLanguage ?: "<none>"} seed=$selectedSubtitleUrl"
+            }
+        } else {
+            AutoSyncDebugLog.start(
+                sourceKey = sourceKey,
+                subtitleUrl = selectedSubtitleUrl,
+            )
+        }
         AutoSyncDebugLog.info {
             "mode=${if (aggressiveMode) "AGGRESSIVE" else "PASSIVE"}"
         }
