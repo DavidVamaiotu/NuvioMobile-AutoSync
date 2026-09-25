@@ -8,7 +8,6 @@
         android:name="com.nuvio.reshaped.permission.MIGRATE"
         android:protectionLevel="signature" />
     <uses-permission android:name="com.nuvio.reshaped.permission.MIGRATE" />
-    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
 
     <queries>
         <package android:name="com.nuvio.app" />

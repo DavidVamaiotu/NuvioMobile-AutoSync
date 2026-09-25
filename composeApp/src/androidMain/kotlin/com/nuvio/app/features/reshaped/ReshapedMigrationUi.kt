@@ -3,6 +3,7 @@ package com.nuvio.app.features.reshaped
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
+import android.provider.Settings
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import com.nuvio.app.R
@@ -148,9 +149,15 @@ internal class ReshapedMigrationUi(private val activity: Activity) {
         activity.startActivity(intent)
     }
 
+    /**
+     * Opens the app's system settings page, where the user taps Uninstall. Uninstalling directly
+     * would need REQUEST_DELETE_PACKAGES, which Play Protect treats as a warning sign.
+     */
     private fun uninstall(packageName: String) {
         runCatching {
-            activity.startActivity(Intent(Intent.ACTION_DELETE, Uri.parse("package:$packageName")))
+            activity.startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")),
+            )
         }
     }
 
