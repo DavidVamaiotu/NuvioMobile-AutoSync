@@ -401,6 +401,8 @@ jobs:
           # Same app under the pre-rename id: old installs update to it in place, then it installs
           # Nuvio RS and hands over its settings.
           rm -rf androidApp/build/outputs/apk/full/release
+          # A fresh daemon: two R8 runs in one daemon can exhaust the runner's memory.
+          ./gradlew --stop
           ./gradlew :androidApp:assembleFullRelease \
             -Pnuvio.app.versionName="$AUTOSYNC_TAG" \
             -Pnuvio.reshaped.legacyBridge=true \
