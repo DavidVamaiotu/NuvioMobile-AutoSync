@@ -37,6 +37,31 @@ so that it can keep tracking upstream with minimal friction. Concretely:
   localized and surgical as possible (e.g. a small conditional, a single
   extra parameter) rather than restructuring the surrounding function.
 
+## Never trade away accuracy, performance, or reliability
+
+Minimal-diff and upstream-compatibility are how a change is written, not
+an excuse for what it does. No implementation may sacrifice accuracy,
+performance, or reliability for the sake of a smaller diff or easier
+merge:
+
+- **Accuracy**: the feature must behave correctly, including edge cases
+  it's reasonably expected to handle. Don't ship a simplified or
+  approximate implementation just because the precise one would touch
+  more code.
+- **Performance**: don't introduce regressions (extra work on hot paths,
+  unnecessary recomposition/allocations, blocking calls on the UI/main
+  thread, etc.) to keep a diff small. A slightly larger, detached
+  fork-specific implementation that performs well beats a tiny shim that
+  doesn't.
+- **Reliability**: don't skip error handling, race-condition safety, or
+  proper state management to save lines. Fork-specific code must be as
+  robust as the upstream code it sits next to.
+
+When minimal-diff/detachment and accuracy/performance/reliability are in
+tension, keep the change detached from upstream architecture (new files,
+thin hooks, wrappers) but do not shrink its correctness, speed, or
+robustness to achieve that detachment.
+
 ## Practical checklist before finishing a change
 
 - Would this diff still apply cleanly (or with trivial conflicts) if
