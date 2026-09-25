@@ -358,6 +358,18 @@ jobs:
             echo "::warning::TRAKT_CLIENT_ID or TRAKT_CLIENT_SECRET secret is not set; Trakt login is disabled in this build"
           fi
 
+      - name: Add MDBList client ID
+        if: steps.version.outputs.already_exists == 'false'
+        env:
+          MDBLIST_CLIENT_ID: ${{ secrets.MDBLIST_CLIENT_ID }}
+        run: |
+          # MDBList sign-in and tracking stay unavailable in builds without the secret.
+          if [[ -n "$MDBLIST_CLIENT_ID" ]]; then
+            printf '\nMDBLIST_CLIENT_ID=%s\n' "$MDBLIST_CLIENT_ID" >> local.properties
+          else
+            echo "::warning::MDBLIST_CLIENT_ID secret is not set; MDBList sign-in is disabled in this build"
+          fi
+
       - name: Build signed Nuvio RS release APKs
         if: steps.version.outputs.already_exists == 'false'
         env:
