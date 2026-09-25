@@ -23,6 +23,8 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import com.nuvio.app.features.player.seekpreview.LocalSeekPreviewSession
 import com.nuvio.app.features.player.seekpreview.LocalSeekPreviewSettings
+import com.nuvio.app.features.player.seekpreview.LocalSeekPreviewStreams
+import com.nuvio.app.features.player.seekpreview.localPreviewCandidates
 import com.nuvio.app.features.player.seekpreview.SeekPreviewSyncPanel
 import com.nuvio.app.features.player.seekpreview.SeekPreviewThumbnailStrip
 import com.nuvio.app.features.player.seekpreview.SeekrKeyRepository
@@ -92,6 +94,21 @@ private fun PlayerScreenRuntime.BindSeekPreviewEffects() {
             episode = activeEpisodeNumber,
             durationMs = playbackSnapshot.durationMs,
         )
+    }
+    // On-device previews read keyframes from the smallest stream the addons offer, so ask for
+    // the list (the Sources panel's own request) and keep the candidates current.
+    LaunchedEffect(localEnabled, activeVideoId, activeSeasonNumber, activeEpisodeNumber) {
+        if (!localEnabled) return@LaunchedEffect
+        val videoId = activeVideoId ?: return@LaunchedEffect
+        PlayerStreamsRepository.loadSources(
+            type = contentType ?: parentMetaType,
+            videoId = videoId,
+            season = activeSeasonNumber,
+            episode = activeEpisodeNumber,
+        )
+    }
+    LaunchedEffect(sourceStreamsState) {
+        LocalSeekPreviewStreams.candidates.value = sourceStreamsState.localPreviewCandidates()
     }
     // Once the preview resolves a new cue, park an in-progress scrub on the frame it shows.
     LaunchedEffect(seekPreview.previewCue) {

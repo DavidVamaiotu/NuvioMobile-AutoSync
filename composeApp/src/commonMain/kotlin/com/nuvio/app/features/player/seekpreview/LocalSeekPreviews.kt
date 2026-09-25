@@ -1,5 +1,7 @@
 package com.nuvio.app.features.player.seekpreview
 
+import com.nuvio.app.features.streams.StreamDebridCacheState
+import com.nuvio.app.features.streams.StreamsUiState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -30,6 +32,8 @@ internal data class LocalSeekPreviewStats(
     val avgDecodeMs: Long = 0,
     /** "hw" or "sw" decoder, or null before the first frame. */
     val decoder: String? = null,
+    /** Which stream background fill reads, e.g. "1.4 GB" or "playing". */
+    val fillSource: String? = null,
 )
 
 /** User settings for on-device seek previews. */
@@ -77,3 +81,50 @@ internal fun localSeekPreviewCacheKey(
     episode?.toString().orEmpty(),
     (durationMs / 1000L).toString(),
 ).joinToString("|")
+
+/** Another stream of the same title that background fill may read keyframes from. */
+internal data class LocalPreviewStreamCandidate(
+    val url: String,
+    val requestHeaders: Map<String, String>,
+    val sizeBytes: Long,
+)
+
+/**
+ * Streams the addons offered for the title playing, smallest first. Keyframes of a small encode
+ * cost a fraction of a remux's, so background fill prefers one whose runtime matches.
+ */
+internal object LocalSeekPreviewStreams {
+    val candidates = MutableStateFlow<List<LocalPreviewStreamCandidate>>(emptyList())
+}
+
+/** Direct HTTP streams with a known size, smallest first. */
+internal fun StreamsUiState.localPreviewCandidates(): List<LocalPreviewStreamCandidate> =
+    groups.asSequence()
+        .flatMap { it.streams.asSequence() }
+        .mapNotNull { stream ->
+            val url = stream.playableDirectUrl ?: return@mapNotNull null
+            val lowerUrl = url.lowercase()
+            if (!lowerUrl.startsWith("http://") && !lowerUrl.startsWith("https://")) return@mapNotNull null
+            val host = lowerUrl.substringAfter("://").substringBefore('/').substringBefore(':')
+            if (host == "localhost" || host.startsWith("127.")) return@mapNotNull null
+            val path = lowerUrl.substringBefore('?')
+            if (path.endsWith(".m3u8") || path.endsWith(".mpd")) return@mapNotNull null
+            // Opening an uncached debrid link would make the service start downloading it.
+            if (stream.debridCacheStatus?.state == StreamDebridCacheState.NOT_CACHED) return@mapNotNull null
+            val text = listOfNotNull(stream.name, stream.title, stream.description).joinToString(" ").lowercase()
+            if ("download" in text) return@mapNotNull null
+            val size = stream.clientResolve?.stream?.raw?.size
+                ?: stream.behaviorHints.videoSize
+                ?: stream.debridCacheStatus?.cachedSize
+                ?: return@mapNotNull null
+            // Samples and trailers are tiny but useless.
+            if (size < MIN_CANDIDATE_BYTES) return@mapNotNull null
+            LocalPreviewStreamCandidate(url, stream.behaviorHints.proxyHeaders?.request.orEmpty(), size)
+        }
+        .distinctBy { it.url }
+        .sortedBy { it.sizeBytes }
+        .take(MAX_CANDIDATES)
+        .toList()
+
+private const val MIN_CANDIDATE_BYTES = 150L * 1_000_000L
+private const val MAX_CANDIDATES = 6

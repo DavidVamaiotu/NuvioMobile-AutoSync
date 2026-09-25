@@ -382,6 +382,7 @@ private fun LocalSeekPreviewStats.debugLine(): String = buildString {
     append(" · ").append(downloadedBytes / 1_000_000L).append(" MB")
     if (fromBuffer > 0) append(" · ").append(fromBuffer).append(" buffer")
     if (fromCache > 0) append(" · ").append(fromCache).append(" cached")
+    fillSource?.let { append(" · src ").append(it) }
     if (avgFetchMs > 0) append(" · fetch ").append(avgFetchMs).append("ms")
     if (avgDecodeMs > 0) append(" · ").append(decoder ?: "?").append(' ').append(avgDecodeMs).append("ms")
     pausedReason?.let { append(" · ").append(it) }

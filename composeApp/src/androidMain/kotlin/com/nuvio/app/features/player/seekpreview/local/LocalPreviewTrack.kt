@@ -29,7 +29,10 @@ import androidx.media3.extractor.PositionHolder
 import androidx.media3.extractor.SeekMap
 import androidx.media3.extractor.SniffFailure
 import androidx.media3.extractor.TrackOutput
+import com.nuvio.app.features.player.PlatformPlaybackDataSourceFactory
+import com.nuvio.app.features.player.seekpreview.LocalPreviewStreamCandidate
 import com.nuvio.app.features.player.seekpreview.LocalSeekPreviewSettings
+import com.nuvio.app.features.player.seekpreview.LocalSeekPreviewStreams
 import com.nuvio.app.features.player.seekpreview.LocalSeekPreviewStats
 import com.nuvio.app.features.player.seekpreview.SeekPreviewTrack
 import com.nuvio.app.features.player.seekpreview.SeekrThumbnail
@@ -108,7 +111,10 @@ internal class LocalPreviewTrack(
     private val fetchTimes = RollingAverage()
     private val decodeTimes = RollingAverage()
     private val resolveLock = Any()
-    @Volatile private var resolved: Uri? = null
+    @Volatile private var fillSource: FillSource? = null
+    private var fillChosen = false
+    /** Fill-stream keyframe time (µs) → slot holding it; its timeline may differ from playback's. */
+    private val fillKeyframeSlots = HashMap<Long, Int>()
     private val tapExecutor = ThreadPoolExecutor(
         1, 1, 30, TimeUnit.SECONDS, ArrayBlockingQueue<Runnable>(TAP_QUEUE),
         { runnable -> Thread(runnable, "NuvioPreviewTap").apply { isDaemon = true } },
@@ -138,12 +144,6 @@ internal class LocalPreviewTrack(
             loadCache()
             notifyChanged()
             if (closed) return@launch
-            val blocked = source.backgroundBlockedReason
-            if (blocked != null) {
-                pausedReason = blocked
-                notifyChanged()
-                return@launch
-            }
             Thread({ decodeLoop() }, "NuvioPreviewDecode").apply { isDaemon = true }.start()
             repeat(WORKERS) { index ->
                 val worker = Thread({ workerLoop() }, "NuvioPreviewFill$index").apply { isDaemon = true }
@@ -254,10 +254,6 @@ internal class LocalPreviewTrack(
         // Slightly below normal: THREAD_PRIORITY_BACKGROUND puts threads in the background
         // cgroup, which on many phones caps them at a sliver of one core and made fill crawl.
         Process.setThreadPriority(Process.THREAD_PRIORITY_LESS_FAVORABLE * 2)
-        val upstream = source.dataSourceFactory ?: return
-        val counting = DataSource.Factory {
-            upstream.createDataSource().apply { addTransferListener(ByteCounter(downloaded)) }
-        }
         // Let playback start alone; the first seconds of buffering matter most.
         while (!closed && !source.released) {
             val readyAt = source.readyAtMs
@@ -266,11 +262,15 @@ internal class LocalPreviewTrack(
             Thread.sleep(250L)
         }
         if (closed || source.released) return
-        val uri = resolvedUri(counting) ?: return
+        val fill = chooseFillSource()
+        if (fill == null) {
+            setPaused(source.backgroundBlockedReason ?: "no stream to read")
+            return
+        }
         val seekMaps = SeekMapCapturingExtractorsFactory(DefaultExtractorsFactory())
-        val extractor = MediaExtractorCompat(seekMaps, BoundedRangeDataSourceFactory(counting))
+        val extractor = MediaExtractorCompat(seekMaps, BoundedRangeDataSourceFactory(fill.factory))
         try {
-            extractor.setDataSource(uri, 0L)
+            extractor.setDataSource(fill.uri, 0L)
             val videoTrack = (0 until extractor.trackCount).firstOrNull { index ->
                 extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME).orEmpty().startsWith("video/")
             }
@@ -297,7 +297,7 @@ internal class LocalPreviewTrack(
                 }
                 setPaused(null)
                 val slot = nextSlot() ?: break
-                buffer = fillSlot(extractor, seekMap, format, slot, buffer)
+                buffer = fillSlot(extractor, seekMap, format, slot, buffer, fill.scale)
             }
             if (!closed) setPaused(if (isComplete()) null else pausedReason)
         } catch (_: InterruptedException) {
@@ -310,28 +310,128 @@ internal class LocalPreviewTrack(
         }
     }
 
+    /** A stream background fill reads keyframes from, and how its timeline maps to playback's. */
+    private class FillSource(
+        val uri: Uri,
+        val factory: DataSource.Factory,
+        /** Fill-stream time = playback time × scale (1.0, or a PAL speed-up ratio). */
+        val scale: Double,
+        val label: String,
+    )
+
+    private fun counting(upstream: DataSource.Factory) = DataSource.Factory {
+        upstream.createDataSource().apply { addTransferListener(ByteCounter(downloaded)) }
+    }
+
+    /**
+     * Picks the stream to read once for all workers: the smallest stream the addons offered
+     * whose runtime matches playback (its keyframes are several times smaller than a remux's),
+     * else the playing stream itself.
+     */
+    private fun chooseFillSource(): FillSource? {
+        synchronized(resolveLock) {
+            if (fillChosen) return fillSource
+            // The stream list may still be loading; give it a moment.
+            val waitUntil = SystemClock.uptimeMillis() + CANDIDATE_WAIT_MS
+            while (!closed && LocalSeekPreviewStreams.candidates.value.isEmpty() && SystemClock.uptimeMillis() < waitUntil) {
+                setPaused("finding smallest stream")
+                Thread.sleep(250L)
+            }
+            val playingSize = LocalSeekPreviewStreams.candidates.value.firstOrNull { it.url == source.sourceKey }?.sizeBytes
+            var chosen: FillSource? = null
+            for (candidate in LocalSeekPreviewStreams.candidates.value.take(MAX_PROBES)) {
+                if (closed) break
+                // Nothing smaller than the playing stream is left to try.
+                if (candidate.url == source.sourceKey) break
+                if (playingSize != null && candidate.sizeBytes >= playingSize) break
+                setPaused("checking ${formatSize(candidate.sizeBytes)} stream")
+                chosen = probe(candidate)
+                if (chosen != null) break
+            }
+            if (chosen == null && !closed) {
+                val uri = source.uri
+                val upstream = source.dataSourceFactory
+                if (uri != null && upstream != null) {
+                    val factory = counting(upstream)
+                    chosen = FillSource(resolveRedirect(uri, factory), factory, 1.0, "playing")
+                }
+            }
+            fillSource = chosen
+            fillChosen = true
+            notifyChanged()
+            return chosen
+        }
+    }
+
+    /** Opens [candidate] and accepts it only when its runtime matches what is playing. */
+    private fun probe(candidate: LocalPreviewStreamCandidate): FillSource? {
+        val factory = counting(
+            PlatformPlaybackDataSourceFactory.create(
+                context = source.context,
+                defaultRequestHeaders = candidate.requestHeaders,
+                defaultResponseHeaders = emptyMap(),
+                useYoutubeChunkedPlayback = false,
+            ),
+        )
+        val uri = resolveRedirect(Uri.parse(candidate.url), factory)
+        val seekMaps = SeekMapCapturingExtractorsFactory(DefaultExtractorsFactory())
+        val extractor = MediaExtractorCompat(seekMaps, BoundedRangeDataSourceFactory(factory))
+        return try {
+            extractor.setDataSource(uri, 0L)
+            val hasVideo = (0 until extractor.trackCount).any { index ->
+                extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME).orEmpty().startsWith("video/")
+            }
+            val seekMap = seekMaps.seekMap
+            val candidateMs = seekMap?.durationUs?.takeIf { it != C.TIME_UNSET && it > 0 }?.div(1_000L)
+            if (!hasVideo || seekMap == null || !seekMap.isSeekable || candidateMs == null) {
+                Log.i(TAG, "smaller stream rejected: not seekable")
+                return null
+            }
+            val scale = matchingScale(candidateMs)
+            if (scale == null) {
+                Log.i(TAG, "smaller stream rejected: runtime ${candidateMs}ms vs ${durationMs}ms")
+                return null
+            }
+            Log.i(TAG, "reading keyframes from ${formatSize(candidate.sizeBytes)} stream, scale $scale")
+            FillSource(uri, factory, scale, formatSize(candidate.sizeBytes))
+        } catch (error: Exception) {
+            Log.i(TAG, "smaller stream rejected: ${error.message}")
+            null
+        } finally {
+            runCatching { extractor.release() }
+        }
+    }
+
+    /**
+     * How another release's timeline maps onto playback's, or null when it may be a different
+     * cut: same runtime (within a few seconds), or the 25 fps / 23.976 fps PAL speed change.
+     */
+    private fun matchingScale(candidateMs: Long): Double? {
+        if (abs(candidateMs - durationMs) <= SAME_RUNTIME_TOLERANCE_MS) return 1.0
+        val ratio = candidateMs.toDouble() / durationMs.toDouble()
+        for (pal in doubleArrayOf(PAL_RATIO, 1.0 / PAL_RATIO)) {
+            if (abs(ratio - pal) < PAL_TOLERANCE) return pal
+        }
+        return null
+    }
+
     /**
      * The stream's final URL. Debrid links often redirect to a CDN; resolving that once saves a
      * round trip on every one of the hundreds of range requests that follow.
      */
-    private fun resolvedUri(factory: DataSource.Factory): Uri? {
-        val original = source.uri ?: return null
-        synchronized(resolveLock) {
-            resolved?.let { return it }
-            val result = runCatching {
-                val dataSource = factory.createDataSource()
-                try {
-                    dataSource.open(DataSpec.Builder().setUri(original).setPosition(0).setLength(1).build())
-                    dataSource.read(ByteArray(1), 0, 1)
-                    dataSource.uri
-                } finally {
-                    dataSource.close()
-                }
-            }.getOrNull()?.takeIf { it.scheme == "http" || it.scheme == "https" } ?: original
-            if (result != original) Log.i(TAG, "resolved stream redirect to ${result.host}")
-            resolved = result
-            return result
-        }
+    private fun resolveRedirect(original: Uri, factory: DataSource.Factory): Uri {
+        val result = runCatching {
+            val dataSource = factory.createDataSource()
+            try {
+                dataSource.open(DataSpec.Builder().setUri(original).setPosition(0).setLength(1).build())
+                dataSource.read(ByteArray(1), 0, 1)
+                dataSource.uri
+            } finally {
+                dataSource.close()
+            }
+        }.getOrNull()?.takeIf { it.scheme == "http" || it.scheme == "https" } ?: original
+        if (result != original) Log.i(TAG, "resolved stream redirect to ${result.host}")
+        return result
     }
 
     /** Fetches the keyframe nearest [slot]'s start and hands it to the decode thread. */
@@ -341,18 +441,20 @@ internal class LocalPreviewTrack(
         format: MediaFormat,
         slot: Int,
         initialBuffer: ByteBuffer,
+        scale: Double,
     ): ByteBuffer {
         var buffer = initialBuffer
-        val targetUs = slot * SLOT_MS * 1_000L
+        // Target and keyframe times are on the fill stream's timeline.
+        val targetUs = (slot * SLOT_MS * 1_000L * scale).toLong()
         // The index names the keyframes around the target without downloading anything.
         val points = seekMap.getSeekPoints(targetUs)
         val keyUs = listOf(points.first.timeUs, points.second.timeUs).minByOrNull { abs(it - targetUs) } ?: targetUs
-        val knownSlot = synchronized(lock) { keyframeSlots[keyUs / 1_000L] }
+        val knownSlot = synchronized(lock) { fillKeyframeSlots[keyUs] }
         if (knownSlot != null) {
             // Long-GOP encodes: this slot's nearest keyframe is already a thumbnail.
             val bytes = synchronized(lock) { jpegs[knownSlot] }
             if (bytes != null) {
-                store(slot, bytes, keyUs / 1_000L)
+                store(slot, bytes, (keyUs / scale / 1_000.0).toLong())
                 return buffer
             }
         }
@@ -375,7 +477,8 @@ internal class LocalPreviewTrack(
         fetchTimes.add(SystemClock.elapsedRealtime() - fetchStart)
         val sample = buffer.array().copyOfRange(buffer.arrayOffset(), buffer.arrayOffset() + read)
         // Blocks when the decoder is behind, so fetching never runs far ahead of it.
-        val job = DecodeJob(slot, format, sample, timeUs)
+        synchronized(lock) { fillKeyframeSlots.putIfAbsent(timeUs, slot) }
+        val job = DecodeJob(slot, format, sample, (timeUs / scale).toLong())
         while (!closed && !decodeQueue.offer(job, 500L, TimeUnit.MILLISECONDS)) Unit
         if (closed) markFailed(slot)
         return buffer
@@ -494,6 +597,7 @@ internal class LocalPreviewTrack(
         avgFetchMs = fetchTimes.average(),
         avgDecodeMs = decodeTimes.average(),
         decoder = decoder.activeDecoderLabel,
+        fillSource = fillSource?.label,
     )
 
     // ---- Disk cache ----------------------------------------------------------------------
@@ -576,6 +680,14 @@ internal class LocalPreviewTrack(
         const val SLOT_MS = 10_000L
         private const val WORKERS = 3
         private const val DECODE_QUEUE = 6
+        private const val CANDIDATE_WAIT_MS = 8_000L
+        private const val MAX_PROBES = 3
+        private const val SAME_RUNTIME_TOLERANCE_MS = 3_000L
+        private const val PAL_RATIO = 25.0 / (24_000.0 / 1_001.0)
+        private const val PAL_TOLERANCE = 0.002
+
+        private fun formatSize(bytes: Long): String =
+            if (bytes >= 1_000_000_000L) "%.1f GB".format(bytes / 1e9) else "${bytes / 1_000_000L} MB"
         private const val MAX_KEYFRAME_DISTANCE_US = 2 * SLOT_MS * 1_000L
         private const val PRIORITY_RADIUS = 6
         private const val START_GRACE_MS = 2_000L
