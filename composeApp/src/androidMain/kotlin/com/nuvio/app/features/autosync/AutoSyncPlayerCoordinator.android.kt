@@ -11,6 +11,7 @@ import com.nuvio.app.features.player.PlayerEngineController
 import com.nuvio.app.features.player.PlayerSubtitleUtils
 import com.nuvio.app.features.player.SidecarSubtitleController
 import com.nuvio.app.features.player.audiosync.AudioSyncFallback
+import com.nuvio.app.features.player.seekpreview.local.LocalPreviewSources
 import androidx.media3.datasource.DataSource
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.autosync_toast_analyze_failed
@@ -94,6 +95,8 @@ internal class AutoSyncPlayerCoordinator(
             appliedListener?.invoke(url, 0)
         },
     )
+    /** Lets on-device seek previews collect this stream's keyframes as playback demuxes them. */
+    private val localPreviewSource = LocalPreviewSources.register(context, sourceUrl)
     private val _retryState = MutableStateFlow(AutoSyncRetryUiState())
     val retryState: StateFlow<AutoSyncRetryUiState> = _retryState.asStateFlow()
 
@@ -171,6 +174,7 @@ internal class AutoSyncPlayerCoordinator(
     fun dispose() {
         cancel()
         audioFallback.release()
+        LocalPreviewSources.unregister(localPreviewSource)
         appliedListener = null
     }
 

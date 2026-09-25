@@ -13,7 +13,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
  */
 @Stable
 internal class SeekPreviewSession {
-    var track by mutableStateOf<SeekrTrack?>(null)
+    var track by mutableStateOf<SeekPreviewTrack?>(null)
         private set
 
     /** The cue window (playback timebase) of the frame the preview is centred on. */
@@ -59,22 +59,41 @@ internal class SeekPreviewSession {
         val loadGeneration = ++generation
         // A new track describes a different release, so any sync dialled in for the previous
         // one is meaningless.
+        track?.close()
         track = null
         previewCue = null
         offsetMs = 0
         suggestedOffsetMs = 0L
         showSyncPanel = false
-        if (apiKey.isBlank() || durationMs <= 0L) return
+        if (durationMs <= 0L) return
+        // On-device thumbnails always line up but only cover what playback has buffered; Seekr
+        // covers the rest. Either works alone when the other is unavailable.
+        var local: SeekPreviewTrack? = null
+        if (LocalSeekPreviewSettings.enabled.value) {
+            val cacheKey = localSeekPreviewCacheKey(contentId, season, episode, durationMs)
+            local = openLocalSeekPreviewTrack(cacheKey, durationMs)
+            if (local != null) {
+                if (loadGeneration != generation) {
+                    local.close()
+                    return
+                }
+                // Show on-device frames at once; Seekr joins when it has loaded.
+                track = local
+                local.prefetch()
+            }
+        }
+        if (apiKey.isBlank()) return
         val content = seekrContentFor(contentId, contentType, season, episode) ?: return
         val loaded = SeekrClient(apiKey).loadTrack(content, durationMs) ?: return
         if (loadGeneration != generation) return
-        track = loaded
+        track = if (local != null) HybridSeekPreviewTrack(local, loaded) else loaded
         suggestedOffsetMs = if (loaded.sourceDurationMs > 0L) loaded.sourceDurationMs - durationMs else 0L
-        loaded.prefetchSheets()
+        loaded.prefetch()
     }
 
     fun clear() {
         generation++
+        track?.close()
         track = null
         previewCue = null
         offsetMs = 0

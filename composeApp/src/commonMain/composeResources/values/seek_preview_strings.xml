@@ -8,4 +8,6 @@
     <string name="player_seek_preview_sync_reset">Reset</string>
     <string name="player_seek_preview_frame_at">frame %1$s</string>
     <string name="cd_seek_preview_sync">Preview sync</string>
+    <string name="settings_seek_preview_local">Generate previews on device</string>
+    <string name="settings_seek_preview_local_description">Makes thumbnails from what playback already downloaded, so they always line up and cost no extra data. Seekr fills in the parts you have not watched yet.</string>
 </resources>

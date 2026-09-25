@@ -19,6 +19,7 @@ import androidx.media3.extractor.TrackOutput
 import androidx.media3.extractor.text.CueDecoder
 import com.nuvio.app.features.player.SubtitleSyncCue
 import com.nuvio.app.features.player.audiosync.AudioSyncTaps
+import com.nuvio.app.features.player.seekpreview.local.LocalPreviewSources
 import java.io.EOFException
 import kotlin.math.max
 
@@ -28,7 +29,11 @@ internal class AutoSyncExtractorsFactory(
     private val sourceKey: String,
 ) : ExtractorsFactory {
     // Audio is copied too, for the audio sync fallback (idle unless it is listening).
-    private val delegate: ExtractorsFactory = AudioSyncTaps.wrapExtractors(delegate, sourceKey)
+    // Video keyframes are copied too, for on-device seek previews (idle once all are made).
+    private val delegate: ExtractorsFactory = LocalPreviewSources.wrapExtractors(
+        AudioSyncTaps.wrapExtractors(delegate, sourceKey),
+        sourceKey,
+    )
 
     init {
         EmbeddedSubtitleCueStore.reset(sourceKey)

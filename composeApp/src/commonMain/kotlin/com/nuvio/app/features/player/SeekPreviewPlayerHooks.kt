@@ -8,7 +8,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -19,6 +22,7 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import com.nuvio.app.features.player.seekpreview.LocalSeekPreviewSession
+import com.nuvio.app.features.player.seekpreview.LocalSeekPreviewSettings
 import com.nuvio.app.features.player.seekpreview.SeekPreviewSyncPanel
 import com.nuvio.app.features.player.seekpreview.SeekPreviewThumbnailStrip
 import com.nuvio.app.features.player.seekpreview.SeekrKeyRepository
@@ -42,7 +46,8 @@ private const val MaxCueTicks = 400L
  */
 @Composable
 internal fun PlayerScreenRuntime.WithSeekPreview(content: @Composable () -> Unit) {
-    if (isIos || SeekrKeyRepository.effectiveKey().isBlank()) {
+    val localEnabled by LocalSeekPreviewSettings.enabled.collectAsState()
+    if (isIos || (SeekrKeyRepository.effectiveKey().isBlank() && !localEnabled)) {
         content()
         return
     }
@@ -65,7 +70,12 @@ internal fun PlayerScreenRuntime.seekPreviewAligned(positionMs: Long): Long =
 @Composable
 private fun PlayerScreenRuntime.BindSeekPreviewEffects() {
     val durationSeconds = playbackSnapshot.durationMs / 1000L
+    val localEnabled by LocalSeekPreviewSettings.enabled.collectAsState()
+    DisposableEffect(Unit) {
+        onDispose { seekPreview.clear() }
+    }
     LaunchedEffect(
+        localEnabled,
         parentMetaId,
         contentType,
         parentMetaType,
@@ -186,6 +196,7 @@ internal fun DrawScope.drawSeekPreviewCueTicks(cueIntervalMs: Long, durationMs: 
 /** Opens Preview Sync, or null when no preview track loaded for this title. */
 @Composable
 internal fun seekPreviewSyncAction(): (() -> Unit)? {
-    val session = LocalSeekPreviewSession.current?.takeIf { it.track != null } ?: return null
+    // On-device thumbnails come from the playing stream itself, so there is nothing to sync.
+    val session = LocalSeekPreviewSession.current?.takeIf { it.track?.isLocal == false } ?: return null
     return { session.showSyncPanel = true }
 }

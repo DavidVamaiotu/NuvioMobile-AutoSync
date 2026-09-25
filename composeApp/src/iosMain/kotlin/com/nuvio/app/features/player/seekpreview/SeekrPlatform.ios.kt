@@ -11,3 +11,6 @@ internal actual fun createSeekrHttpClient(): HttpClient = HttpClient(Darwin) {
 }
 
 internal actual fun decodeSeekrSpriteSheet(bytes: ByteArray): ImageBitmap? = null
+
+// On-device previews need the Android extractor and decoder; iOS falls back to Seekr.
+internal actual fun openLocalSeekPreviewTrack(cacheKey: String, durationMs: Long): SeekPreviewTrack? = null
