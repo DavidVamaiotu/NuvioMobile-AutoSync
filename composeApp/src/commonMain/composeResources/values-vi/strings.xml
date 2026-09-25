@@ -1686,7 +1686,7 @@
     <string name="addon_already_installed">Tiện ích này đã được cài đặt</string>
     <string name="addon_invalid_url">Nhập URL tiện ích hợp lệ</string>
     <string name="addon_load_manifest_failed">Không thể tải tệp kê khai</string>
-    <string name="app_brand_name">Nuvio</string>
+    <string name="app_brand_name">Nuvio RS</string>
     <string name="auth_account_deletion_failed">Xóa tài khoản thất bại</string>
     <string name="auth_sign_in_failed">Đăng nhập thất bại</string>
     <string name="auth_sign_out_failed">Đăng xuất thất bại</string>

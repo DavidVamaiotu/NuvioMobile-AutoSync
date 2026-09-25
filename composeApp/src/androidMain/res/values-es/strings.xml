@@ -1,4 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Nuvio</string>
+    <!-- app_name comes from values/: the same in every language, and the legacy bridge overrides it. -->
 </resources>

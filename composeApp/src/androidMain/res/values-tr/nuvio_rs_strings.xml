@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated: Nuvio RS migration prompts. -->
+<resources>
+    <string name="nuvio_rs_moved_title">Nuvio artık Nuvio RS</string>
+    <string name="nuvio_rs_bridge_install_message">Bu uygulama, resmi Nuvio\'nun yanına kurulan Nuvio RS olarak devam ediyor. Güncelleme almaya devam etmek için Nuvio RS\'yi kurun. Ayarlarınız otomatik olarak taşınır.</string>
+    <string name="nuvio_rs_bridge_installed_message">Nuvio RS kurulu. Ayarlarınızı taşımak için açın, ardından bu eski uygulamayı kaldırın.</string>
+    <string name="nuvio_rs_install">Nuvio RS\'yi kur</string>
+    <string name="nuvio_rs_downloading" formatted="true">İndiriliyor… %1$d%%</string>
+    <string name="nuvio_rs_download_failed">Nuvio RS indirilemedi. Daha sonra tekrar deneyin.</string>
+    <string name="nuvio_rs_allow_installs">Bu uygulamadan yüklemeye izin verin, ardından Nuvio RS\'yi kur seçeneğine tekrar dokunun.</string>
+    <string name="nuvio_rs_open">Nuvio RS\'yi aç</string>
+    <string name="nuvio_rs_uninstall_old">Eski uygulamayı kaldır</string>
+    <string name="nuvio_rs_later">Daha sonra</string>
+    <string name="nuvio_rs_imported_title">Ayarlar taşındı</string>
+    <string name="nuvio_rs_imported_message">Ayarlarınız eski Nuvio uygulamasından taşındı; artık onu kaldırabilirsiniz. MDBList ve Simkl\'in yeniden bağlanması gerekiyor.</string>
+    <string name="nuvio_rs_keep">Sakla</string>
+    <string name="nuvio_rs_pending_title">Ayarlarınızı taşıyın</string>
+    <string name="nuvio_rs_pending_message">Ayarlarınızı taşımak için eski Nuvio uygulamasını açıp son güncellemesini kurun, ardından buraya dönün.</string>
+    <string name="nuvio_rs_ready_message">Eski Nuvio uygulamasındaki ayarlarınız hazır. Nuvio RS, bunları mevcut ayarların yerine uygulamak için yeniden başlayacak.</string>
+    <string name="nuvio_rs_restart">Yeniden başlat</string>
+    <string name="nuvio_rs_open_old">Eski uygulamayı aç</string>
+    <string name="nuvio_rs_start_fresh">Sıfırdan başla</string>
+</resources>

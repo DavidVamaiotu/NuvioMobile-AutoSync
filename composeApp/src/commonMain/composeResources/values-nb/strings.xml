@@ -80,7 +80,7 @@
     <string name="addons_section_overview">Oversikt</string>
     <string name="addons_summary_id_rules">%1$d ID-regler</string>
     <string name="addons_version_format">Versjon %1$s</string>
-    <string name="app_brand_name">Nuvio</string>
+    <string name="app_brand_name">Nuvio RS</string>
     <string name="app_exit_message">Vil du avslutte appen?</string>
     <string name="app_exit_title">Avslutt app</string>
     <string name="auth_account_deletion_failed">Konto-sletting mislyktes</string>

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated: Nuvio RS migration prompts. -->
+<resources>
+    <string name="nuvio_rs_moved_title">Nuvio devient Nuvio RS</string>
+    <string name="nuvio_rs_bridge_install_message">Cette appli continue sous le nom Nuvio RS, qui s’installe à côté du Nuvio officiel. Installez Nuvio RS pour continuer à recevoir les mises à jour. Vos réglages sont transférés automatiquement.</string>
+    <string name="nuvio_rs_bridge_installed_message">Nuvio RS est installé. Ouvrez-le pour transférer vos réglages, puis désinstallez cette ancienne appli.</string>
+    <string name="nuvio_rs_install">Installer Nuvio RS</string>
+    <string name="nuvio_rs_downloading" formatted="true">Téléchargement… %1$d%%</string>
+    <string name="nuvio_rs_download_failed">Impossible de télécharger Nuvio RS. Réessayez plus tard.</string>
+    <string name="nuvio_rs_allow_installs">Autorisez les installations depuis cette appli, puis touchez à nouveau Installer Nuvio RS.</string>
+    <string name="nuvio_rs_open">Ouvrir Nuvio RS</string>
+    <string name="nuvio_rs_uninstall_old">Désinstaller l’ancienne appli</string>
+    <string name="nuvio_rs_later">Plus tard</string>
+    <string name="nuvio_rs_imported_title">Réglages transférés</string>
+    <string name="nuvio_rs_imported_message">Vos réglages ont été transférés depuis l’ancienne appli Nuvio, que vous pouvez maintenant désinstaller. MDBList et Simkl doivent être reconnectés.</string>
+    <string name="nuvio_rs_keep">La garder</string>
+    <string name="nuvio_rs_pending_title">Transférer vos réglages</string>
+    <string name="nuvio_rs_pending_message">Pour transférer vos réglages, ouvrez l’ancienne appli Nuvio et installez sa dernière mise à jour, puis revenez ici.</string>
+    <string name="nuvio_rs_ready_message">Vos réglages de l’ancienne appli Nuvio sont prêts. Nuvio RS va redémarrer pour les appliquer et remplacer ses réglages actuels.</string>
+    <string name="nuvio_rs_restart">Redémarrer</string>
+    <string name="nuvio_rs_open_old">Ouvrir l’ancienne appli</string>
+    <string name="nuvio_rs_start_fresh">Repartir de zéro</string>
+</resources>

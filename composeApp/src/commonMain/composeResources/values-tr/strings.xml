@@ -1518,7 +1518,7 @@
     <string name="addon_already_installed">Bu eklenti zaten kurulu.</string>
     <string name="addon_invalid_url">Geçerli bir eklenti URL'si gir</string>
     <string name="addon_load_manifest_failed">Manifest yüklenemedi</string>
-    <string name="app_brand_name">Nuvio</string>
+    <string name="app_brand_name">Nuvio RS</string>
     <string name="auth_account_deletion_failed">Hesap silinemedi</string>
     <string name="auth_sign_in_failed">Giriş yapılamadı</string>
     <string name="auth_sign_out_failed">Çıkış yapılamadı</string>

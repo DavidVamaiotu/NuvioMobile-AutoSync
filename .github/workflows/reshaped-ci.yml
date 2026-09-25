@@ -1,0 +1,140 @@
+name: Nuvio RS rename CI (temporary)
+
+on:
+  push:
+    branches:
+      - reshaped-rename
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Tests and release builds
+    runs-on: ubuntu-latest
+
+    env:
+      NUVIO_SUPABASE_URL: ${{ secrets.NUVIO_SUPABASE_URL }}
+      NUVIO_SUPABASE_ANON_KEY: ${{ secrets.NUVIO_SUPABASE_ANON_KEY }}
+      NUVIO_SUPABASE_FALLBACK_URL: ${{ secrets.NUVIO_SUPABASE_FALLBACK_URL }}
+      TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Fit Gradle memory to the runner
+        run: |
+          # gradle.properties allows 12 GB for Gradle plus 8 GB for Kotlin, more than a 16 GB
+          # runner has, and R8 then gets the job killed. Cap both here, like android-release.yml.
+          mkdir -p "$HOME/.gradle"
+          {
+            echo "org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8"
+            echo "kotlin.daemon.jvmargs=-Xmx3g"
+          } >> "$HOME/.gradle/gradle.properties"
+
+      - name: Create local properties
+        run: |
+          cat > local.properties <<'EOF'
+          SIMKL_CLIENT_ID=dc20e0db975583b15096267cee79cd23b1f56d4bd301ce3c51e4a96a49c834a6
+          SIMKL_REDIRECT_URI=nuvio://auth/simkl
+          SIMKL_APP_NAME=nuvio
+          INTRODB_API_URL=https://api.introdb.app/
+          IMDB_RATINGS_API_BASE_URL=https://seriesgraph.com/
+          IMDB_TAPFRAME_API_BASE_URL=https://imdb.tapframe.space/
+          EOF
+
+      - name: Sign with the AutoSync key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.AUTOSYNC_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.AUTOSYNC_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.AUTOSYNC_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.AUTOSYNC_KEY_PASSWORD }}
+        run: |
+          # Every debug APK must carry the same signature, or it cannot update the installed app.
+          if [[ -z "$KEYSTORE_BASE64" || -z "$STORE_PASSWORD" || -z "$KEY_ALIAS" || -z "$KEY_PASSWORD" ]]; then
+            echo "Missing AutoSync signing secret"
+            exit 1
+          fi
+          KEYSTORE_PATH="$RUNNER_TEMP/autosync-debug.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+          {
+            echo
+            echo "NUVIO_RELEASE_STORE_FILE=$KEYSTORE_PATH"
+            echo "NUVIO_RELEASE_STORE_PASSWORD=$STORE_PASSWORD"
+            echo "NUVIO_RELEASE_KEY_ALIAS=$KEY_ALIAS"
+            echo "NUVIO_RELEASE_KEY_PASSWORD=$KEY_PASSWORD"
+          } >> local.properties
+
+      - name: Unit tests
+        run: >
+          ./gradlew :composeApp:testAndroidHostTest -Pnuvio.android.distribution=full
+          --tests "com.nuvio.app.features.reshaped.*" --tests "com.nuvio.app.features.updater.*"
+          --tests "com.nuvio.app.features.autosync.*" --stacktrace
+
+      - name: Debug build
+        run: ./gradlew :androidApp:assembleFullDebug --stacktrace
+
+      - name: Build signed Nuvio RS release APKs
+        env:
+          AUTOSYNC_TAG: 0.5.1-beta-autosync.99
+        run: |
+          ./gradlew :androidApp:assembleFullRelease \
+            -Pnuvio.app.versionName="$AUTOSYNC_TAG" \
+            --stacktrace
+
+          # NuvioRS-<tag>-<alias>.apk: the aliases avoid the ABI names and "universal"/"all" that
+          # updaters from before the rename match, so those pick the bridge APK below instead.
+          mkdir -p dist
+          for pair in arm64-v8a:arm64 armeabi-v7a:arm32 x86_64:x64 x86:x32; do
+            abi="${pair%%:*}"
+            alias="${pair##*:}"
+            apk="$(find androidApp/build/outputs/apk/full/release -maxdepth 1 -name "*-${abi}-release.apk" -print -quit)"
+            if [[ -z "$apk" ]]; then
+              echo "Missing $abi APK"
+              exit 1
+            fi
+            mv "$apk" "dist/NuvioRS-${AUTOSYNC_TAG}-${alias}.apk"
+          done
+
+      - name: Build signed legacy bridge APK
+        env:
+          AUTOSYNC_TAG: 0.5.1-beta-autosync.99
+        run: |
+          # Same app under the pre-rename id: old installs update to it in place, then it installs
+          # Nuvio RS and hands over its settings.
+          rm -rf androidApp/build/outputs/apk/full/release
+          ./gradlew :androidApp:assembleFullRelease \
+            -Pnuvio.app.versionName="$AUTOSYNC_TAG" \
+            -Pnuvio.reshaped.legacyBridge=true \
+            --stacktrace
+          apk="$(find androidApp/build/outputs/apk/full/release -maxdepth 1 -name '*.apk' -print -quit)"
+          mv "$apk" "dist/NuvioAutoSync-${AUTOSYNC_TAG}-bridge-universal.apk"
+
+      - name: Verify APKs exist
+        run: |
+          ls -l dist
+          APK_COUNT="$(find dist -maxdepth 1 -type f -name '*.apk' | wc -l)"
+          if [[ "$APK_COUNT" -ne 5 ]]; then
+            echo "Expected 5 APKs (4 Nuvio RS + bridge), found $APK_COUNT"
+            exit 1
+          fi
+
+      - name: Inspect APKs
+        run: |
+          AAPT2="$(ls -d "$ANDROID_HOME"/build-tools/*/aapt2 | tail -1)"
+          for apk in dist/*.apk; do
+            echo "== $apk"
+            "$AAPT2" dump badging "$apk" | grep -E "^package:|^application-label:|^native-code:|provider"
+            "$AAPT2" dump xmltree --file AndroidManifest.xml "$apk" | grep -E "reshaped|permission|queries" || true
+          done

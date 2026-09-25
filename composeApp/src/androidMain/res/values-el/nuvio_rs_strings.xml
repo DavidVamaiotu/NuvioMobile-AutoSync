@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated: Nuvio RS migration prompts. -->
+<resources>
+    <string name="nuvio_rs_moved_title">Το Nuvio είναι πλέον Nuvio RS</string>
+    <string name="nuvio_rs_bridge_install_message">Αυτή η εφαρμογή συνεχίζει ως Nuvio RS, που εγκαθίσταται δίπλα στο επίσημο Nuvio. Εγκαταστήστε το Nuvio RS για να συνεχίσετε να λαμβάνετε ενημερώσεις. Οι ρυθμίσεις σας μεταφέρονται αυτόματα.</string>
+    <string name="nuvio_rs_bridge_installed_message">Το Nuvio RS είναι εγκατεστημένο. Ανοίξτε το για να μεταφέρετε τις ρυθμίσεις σας και μετά απεγκαταστήστε αυτή την παλιά εφαρμογή.</string>
+    <string name="nuvio_rs_install">Εγκατάσταση Nuvio RS</string>
+    <string name="nuvio_rs_downloading" formatted="true">Λήψη… %1$d%%</string>
+    <string name="nuvio_rs_download_failed">Δεν ήταν δυνατή η λήψη του Nuvio RS. Δοκιμάστε ξανά αργότερα.</string>
+    <string name="nuvio_rs_allow_installs">Επιτρέψτε εγκαταστάσεις από αυτή την εφαρμογή και πατήστε ξανά Εγκατάσταση Nuvio RS.</string>
+    <string name="nuvio_rs_open">Άνοιγμα Nuvio RS</string>
+    <string name="nuvio_rs_uninstall_old">Απεγκατάσταση παλιάς εφαρμογής</string>
+    <string name="nuvio_rs_later">Αργότερα</string>
+    <string name="nuvio_rs_imported_title">Οι ρυθμίσεις μεταφέρθηκαν</string>
+    <string name="nuvio_rs_imported_message">Οι ρυθμίσεις σας μεταφέρθηκαν από την παλιά εφαρμογή Nuvio, την οποία μπορείτε πλέον να απεγκαταστήσετε. Το MDBList και το Simkl πρέπει να συνδεθούν ξανά.</string>
+    <string name="nuvio_rs_keep">Διατήρηση</string>
+    <string name="nuvio_rs_pending_title">Μεταφορά ρυθμίσεων</string>
+    <string name="nuvio_rs_pending_message">Για να μεταφέρετε τις ρυθμίσεις σας, ανοίξτε την παλιά εφαρμογή Nuvio, εγκαταστήστε την τελευταία ενημέρωσή της και επιστρέψτε εδώ.</string>
+    <string name="nuvio_rs_ready_message">Οι ρυθμίσεις από την παλιά εφαρμογή Nuvio είναι έτοιμες. Το Nuvio RS θα επανεκκινηθεί για να τις εφαρμόσει στη θέση των τρεχουσών ρυθμίσεων.</string>
+    <string name="nuvio_rs_restart">Επανεκκίνηση</string>
+    <string name="nuvio_rs_open_old">Άνοιγμα παλιάς εφαρμογής</string>
+    <string name="nuvio_rs_start_fresh">Νέα αρχή</string>
+</resources>

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated: Nuvio RS migration prompts. -->
+<resources>
+    <string name="nuvio_rs_moved_title">Nuvio вече е Nuvio RS</string>
+    <string name="nuvio_rs_bridge_install_message">Това приложение продължава като Nuvio RS, което се инсталира до официалното Nuvio. Инсталирайте Nuvio RS, за да продължите да получавате актуализации. Настройките ви се прехвърлят автоматично.</string>
+    <string name="nuvio_rs_bridge_installed_message">Nuvio RS е инсталирано. Отворете го, за да прехвърлите настройките си, след което деинсталирайте това старо приложение.</string>
+    <string name="nuvio_rs_install">Инсталиране на Nuvio RS</string>
+    <string name="nuvio_rs_downloading" formatted="true">Изтегляне… %1$d%%</string>
+    <string name="nuvio_rs_download_failed">Nuvio RS не можа да бъде изтеглено. Опитайте отново по-късно.</string>
+    <string name="nuvio_rs_allow_installs">Разрешете инсталиране от това приложение, след което отново докоснете „Инсталиране на Nuvio RS“.</string>
+    <string name="nuvio_rs_open">Отваряне на Nuvio RS</string>
+    <string name="nuvio_rs_uninstall_old">Деинсталиране на старото приложение</string>
+    <string name="nuvio_rs_later">По-късно</string>
+    <string name="nuvio_rs_imported_title">Настройките са прехвърлени</string>
+    <string name="nuvio_rs_imported_message">Настройките ви бяха прехвърлени от старото приложение Nuvio, което вече можете да деинсталирате. MDBList и Simkl трябва да се свържат отново.</string>
+    <string name="nuvio_rs_keep">Запазване</string>
+    <string name="nuvio_rs_pending_title">Прехвърлете настройките си</string>
+    <string name="nuvio_rs_pending_message">За да прехвърлите настройките си, отворете старото приложение Nuvio и инсталирайте последната му актуализация, след което се върнете тук.</string>
+    <string name="nuvio_rs_ready_message">Настройките от старото приложение Nuvio са готови. Nuvio RS ще се рестартира, за да ги приложи вместо текущите настройки.</string>
+    <string name="nuvio_rs_restart">Рестартиране</string>
+    <string name="nuvio_rs_open_old">Отваряне на старото приложение</string>
+    <string name="nuvio_rs_start_fresh">Начало от нулата</string>
+</resources>

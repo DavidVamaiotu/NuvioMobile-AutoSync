@@ -33,6 +33,16 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
 
+      - name: Fit Gradle memory to the runner
+        run: |
+          # gradle.properties allows 12 GB for Gradle plus 8 GB for Kotlin, more than a 16 GB
+          # runner has, and R8 then gets the job killed. Cap both here, like android-release.yml.
+          mkdir -p "$HOME/.gradle"
+          {
+            echo "org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8"
+            echo "kotlin.daemon.jvmargs=-Xmx3g"
+          } >> "$HOME/.gradle/gradle.properties"
+
       - name: Create local properties
         run: |
           cat > local.properties <<'EOF'
@@ -87,6 +97,17 @@ jobs:
             printf '\nTRAKT_CLIENT_ID=%s\nTRAKT_CLIENT_SECRET=%s\n' "$TRAKT_CLIENT_ID" "$TRAKT_CLIENT_SECRET" >> local.properties
           else
             echo "::warning::TRAKT_CLIENT_ID or TRAKT_CLIENT_SECRET secret is not set; Trakt login is disabled in this build"
+          fi
+
+      - name: Add MDBList client ID
+        env:
+          MDBLIST_CLIENT_ID: ${{ secrets.MDBLIST_CLIENT_ID }}
+        run: |
+          # MDBList sign-in and tracking stay unavailable in builds without the secret.
+          if [[ -n "$MDBLIST_CLIENT_ID" ]]; then
+            printf '\nMDBLIST_CLIENT_ID=%s\n' "$MDBLIST_CLIENT_ID" >> local.properties
+          else
+            echo "::warning::MDBLIST_CLIENT_ID secret is not set; MDBList sign-in is disabled in this build"
           fi
 
       - name: Build full debug APK

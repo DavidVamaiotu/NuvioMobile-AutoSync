@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated: Nuvio RS migration prompts. -->
+<resources>
+    <string name="nuvio_rs_moved_title">Nuvio heter nå Nuvio RS</string>
+    <string name="nuvio_rs_bridge_install_message">Denne appen fortsetter som Nuvio RS, som installeres ved siden av den offisielle Nuvio. Installer Nuvio RS for å fortsatt få oppdateringer. Innstillingene dine flyttes automatisk.</string>
+    <string name="nuvio_rs_bridge_installed_message">Nuvio RS er installert. Åpne den for å flytte innstillingene, og avinstaller deretter denne gamle appen.</string>
+    <string name="nuvio_rs_install">Installer Nuvio RS</string>
+    <string name="nuvio_rs_downloading" formatted="true">Laster ned … %1$d%%</string>
+    <string name="nuvio_rs_download_failed">Kunne ikke laste ned Nuvio RS. Prøv igjen senere.</string>
+    <string name="nuvio_rs_allow_installs">Tillat installering fra denne appen, og trykk deretter på Installer Nuvio RS igjen.</string>
+    <string name="nuvio_rs_open">Åpne Nuvio RS</string>
+    <string name="nuvio_rs_uninstall_old">Avinstaller gammel app</string>
+    <string name="nuvio_rs_later">Senere</string>
+    <string name="nuvio_rs_imported_title">Innstillinger flyttet</string>
+    <string name="nuvio_rs_imported_message">Innstillingene dine ble flyttet fra den gamle Nuvio-appen, som du nå kan avinstallere. MDBList og Simkl må kobles til på nytt.</string>
+    <string name="nuvio_rs_keep">Behold den</string>
+    <string name="nuvio_rs_pending_title">Flytt innstillingene</string>
+    <string name="nuvio_rs_pending_message">For å flytte innstillingene åpner du den gamle Nuvio-appen og installerer den nyeste oppdateringen, og så kommer du tilbake hit.</string>
+    <string name="nuvio_rs_ready_message">Innstillingene fra den gamle Nuvio-appen er klare. Nuvio RS starter på nytt for å bruke dem i stedet for de nåværende innstillingene.</string>
+    <string name="nuvio_rs_restart">Start på nytt</string>
+    <string name="nuvio_rs_open_old">Åpne gammel app</string>
+    <string name="nuvio_rs_start_fresh">Start på nytt uten data</string>
+</resources>

@@ -3,4 +3,24 @@
 
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- Nuvio RS: settings hand-over from builds made before the rename (same signing key only). -->
+    <permission
+        android:name="com.nuvio.reshaped.permission.MIGRATE"
+        android:protectionLevel="signature" />
+    <uses-permission android:name="com.nuvio.reshaped.permission.MIGRATE" />
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+
+    <queries>
+        <package android:name="com.nuvio.app" />
+        <package android:name="com.nuvioreshaped.app" />
+    </queries>
+
+    <application>
+        <provider
+            android:name="com.nuvio.app.features.reshaped.ReshapedMigrationProvider"
+            android:authorities="${applicationId}.reshaped.migration"
+            android:exported="true"
+            android:permission="com.nuvio.reshaped.permission.MIGRATE" />
+    </application>
+
 </manifest>

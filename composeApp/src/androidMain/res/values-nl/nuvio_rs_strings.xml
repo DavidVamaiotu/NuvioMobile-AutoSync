@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated: Nuvio RS migration prompts. -->
+<resources>
+    <string name="nuvio_rs_moved_title">Nuvio heet nu Nuvio RS</string>
+    <string name="nuvio_rs_bridge_install_message">Deze app gaat verder als Nuvio RS, dat naast de officiële Nuvio wordt geïnstalleerd. Installeer Nuvio RS om updates te blijven ontvangen. Je instellingen gaan automatisch mee.</string>
+    <string name="nuvio_rs_bridge_installed_message">Nuvio RS is geïnstalleerd. Open het om je instellingen over te zetten en verwijder daarna deze oude app.</string>
+    <string name="nuvio_rs_install">Nuvio RS installeren</string>
+    <string name="nuvio_rs_downloading" formatted="true">Downloaden… %1$d%%</string>
+    <string name="nuvio_rs_download_failed">Nuvio RS kon niet worden gedownload. Probeer het later opnieuw.</string>
+    <string name="nuvio_rs_allow_installs">Sta installaties vanuit deze app toe en tik daarna opnieuw op Nuvio RS installeren.</string>
+    <string name="nuvio_rs_open">Nuvio RS openen</string>
+    <string name="nuvio_rs_uninstall_old">Oude app verwijderen</string>
+    <string name="nuvio_rs_later">Later</string>
+    <string name="nuvio_rs_imported_title">Instellingen overgezet</string>
+    <string name="nuvio_rs_imported_message">Je instellingen zijn overgezet vanuit de oude Nuvio-app, die je nu kunt verwijderen. MDBList en Simkl moeten opnieuw worden gekoppeld.</string>
+    <string name="nuvio_rs_keep">Behouden</string>
+    <string name="nuvio_rs_pending_title">Instellingen overzetten</string>
+    <string name="nuvio_rs_pending_message">Open de oude Nuvio-app en installeer de nieuwste update om je instellingen over te zetten. Kom daarna hier terug.</string>
+    <string name="nuvio_rs_ready_message">Je instellingen uit de oude Nuvio-app staan klaar. Nuvio RS start opnieuw om ze toe te passen in plaats van de huidige instellingen.</string>
+    <string name="nuvio_rs_restart">Opnieuw starten</string>
+    <string name="nuvio_rs_open_old">Oude app openen</string>
+    <string name="nuvio_rs_start_fresh">Opnieuw beginnen</string>
+</resources>

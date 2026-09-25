@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated: Nuvio RS migration prompts. -->
+<resources>
+    <string name="nuvio_rs_moved_title">Nuvio nay là Nuvio RS</string>
+    <string name="nuvio_rs_bridge_install_message">Ứng dụng này tiếp tục dưới tên Nuvio RS, được cài đặt song song với Nuvio chính thức. Hãy cài Nuvio RS để tiếp tục nhận bản cập nhật. Cài đặt của bạn được chuyển sang tự động.</string>
+    <string name="nuvio_rs_bridge_installed_message">Nuvio RS đã được cài. Hãy mở nó để chuyển cài đặt, sau đó gỡ ứng dụng cũ này.</string>
+    <string name="nuvio_rs_install">Cài Nuvio RS</string>
+    <string name="nuvio_rs_downloading" formatted="true">Đang tải xuống… %1$d%%</string>
+    <string name="nuvio_rs_download_failed">Không thể tải Nuvio RS. Hãy thử lại sau.</string>
+    <string name="nuvio_rs_allow_installs">Cho phép cài đặt từ ứng dụng này, rồi nhấn Cài Nuvio RS lần nữa.</string>
+    <string name="nuvio_rs_open">Mở Nuvio RS</string>
+    <string name="nuvio_rs_uninstall_old">Gỡ ứng dụng cũ</string>
+    <string name="nuvio_rs_later">Để sau</string>
+    <string name="nuvio_rs_imported_title">Đã chuyển cài đặt</string>
+    <string name="nuvio_rs_imported_message">Cài đặt của bạn đã được chuyển từ ứng dụng Nuvio cũ, giờ bạn có thể gỡ nó. Cần kết nối lại MDBList và Simkl.</string>
+    <string name="nuvio_rs_keep">Giữ lại</string>
+    <string name="nuvio_rs_pending_title">Chuyển cài đặt</string>
+    <string name="nuvio_rs_pending_message">Để chuyển cài đặt, hãy mở ứng dụng Nuvio cũ và cài bản cập nhật mới nhất của nó, rồi quay lại đây.</string>
+    <string name="nuvio_rs_ready_message">Cài đặt từ ứng dụng Nuvio cũ đã sẵn sàng. Nuvio RS sẽ khởi động lại để áp dụng chúng thay cho cài đặt hiện tại.</string>
+    <string name="nuvio_rs_restart">Khởi động lại</string>
+    <string name="nuvio_rs_open_old">Mở ứng dụng cũ</string>
+    <string name="nuvio_rs_start_fresh">Bắt đầu lại từ đầu</string>
+</resources>
