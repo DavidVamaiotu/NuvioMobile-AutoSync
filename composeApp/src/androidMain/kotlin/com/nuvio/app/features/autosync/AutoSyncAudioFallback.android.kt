@@ -30,10 +30,10 @@ private const val SIDECAR_CUES_POLL_MS = 25L
 private const val PLAYBACK_TICK_MS = 250L
 
 /**
- * AutoSync's fallback for streams without an embedded subtitle to sync against: syncs the
- * attached sidecar subtitle to the stream's speech ([AudioSubtitleSync]) and commits each result
- * as retimed cues, the same way AutoSync applies its own matches. Runs until [stop], or until the
- * sidecar moves to another subtitle.
+ * AutoSync's fallback when it found nothing to apply (no embedded subtitle to sync against, or no
+ * confident match with one): syncs the attached sidecar subtitle to the stream's speech
+ * ([AudioSubtitleSync]) and commits each result as retimed cues, the same way AutoSync applies its
+ * own matches. Runs until [stop], or until the sidecar moves to another subtitle.
  */
 internal class AutoSyncAudioFallback(
     private val context: Context,
@@ -48,19 +48,20 @@ internal class AutoSyncAudioFallback(
     private var job: Job? = null
 
     /**
-     * Starts syncing [url] to the audio when AutoSync found no embedded subtitle to use as a
-     * reference. Returns false (and does nothing) otherwise.
+     * Starts syncing [url] to the audio after an AutoSync run that found nothing to apply, with
+     * [outcome] as that run's result. Returns false (and does nothing) when the subtitle itself
+     * could not be analysed or is no longer the one attached.
      */
-    fun startIfNoEmbeddedReference(outcome: AutoSyncAnalysisOutcome?, url: String): Boolean {
-        if (
-            outcome != AutoSyncAnalysisOutcome.NO_SUBTITLE_TRACKS &&
-            outcome != AutoSyncAnalysisOutcome.NO_USABLE_REFERENCE
-        ) {
-            return false
-        }
+    fun startAfterNoMatch(outcome: AutoSyncAnalysisOutcome?, url: String): Boolean {
+        if (outcome == AutoSyncAnalysisOutcome.SUBTITLE_UNAVAILABLE) return false
         val generation = sidecar.currentGenerationFor(url) ?: return false
+        val reason = when (outcome) {
+            AutoSyncAnalysisOutcome.NO_SUBTITLE_TRACKS -> "No embedded subtitles"
+            AutoSyncAnalysisOutcome.NO_USABLE_REFERENCE -> "No usable embedded subtitles"
+            else -> "No confident match"
+        }
         stop()
-        job = scope.launch { run(url, generation) }
+        job = scope.launch { run(url, generation, reason) }
         return true
     }
 
@@ -69,7 +70,7 @@ internal class AutoSyncAudioFallback(
         job = null
     }
 
-    private suspend fun run(url: String, generation: Long) {
+    private suspend fun run(url: String, generation: Long, reason: String) {
         fun stillAttached() = sidecar.currentGenerationFor(url) == generation
         val original = withTimeoutOrNull(SIDECAR_CUES_WAIT_MS) {
             while (stillAttached() && sidecar.sidecarTimedCues.isEmpty()) delay(SIDECAR_CUES_POLL_MS)
@@ -83,7 +84,7 @@ internal class AutoSyncAudioFallback(
             sourceKey = sourceUrl,
             sourceHeaders = sourceHeaders,
             onModel = { models.value = it },
-            onStatus = { status -> scope.launch { if (owner.isActive) showToast(status) } },
+            onStatus = { status -> scope.launch { if (owner.isActive) showToast(status, reason) } },
         )
         var applied = false
         val commits = scope.launch {
@@ -118,9 +119,9 @@ internal class AutoSyncAudioFallback(
     ): List<CuesWithTiming> =
         if (model == null) original else withContext(Dispatchers.Default) { retimeCues(original, model) }
 
-    private fun showToast(status: AudioSyncStatus) {
+    private fun showToast(status: AudioSyncStatus, reason: String) {
         val message = when (status) {
-            AudioSyncStatus.Listening -> "Auto Sync • No embedded subtitles • listening to the audio…"
+            AudioSyncStatus.Listening -> "Auto Sync • $reason • listening to the audio…"
             AudioSyncStatus.Unavailable -> "Auto Sync • Could not sync to the audio • original timing kept"
             AudioSyncStatus.Withdrawn -> "Auto Sync • Audio estimate withdrawn • original timing kept"
             is AudioSyncStatus.Estimated -> "Auto Sync • Audio estimate ${formatOffset(status.offsetMs)}"

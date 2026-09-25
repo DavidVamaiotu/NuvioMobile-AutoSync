@@ -475,11 +475,11 @@ internal class AutoSyncPlayerCoordinator(
             }
 
             if (resolved == null) {
-                if (audioFallback.startIfNoEmbeddedReference(analysisOutcome, url)) {
+                if (audioFallback.startAfterNoMatch(analysisOutcome, url)) {
                     if (AutoSyncDebugLog.ENABLED) {
                         AutoSyncDebugLog.finishAndCopy(
                             context = context,
-                            decision = "NO EMBEDDED REFERENCE - syncing to the audio",
+                            decision = "NO MATCH (${analysisOutcome ?: "not confident"}) - syncing to the audio",
                         )
                     }
                     return@launch
