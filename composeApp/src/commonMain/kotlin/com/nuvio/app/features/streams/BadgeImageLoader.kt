@@ -4,6 +4,9 @@ import coil3.ImageLoader
 import coil3.PlatformContext
 import coil3.request.CachePolicy
 import coil3.request.crossfade
+import kotlin.concurrent.Volatile
+import kotlinx.atomicfu.locks.SynchronizedObject
+import kotlinx.atomicfu.locks.synchronized
 
 /**
  * Separate ImageLoader for badge images without CacheControlCacheStrategy.
@@ -11,12 +14,14 @@ import coil3.request.crossfade
  */
 internal object BadgeImageLoader {
 
+    private val lock = SynchronizedObject()
+
     @Volatile
     private var instance: ImageLoader? = null
 
     fun get(context: PlatformContext): ImageLoader {
         instance?.let { return it }
-        synchronized(this) {
+        synchronized(lock) {
             instance?.let { return it }
             val loader = ImageLoader.Builder(context)
                 .memoryCachePolicy(CachePolicy.ENABLED)
