@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_seek_preview_section">Náhledy při přetáčení</string>
+    <string name="settings_seekr_api_key">API klíč Seekr</string>
+    <string name="settings_seekr_api_key_builtin">Vestavěný klíč (sdílený, 40 titulů denně)</string>
+    <string name="settings_seekr_api_key_custom">Vlastní klíč</string>
+    <string name="settings_seekr_api_key_description">Náhledy při přetáčení pocházejí ze seekr.tv. Vestavěný klíč sdílejí všichni a povoluje jen 40 různých titulů denně, takže náhledy mohou přestat fungovat. Získejte zdarma klíč na seekr.tv a vložte ho sem. Nechte prázdné pro vestavěný klíč.</string>
+    <string name="settings_seekr_api_key_invalid">Seekr tento klíč nepřijal.</string>
+</resources>

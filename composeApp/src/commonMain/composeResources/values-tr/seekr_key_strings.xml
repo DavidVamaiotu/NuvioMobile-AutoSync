@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_seek_preview_section">Sarma önizlemeleri</string>
+    <string name="settings_seekr_api_key">Seekr API anahtarı</string>
+    <string name="settings_seekr_api_key_builtin">Yerleşik anahtar (ortak, günde 40 içerik)</string>
+    <string name="settings_seekr_api_key_custom">Kendi anahtarın</string>
+    <string name="settings_seekr_api_key_description">Sarma önizleme görselleri seekr.tv'den gelir. Yerleşik anahtar herkes tarafından paylaşılır ve günde yalnızca 40 farklı içeriğe izin verir, bu yüzden önizlemeler çalışmayı bırakabilir. seekr.tv'den ücretsiz bir anahtar al ve buraya yapıştır. Yerleşik anahtarı kullanmak için boş bırak.</string>
+    <string name="settings_seekr_api_key_invalid">Seekr bu anahtarı kabul etmedi.</string>
+</resources>

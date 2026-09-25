@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_seek_preview_section">Vistas previas al buscar</string>
+    <string name="settings_seekr_api_key">Clave API de Seekr</string>
+    <string name="settings_seekr_api_key_builtin">Clave integrada (compartida, 40 títulos al día)</string>
+    <string name="settings_seekr_api_key_custom">Tu propia clave</string>
+    <string name="settings_seekr_api_key_description">Las miniaturas de vista previa vienen de seekr.tv. La clave integrada la comparten todos y solo permite 40 títulos distintos al día, así que las vistas previas pueden dejar de funcionar. Consigue una clave gratuita en seekr.tv y pégala aquí. Déjala vacía para usar la clave integrada.</string>
+    <string name="settings_seekr_api_key_invalid">Seekr no aceptó esta clave.</string>
+</resources>

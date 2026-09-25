@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_seek_preview_section">معاينات التقديم</string>
+    <string name="settings_seekr_api_key">مفتاح Seekr API</string>
+    <string name="settings_seekr_api_key_builtin">المفتاح المدمج (مشترك، 40 عنوانًا يوميًا)</string>
+    <string name="settings_seekr_api_key_custom">مفتاحك الخاص</string>
+    <string name="settings_seekr_api_key_description">تأتي صور المعاينة من seekr.tv. المفتاح المدمج يشترك فيه الجميع ويسمح بـ 40 عنوانًا مختلفًا فقط يوميًا، لذا قد تتوقف المعاينات. احصل على مفتاح مجاني من seekr.tv والصقه هنا. اتركه فارغًا لاستخدام المفتاح المدمج.</string>
+    <string name="settings_seekr_api_key_invalid">لم يقبل Seekr هذا المفتاح.</string>
+</resources>

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_seek_preview_section">Previzualizări la derulare</string>
+    <string name="settings_seekr_api_key">Cheie API Seekr</string>
+    <string name="settings_seekr_api_key_builtin">Cheie integrată (partajată, 40 de titluri pe zi)</string>
+    <string name="settings_seekr_api_key_custom">Cheia ta</string>
+    <string name="settings_seekr_api_key_description">Miniaturile de previzualizare vin de la seekr.tv. Cheia integrată e folosită de toată lumea și permite doar 40 de titluri diferite pe zi, așa că previzualizările pot înceta să funcționeze. Obține o cheie gratuită pe seekr.tv și lipește-o aici. Lasă gol pentru a folosi cheia integrată.</string>
+    <string name="settings_seekr_api_key_invalid">Seekr nu a acceptat această cheie.</string>
+</resources>

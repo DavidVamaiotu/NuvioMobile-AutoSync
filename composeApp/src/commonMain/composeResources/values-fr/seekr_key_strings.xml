@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_seek_preview_section">Aperçus de navigation</string>
+    <string name="settings_seekr_api_key">Clé API Seekr</string>
+    <string name="settings_seekr_api_key_builtin">Clé intégrée (partagée, 40 titres par jour)</string>
+    <string name="settings_seekr_api_key_custom">Votre propre clé</string>
+    <string name="settings_seekr_api_key_description">Les miniatures d'aperçu viennent de seekr.tv. La clé intégrée est partagée par tous et n'autorise que 40 titres différents par jour, les aperçus peuvent donc cesser de fonctionner. Obtenez une clé gratuite sur seekr.tv et collez-la ici. Laissez vide pour utiliser la clé intégrée.</string>
+    <string name="settings_seekr_api_key_invalid">Seekr n'a pas accepté cette clé.</string>
+</resources>

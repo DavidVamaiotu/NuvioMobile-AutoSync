@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_seek_preview_section">Suchvorschau</string>
+    <string name="settings_seekr_api_key">Seekr-API-Schlüssel</string>
+    <string name="settings_seekr_api_key_builtin">Integrierter Schlüssel (geteilt, 40 Titel pro Tag)</string>
+    <string name="settings_seekr_api_key_custom">Eigener Schlüssel</string>
+    <string name="settings_seekr_api_key_description">Die Vorschaubilder beim Spulen kommen von seekr.tv. Der integrierte Schlüssel wird von allen geteilt und erlaubt nur 40 verschiedene Titel pro Tag, daher können Vorschauen ausfallen. Hol dir auf seekr.tv einen kostenlosen Schlüssel und füge ihn hier ein. Leer lassen, um den integrierten Schlüssel zu verwenden.</string>
+    <string name="settings_seekr_api_key_invalid">Seekr hat diesen Schlüssel nicht akzeptiert.</string>
+</resources>

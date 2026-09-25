@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_seek_preview_section">Seek previews</string>
+    <string name="settings_seekr_api_key">Seekr API key</string>
+    <string name="settings_seekr_api_key_builtin">Built-in key (shared, 40 titles a day)</string>
+    <string name="settings_seekr_api_key_custom">Your own key</string>
+    <string name="settings_seekr_api_key_description">Seek preview thumbnails come from seekr.tv. The built-in key is shared by everyone and allows only 40 different titles a day, so previews can stop working. Get a free key at seekr.tv and paste it here. Leave it empty to use the built-in key.</string>
+    <string name="settings_seekr_api_key_invalid">Seekr didn't accept this key.</string>
+</resources>

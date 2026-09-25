@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_seek_preview_section">Podgląd przewijania</string>
+    <string name="settings_seekr_api_key">Klucz API Seekr</string>
+    <string name="settings_seekr_api_key_builtin">Wbudowany klucz (wspólny, 40 tytułów dziennie)</string>
+    <string name="settings_seekr_api_key_custom">Własny klucz</string>
+    <string name="settings_seekr_api_key_description">Miniatury podglądu pochodzą z seekr.tv. Wbudowany klucz jest wspólny dla wszystkich i pozwala tylko na 40 różnych tytułów dziennie, więc podgląd może przestać działać. Zdobądź darmowy klucz na seekr.tv i wklej go tutaj. Zostaw puste, aby używać wbudowanego klucza.</string>
+    <string name="settings_seekr_api_key_invalid">Seekr nie zaakceptował tego klucza.</string>
+</resources>

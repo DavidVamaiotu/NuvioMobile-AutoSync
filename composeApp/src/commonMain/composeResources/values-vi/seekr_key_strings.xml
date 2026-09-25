@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_seek_preview_section">Xem trước khi tua</string>
+    <string name="settings_seekr_api_key">Khóa API Seekr</string>
+    <string name="settings_seekr_api_key_builtin">Khóa tích hợp (dùng chung, 40 tựa mỗi ngày)</string>
+    <string name="settings_seekr_api_key_custom">Khóa của bạn</string>
+    <string name="settings_seekr_api_key_description">Ảnh xem trước khi tua lấy từ seekr.tv. Khóa tích hợp được mọi người dùng chung và chỉ cho phép 40 tựa khác nhau mỗi ngày, nên tính năng xem trước có thể ngừng hoạt động. Hãy lấy khóa miễn phí tại seekr.tv và dán vào đây. Để trống để dùng khóa tích hợp.</string>
+    <string name="settings_seekr_api_key_invalid">Seekr không chấp nhận khóa này.</string>
+</resources>

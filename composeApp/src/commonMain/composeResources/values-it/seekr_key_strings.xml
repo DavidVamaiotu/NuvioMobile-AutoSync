@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_seek_preview_section">Anteprime di ricerca</string>
+    <string name="settings_seekr_api_key">Chiave API Seekr</string>
+    <string name="settings_seekr_api_key_builtin">Chiave integrata (condivisa, 40 titoli al giorno)</string>
+    <string name="settings_seekr_api_key_custom">La tua chiave</string>
+    <string name="settings_seekr_api_key_description">Le miniature di anteprima provengono da seekr.tv. La chiave integrata è condivisa da tutti e consente solo 40 titoli diversi al giorno, quindi le anteprime possono smettere di funzionare. Ottieni una chiave gratuita su seekr.tv e incollala qui. Lasciala vuota per usare la chiave integrata.</string>
+    <string name="settings_seekr_api_key_invalid">Seekr non ha accettato questa chiave.</string>
+</resources>

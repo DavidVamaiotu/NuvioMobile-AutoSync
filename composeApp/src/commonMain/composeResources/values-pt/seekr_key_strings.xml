@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_seek_preview_section">Pré-visualizações ao procurar</string>
+    <string name="settings_seekr_api_key">Chave API do Seekr</string>
+    <string name="settings_seekr_api_key_builtin">Chave integrada (partilhada, 40 títulos por dia)</string>
+    <string name="settings_seekr_api_key_custom">A sua chave</string>
+    <string name="settings_seekr_api_key_description">As miniaturas de pré-visualização vêm do seekr.tv. A chave integrada é partilhada por todos e só permite 40 títulos diferentes por dia, por isso as pré-visualizações podem deixar de funcionar. Obtenha uma chave gratuita em seekr.tv e cole-a aqui. Deixe vazio para usar a chave integrada.</string>
+    <string name="settings_seekr_api_key_invalid">O Seekr não aceitou esta chave.</string>
+</resources>

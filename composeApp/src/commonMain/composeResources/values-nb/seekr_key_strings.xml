@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_seek_preview_section">Forhåndsvisning ved spoling</string>
+    <string name="settings_seekr_api_key">Seekr API-nøkkel</string>
+    <string name="settings_seekr_api_key_builtin">Innebygd nøkkel (delt, 40 titler om dagen)</string>
+    <string name="settings_seekr_api_key_custom">Egen nøkkel</string>
+    <string name="settings_seekr_api_key_description">Forhåndsvisningsbildene kommer fra seekr.tv. Den innebygde nøkkelen deles av alle og tillater bare 40 ulike titler om dagen, så forhåndsvisningene kan slutte å virke. Skaff en gratis nøkkel på seekr.tv og lim den inn her. La feltet stå tomt for å bruke den innebygde nøkkelen.</string>
+    <string name="settings_seekr_api_key_invalid">Seekr godtok ikke denne nøkkelen.</string>
+</resources>

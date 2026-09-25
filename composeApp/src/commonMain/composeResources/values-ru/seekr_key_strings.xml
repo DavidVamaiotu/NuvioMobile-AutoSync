@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_seek_preview_section">Превью при перемотке</string>
+    <string name="settings_seekr_api_key">API-ключ Seekr</string>
+    <string name="settings_seekr_api_key_builtin">Встроенный ключ (общий, 40 тайтлов в день)</string>
+    <string name="settings_seekr_api_key_custom">Свой ключ</string>
+    <string name="settings_seekr_api_key_description">Миниатюры при перемотке загружаются с seekr.tv. Встроенный ключ общий для всех и позволяет только 40 разных тайтлов в день, поэтому превью могут перестать работать. Получите бесплатный ключ на seekr.tv и вставьте его сюда. Оставьте пустым, чтобы использовать встроенный ключ.</string>
+    <string name="settings_seekr_api_key_invalid">Seekr не принял этот ключ.</string>
+</resources>

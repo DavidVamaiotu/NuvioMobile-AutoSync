@@ -21,7 +21,7 @@ import androidx.compose.ui.unit.dp
 import com.nuvio.app.features.player.seekpreview.LocalSeekPreviewSession
 import com.nuvio.app.features.player.seekpreview.SeekPreviewSyncPanel
 import com.nuvio.app.features.player.seekpreview.SeekPreviewThumbnailStrip
-import com.nuvio.app.features.player.seekpreview.SeekrConfig
+import com.nuvio.app.features.player.seekpreview.SeekrKeyRepository
 import com.nuvio.app.isIos
 
 /*
@@ -42,7 +42,7 @@ private const val MaxCueTicks = 400L
  */
 @Composable
 internal fun PlayerScreenRuntime.WithSeekPreview(content: @Composable () -> Unit) {
-    if (isIos || SeekrConfig.API_KEY.isBlank()) {
+    if (isIos || SeekrKeyRepository.effectiveKey().isBlank()) {
         content()
         return
     }
@@ -75,7 +75,7 @@ private fun PlayerScreenRuntime.BindSeekPreviewEffects() {
         activePlaybackIdentity,
     ) {
         seekPreview.load(
-            apiKey = SeekrConfig.API_KEY,
+            apiKey = SeekrKeyRepository.effectiveKey(),
             contentId = parentMetaId,
             contentType = contentType ?: parentMetaType,
             season = activeSeasonNumber,

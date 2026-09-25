@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_seek_preview_section">Voorbeelden bij spoelen</string>
+    <string name="settings_seekr_api_key">Seekr API-sleutel</string>
+    <string name="settings_seekr_api_key_builtin">Ingebouwde sleutel (gedeeld, 40 titels per dag)</string>
+    <string name="settings_seekr_api_key_custom">Eigen sleutel</string>
+    <string name="settings_seekr_api_key_description">De voorbeeldminiaturen komen van seekr.tv. De ingebouwde sleutel wordt door iedereen gedeeld en staat maar 40 verschillende titels per dag toe, dus voorbeelden kunnen stoppen met werken. Haal een gratis sleutel op seekr.tv en plak die hier. Laat leeg om de ingebouwde sleutel te gebruiken.</string>
+    <string name="settings_seekr_api_key_invalid">Seekr heeft deze sleutel niet geaccepteerd.</string>
+</resources>

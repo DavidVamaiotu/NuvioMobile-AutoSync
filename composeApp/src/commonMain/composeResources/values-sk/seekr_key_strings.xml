@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_seek_preview_section">Náhľady pri pretáčaní</string>
+    <string name="settings_seekr_api_key">API kľúč Seekr</string>
+    <string name="settings_seekr_api_key_builtin">Vstavaný kľúč (zdieľaný, 40 titulov denne)</string>
+    <string name="settings_seekr_api_key_custom">Vlastný kľúč</string>
+    <string name="settings_seekr_api_key_description">Náhľady pri pretáčaní pochádzajú zo seekr.tv. Vstavaný kľúč zdieľajú všetci a povoľuje len 40 rôznych titulov denne, takže náhľady môžu prestať fungovať. Získajte bezplatný kľúč na seekr.tv a vložte ho sem. Nechajte prázdne pre vstavaný kľúč.</string>
+    <string name="settings_seekr_api_key_invalid">Seekr tento kľúč neprijal.</string>
+</resources>

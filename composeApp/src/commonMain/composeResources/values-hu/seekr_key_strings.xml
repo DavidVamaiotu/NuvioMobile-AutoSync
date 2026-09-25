@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_seek_preview_section">Előnézet tekeréskor</string>
+    <string name="settings_seekr_api_key">Seekr API-kulcs</string>
+    <string name="settings_seekr_api_key_builtin">Beépített kulcs (közös, napi 40 cím)</string>
+    <string name="settings_seekr_api_key_custom">Saját kulcs</string>
+    <string name="settings_seekr_api_key_description">A tekeréskor látható előnézeti képek a seekr.tv-ről jönnek. A beépített kulcsot mindenki közösen használja, és naponta csak 40 különböző címet enged, így az előnézet leállhat. Szerezz ingyenes kulcsot a seekr.tv oldalon, és illeszd be ide. Hagyd üresen a beépített kulcshoz.</string>
+    <string name="settings_seekr_api_key_invalid">A Seekr nem fogadta el ezt a kulcsot.</string>
+</resources>

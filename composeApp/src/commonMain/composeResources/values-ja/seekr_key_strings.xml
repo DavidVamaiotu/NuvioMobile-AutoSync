@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_seek_preview_section">シークプレビュー</string>
+    <string name="settings_seekr_api_key">Seekr APIキー</string>
+    <string name="settings_seekr_api_key_builtin">内蔵キー（共有、1日40タイトル）</string>
+    <string name="settings_seekr_api_key_custom">自分のキー</string>
+    <string name="settings_seekr_api_key_description">シーク時のプレビュー画像は seekr.tv から取得します。内蔵キーは全員で共有され、1日に40タイトルまでしか使えないため、プレビューが表示されなくなることがあります。seekr.tv で無料のキーを取得してここに貼り付けてください。空欄のままにすると内蔵キーを使います。</string>
+    <string name="settings_seekr_api_key_invalid">Seekr がこのキーを受け付けませんでした。</string>
+</resources>

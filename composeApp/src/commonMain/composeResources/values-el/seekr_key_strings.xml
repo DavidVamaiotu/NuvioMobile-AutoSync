@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_seek_preview_section">Προεπισκοπήσεις κατά την αναζήτηση</string>
+    <string name="settings_seekr_api_key">Κλειδί API Seekr</string>
+    <string name="settings_seekr_api_key_builtin">Ενσωματωμένο κλειδί (κοινό, 40 τίτλοι την ημέρα)</string>
+    <string name="settings_seekr_api_key_custom">Δικό σας κλειδί</string>
+    <string name="settings_seekr_api_key_description">Οι μικρογραφίες προεπισκόπησης προέρχονται από το seekr.tv. Το ενσωματωμένο κλειδί είναι κοινό για όλους και επιτρέπει μόνο 40 διαφορετικούς τίτλους την ημέρα, οπότε οι προεπισκοπήσεις μπορεί να σταματήσουν. Αποκτήστε δωρεάν κλειδί στο seekr.tv και επικολλήστε το εδώ. Αφήστε το κενό για το ενσωματωμένο κλειδί.</string>
+    <string name="settings_seekr_api_key_invalid">Το Seekr δεν δέχτηκε αυτό το κλειδί.</string>
+</resources>

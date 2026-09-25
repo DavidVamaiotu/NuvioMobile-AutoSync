@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_seek_preview_section">Преглед при превъртане</string>
+    <string name="settings_seekr_api_key">API ключ за Seekr</string>
+    <string name="settings_seekr_api_key_builtin">Вграден ключ (общ, 40 заглавия на ден)</string>
+    <string name="settings_seekr_api_key_custom">Собствен ключ</string>
+    <string name="settings_seekr_api_key_description">Миниатюрите при превъртане идват от seekr.tv. Вграденият ключ се споделя от всички и позволява само 40 различни заглавия на ден, затова прегледът може да спре да работи. Вземете безплатен ключ от seekr.tv и го поставете тук. Оставете празно за вградения ключ.</string>
+    <string name="settings_seekr_api_key_invalid">Seekr не прие този ключ.</string>
+</resources>

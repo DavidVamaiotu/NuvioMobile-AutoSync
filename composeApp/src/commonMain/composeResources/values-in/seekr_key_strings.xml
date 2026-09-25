@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_seek_preview_section">Pratinjau saat menggeser</string>
+    <string name="settings_seekr_api_key">Kunci API Seekr</string>
+    <string name="settings_seekr_api_key_builtin">Kunci bawaan (bersama, 40 judul per hari)</string>
+    <string name="settings_seekr_api_key_custom">Kunci milik sendiri</string>
+    <string name="settings_seekr_api_key_description">Gambar pratinjau berasal dari seekr.tv. Kunci bawaan dipakai bersama oleh semua orang dan hanya mengizinkan 40 judul berbeda per hari, jadi pratinjau bisa berhenti bekerja. Dapatkan kunci gratis di seekr.tv dan tempel di sini. Biarkan kosong untuk memakai kunci bawaan.</string>
+    <string name="settings_seekr_api_key_invalid">Seekr tidak menerima kunci ini.</string>
+</resources>
