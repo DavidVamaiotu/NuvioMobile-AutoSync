@@ -65,6 +65,9 @@ internal fun LazyListScope.nuvioReshapedSettingsContent(isTablet: Boolean) {
         }
     }
     item {
+        PlaybackBufferSettingsSection(isTablet = isTablet)
+    }
+    item {
         SeekPreviewSettingsSection(isTablet = isTablet)
     }
     item {

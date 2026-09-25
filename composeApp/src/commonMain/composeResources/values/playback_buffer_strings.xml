@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Seek buffer strings, kept apart from strings.xml so upstream merges stay clean. -->
+<resources>
+    <string name="settings_playback_buffer_section">Playback</string>
+    <string name="settings_playback_buffer_title">Seek buffer: %1$s</string>
+    <string name="settings_playback_buffer_default">Nuvio default</string>
+    <string name="settings_playback_buffer_value_mb">%1$d MB</string>
+    <string name="settings_playback_buffer_value_gb">%1$d GB</string>
+    <string name="settings_playback_buffer_description">How much of the film is kept in memory, so jumps inside it are instant. Bigger reads further ahead and uses more RAM; it is capped to what this device can hold. Tap to change; applies from the next playback.</string>
+</resources>

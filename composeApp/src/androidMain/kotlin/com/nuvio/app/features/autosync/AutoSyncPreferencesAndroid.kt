@@ -2,6 +2,7 @@ package com.nuvio.app.features.autosync
 
 import android.content.Context
 import com.nuvio.app.core.storage.ProfileScopedKey
+import com.nuvio.app.features.player.PlaybackBufferAndroid
 import com.nuvio.app.features.player.audiosync.AudioSyncFallback
 
 internal object AutoSyncPreferencesAndroid {
@@ -14,6 +15,7 @@ internal object AutoSyncPreferencesAndroid {
 
     fun initialize(context: Context) {
         AudioSyncFallback.initialize(context)
+        PlaybackBufferAndroid.initialize(context)
         val preferences = context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
         AutoSyncPreferencesRepository.installPersistence(
             load = {
