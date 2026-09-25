@@ -20,6 +20,16 @@
       "category": "entertainment",
       "versions": [
         {
+          "version": "0.5.2",
+          "buildVersion": "134",
+          "date": "2026-09-25T18:03:57Z",
+          "localizedDescription": "\r\n- 353b8cd9 fix(exo): update buffer defaults @tapframe  \r\n- f50bd149 update engine libs @tapframe  \r\n- 23e4d3f7 fix(ios): hide home indicator during playback @tapframe  \r\n- [i18n(vi): update latest Vietnamese strings (#2064)](https://github.com/NuvioMedia/NuvioMobile/pull/2064) @blueocean2308  \r\n- [Fix badge cache, library poster scope, and next-episode post-credits timing (#2059)](https://github.com/NuvioMedia/NuvioMobile/pull/2059) @skoruppa  \r\n- [Add landscape banner to Simkl More Like This items (#2058)](https://github.com/NuvioMedia/NuvioMobile/pull/2058) @skoruppa  \r\n- [added the percent value to the swipe up gesture bars (#2057)](https://github.com/NuvioMedia/NuvioMobile/pull/2057) @AdityasahuX07  \r\n- [Simkl more like this (#2052)](https://github.com/NuvioMedia/NuvioMobile/pull/2052) @skoruppa  \r\n- [Add per-screen toggles for custom poster URL overlay (#2050)](https://github.com/NuvioMedia/NuvioMobile/pull/2050) @skoruppa  \r\n- [fix(i18n): render Show \"All\" Tab without backslashes (#2047)](https://github.com/NuvioMedia/NuvioMobile/pull/2047) @blueocean2308  \r\n- d4b69c2d fix(player): key player lifecycle by episode and source @tapframe  \r\n- [Fix binary request and response handling in plugin fetch() (#2041)](https://github.com/NuvioMedia/NuvioMobile/pull/2041) @joojoooo  \r\n",
+          "downloadURL": "https://github.com/NuvioMedia/NuvioMobile/releases/download/0.5.2-beta/nuvio-0.5.2-full-release.ipa",
+          "size": 66138236,
+          "sha256": "8fec187194082829268c41c0ba468aa3fc47accd4e178e65f8cc49188f3e9dae",
+          "minOSVersion": "16.1"
+        },
+        {
           "version": "0.5.1",
           "buildVersion": "133",
           "date": "2026-09-23T06:37:37Z",
