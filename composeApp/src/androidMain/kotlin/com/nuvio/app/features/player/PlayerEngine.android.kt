@@ -399,15 +399,7 @@ private fun ExoPlayerSurface(
             setParameters(parameters)
         }
 
-        val loadControl = DefaultLoadControl.Builder()
-            .setBackBuffer(30_000, true)
-            .setBufferDurationsMs(
-                DefaultLoadControl.DEFAULT_MIN_BUFFER_MS,
-                70_000,
-                DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_MS,
-                DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS
-            )
-            .build()
+        val loadControl = PlaybackBufferAndroid.exoLoadControl() // Nuvio RS: seek buffer setting
 
         val player = if (useLibass) {
             ExoPlayer.Builder(context)
@@ -1359,8 +1351,10 @@ private class NuvioLibmpvView(
         mpv.setOptionString("msg-level", "all=warn")
         mpv.setOptionString("tls-verify", "yes")
         mpv.setOptionString("tls-ca-file", "${context.filesDir.path}/cacert.pem")
-        mpv.setOptionString("demuxer-max-bytes", "${libmpvCacheBytes()}").logIfMpvError("demuxer-max-bytes")
-        mpv.setOptionString("demuxer-max-back-bytes", "${libmpvCacheBytes()}").logIfMpvError("demuxer-max-back-bytes")
+        val (aheadBytes, backBytes) = PlaybackBufferAndroid.mpvCacheBytes() // Nuvio RS: seek buffer setting
+            ?: (libmpvCacheBytes().toLong() to libmpvCacheBytes().toLong())
+        mpv.setOptionString("demuxer-max-bytes", "$aheadBytes").logIfMpvError("demuxer-max-bytes")
+        mpv.setOptionString("demuxer-max-back-bytes", "$backBytes").logIfMpvError("demuxer-max-back-bytes")
         mpv.setOptionString("vd-lavc-film-grain", "cpu")
         mpv.setPropertyBoolean("keep-open", true)
         mpv.setPropertyBoolean("input-default-bindings", true)

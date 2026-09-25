@@ -14,7 +14,8 @@
         <package android:name="com.nuvioreshaped.app" />
     </queries>
 
-    <application>
+    <!-- Nuvio RS: ExoPlayer keeps the seek buffer on the Java heap, so allow a larger one. -->
+    <application android:largeHeap="true">
         <provider
             android:name="com.nuvio.app.features.reshaped.ReshapedMigrationProvider"
             android:authorities="${applicationId}.reshaped.migration"
