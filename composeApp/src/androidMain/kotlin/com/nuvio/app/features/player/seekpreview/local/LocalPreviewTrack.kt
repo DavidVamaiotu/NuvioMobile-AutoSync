@@ -111,6 +111,10 @@ internal class LocalPreviewTrack(
     private val fetchTimes = RollingAverage()
     private val decodeTimes = RollingAverage()
     private val resolveLock = Any()
+    private val concurrencyLock = Any()
+    @Volatile private var allowedWorkers = START_WORKERS
+    private var fetchesSinceAdjust = 0
+    private var baselineFetchMs = 0L
     @Volatile private var fillSource: FillSource? = null
     private var fillChosen = false
     /** Fill-stream keyframe time (µs) → slot holding it; its timeline may differ from playback's. */
@@ -145,8 +149,8 @@ internal class LocalPreviewTrack(
             notifyChanged()
             if (closed) return@launch
             Thread({ decodeLoop() }, "NuvioPreviewDecode").apply { isDaemon = true }.start()
-            repeat(WORKERS) { index ->
-                val worker = Thread({ workerLoop() }, "NuvioPreviewFill$index").apply { isDaemon = true }
+            repeat(MAX_WORKERS) { index ->
+                val worker = Thread({ workerLoop(index) }, "NuvioPreviewFill$index").apply { isDaemon = true }
                 synchronized(workers) { workers += worker }
                 worker.start()
             }
@@ -250,7 +254,7 @@ internal class LocalPreviewTrack(
 
     // ---- Background fill -----------------------------------------------------------------
 
-    private fun workerLoop() {
+    private fun workerLoop(index: Int) {
         // Slightly below normal: THREAD_PRIORITY_BACKGROUND puts threads in the background
         // cgroup, which on many phones caps them at a sliver of one core and made fill crawl.
         Process.setThreadPriority(Process.THREAD_PRIORITY_LESS_FAVORABLE * 2)
@@ -261,6 +265,9 @@ internal class LocalPreviewTrack(
             setPaused("waiting for playback")
             Thread.sleep(250L)
         }
+        if (closed || source.released) return
+        // Extra workers join only once the controller sees the connection can take them.
+        while (!closed && !source.released && index >= allowedWorkers) Thread.sleep(500L)
         if (closed || source.released) return
         val fill = chooseFillSource()
         if (fill == null) {
@@ -292,6 +299,10 @@ internal class LocalPreviewTrack(
                 if (reason != null) {
                     setPaused(reason)
                     if (reason == REASON_BUDGET) return
+                    Thread.sleep(500L)
+                    continue
+                }
+                if (index >= allowedWorkers) {
                     Thread.sleep(500L)
                     continue
                 }
@@ -337,23 +348,32 @@ internal class LocalPreviewTrack(
                 setPaused("finding smallest stream")
                 Thread.sleep(250L)
             }
-            val playingSize = LocalSeekPreviewStreams.candidates.value.firstOrNull { it.url == source.sourceKey }?.sizeBytes
+            val candidates = LocalSeekPreviewStreams.candidates.value
+            val playingSize = candidates.firstOrNull { it.url == source.sourceKey }?.sizeBytes
             var chosen: FillSource? = null
-            for (candidate in LocalSeekPreviewStreams.candidates.value.take(MAX_PROBES)) {
+            var probed = 0
+            for (candidate in candidates.take(MAX_PROBES)) {
                 if (closed) break
                 // Nothing smaller than the playing stream is left to try.
                 if (candidate.url == source.sourceKey) break
                 if (playingSize != null && candidate.sizeBytes >= playingSize) break
                 setPaused("checking ${formatSize(candidate.sizeBytes)} stream")
+                probed++
                 chosen = probe(candidate)
                 if (chosen != null) break
+            }
+            // Say why the playing stream is read, so a test run shows what to fix next.
+            val why = when {
+                candidates.isEmpty() -> "no stream list"
+                probed == 0 -> "already smallest"
+                else -> "$probed smaller did not match"
             }
             if (chosen == null && !closed) {
                 val uri = source.uri
                 val upstream = source.dataSourceFactory
                 if (uri != null && upstream != null) {
                     val factory = counting(upstream)
-                    chosen = FillSource(resolveRedirect(uri, factory), factory, 1.0, "playing")
+                    chosen = FillSource(resolveRedirect(uri, factory), factory, 1.0, "playing ($why)")
                 }
             }
             fillSource = chosen
@@ -475,6 +495,7 @@ internal class LocalPreviewTrack(
             return buffer
         }
         fetchTimes.add(SystemClock.elapsedRealtime() - fetchStart)
+        adjustConcurrency()
         val sample = buffer.array().copyOfRange(buffer.arrayOffset(), buffer.arrayOffset() + read)
         // Blocks when the decoder is behind, so fetching never runs far ahead of it.
         synchronized(lock) { fillKeyframeSlots.putIfAbsent(timeUs, slot) }
@@ -527,9 +548,35 @@ internal class LocalPreviewTrack(
         leftover
     }
 
+    /**
+     * Additive increase, multiplicative decrease, like TCP: each worker is one more keyframe in
+     * flight, and per-request latency (not bandwidth) is what limits fill. Add a worker while
+     * fetch times hold steady; halve them as soon as playback starts buffering.
+     */
+    private fun adjustConcurrency() {
+        synchronized(concurrencyLock) {
+            if (++fetchesSinceAdjust < ADJUST_EVERY) return
+            fetchesSinceAdjust = 0
+            val average = fetchTimes.average()
+            if (baselineFetchMs == 0L || average < baselineFetchMs) baselineFetchMs = average
+            if (average <= baselineFetchMs * 3 / 2 && allowedWorkers < MAX_WORKERS) allowedWorkers++
+            else if (average > baselineFetchMs * 2 && allowedWorkers > MIN_WORKERS) allowedWorkers--
+        }
+    }
+
+    private fun backOff() {
+        synchronized(concurrencyLock) {
+            allowedWorkers = maxOf(MIN_WORKERS, allowedWorkers / 2)
+            fetchesSinceAdjust = 0
+        }
+    }
+
     private fun pauseReason(): String? {
         if (downloaded.get() >= BYTE_BUDGET) return REASON_BUDGET
-        if (source.buffering) return "playback buffering"
+        if (source.buffering) {
+            backOff()
+            return "playback buffering"
+        }
         if (!LocalSeekPreviewSettings.mobileData.value && isMetered()) return "mobile data: buffer only"
         return null
     }
@@ -597,7 +644,7 @@ internal class LocalPreviewTrack(
         avgFetchMs = fetchTimes.average(),
         avgDecodeMs = decodeTimes.average(),
         decoder = decoder.activeDecoderLabel,
-        fillSource = fillSource?.label,
+        fillSource = fillSource?.label?.let { "$it ×$allowedWorkers" },
     )
 
     // ---- Disk cache ----------------------------------------------------------------------
@@ -678,7 +725,10 @@ internal class LocalPreviewTrack(
     companion object {
         private const val TAG = "NuvioLocalPreviews"
         const val SLOT_MS = 10_000L
-        private const val WORKERS = 3
+        private const val MIN_WORKERS = 2
+        private const val START_WORKERS = 3
+        private const val MAX_WORKERS = 8
+        private const val ADJUST_EVERY = 8
         private const val DECODE_QUEUE = 6
         private const val CANDIDATE_WAIT_MS = 8_000L
         private const val MAX_PROBES = 3

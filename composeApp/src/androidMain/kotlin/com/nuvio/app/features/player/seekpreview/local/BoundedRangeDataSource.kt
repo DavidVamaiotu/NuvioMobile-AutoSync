@@ -19,8 +19,8 @@ import androidx.media3.datasource.TransferListener
  */
 internal class BoundedRangeDataSourceFactory(
     private val upstream: DataSource.Factory,
-    // Most 1080p keyframes fit, so a thumbnail usually costs one request.
-    private val initialChunk: Long = 512L * 1024L,
+    // Most 1080p keyframes fit, so a thumbnail usually costs one request on a reused connection.
+    private val initialChunk: Long = 384L * 1024L,
     private val maxChunk: Long = 4L * 1024L * 1024L,
 ) : DataSource.Factory {
     override fun createDataSource(): DataSource =
@@ -104,13 +104,36 @@ private class BoundedRangeDataSource(
         return read
     }
 
+    /**
+     * Reads what is left of a small chunk before closing. Closing an HTTP response with unread
+     * bytes throws its connection away, so the next keyframe would pay a new TCP and TLS
+     * handshake (seconds on some debrid CDNs); finishing the chunk keeps the connection alive.
+     */
+    private fun drainSmallRemainder() {
+        if (spec == null || chunkLeft <= 0L || chunkLeft > DRAIN_LIMIT) return
+        runCatching {
+            val scratch = ByteArray(16 * 1024)
+            var left = chunkLeft
+            while (left > 0L) {
+                val read = upstream.read(scratch, 0, minOf(scratch.size.toLong(), left).toInt())
+                if (read == C.RESULT_END_OF_INPUT) break
+                left -= read
+            }
+            chunkLeft = left
+        }
+    }
+
     override fun getUri(): Uri? = upstream.uri ?: spec?.uri
 
     override fun getResponseHeaders(): Map<String, List<String>> = upstream.responseHeaders
 
     override fun close() {
+        if (upstreamOpen) drainSmallRemainder()
         if (upstreamOpen || spec == null) upstream.close()
         upstreamOpen = false
         spec = null
     }
 }
+
+/** Unread bytes worth downloading to keep a connection reusable (see drainSmallRemainder). */
+private const val DRAIN_LIMIT = 512L * 1024L
