@@ -26,6 +26,8 @@ internal class SeekrThumbnail(
     val srcSize: IntSize,
     val cueStartMs: Long,
     val cueEndMs: Long,
+    /** A stand-in from a nearby moment while the real frame is still being generated. */
+    val approximate: Boolean = false,
 )
 
 /**
@@ -48,10 +50,10 @@ internal class SeekrTrack(
     /** Timebase scale reported by the backend, already applied server-side. Diagnostics only. */
     val scale: Double = 1.0,
     private val sheets: SeekrSheetCache,
-) {
+) : SeekPreviewTrack {
     /** Signed milliseconds added to a requested position before the cue lookup. Safe to set from the UI. */
     @Volatile
-    var offsetMs: Long = 0L
+    override var offsetMs: Long = 0L
 
     val isEmpty: Boolean get() = cues.isEmpty()
 
@@ -59,6 +61,8 @@ internal class SeekrTrack(
     val sheetUrls: Set<String> get() = cues.mapTo(LinkedHashSet()) { it.tile.sheetUrl }
 
     /** Downloads every sprite sheet in parallel so later lookups never wait on the network. */
+    override suspend fun prefetch() = prefetchSheets()
+
     suspend fun prefetchSheets() {
         coroutineScope {
             sheetUrls.map { url -> async { sheets.prefetch(url) } }.awaitAll()
@@ -66,7 +70,7 @@ internal class SeekrTrack(
     }
 
     /** The thumbnail covering [positionMs] (after [offsetMs]) with its cue window, or null. */
-    suspend fun thumbnailFor(positionMs: Long): SeekrThumbnail? {
+    override suspend fun thumbnailFor(positionMs: Long): SeekrThumbnail? {
         val cue = resolveCue(positionMs) ?: return null
         val sheet = sheets.get(cue.tile.sheetUrl) ?: return null
         val tile = cue.tile

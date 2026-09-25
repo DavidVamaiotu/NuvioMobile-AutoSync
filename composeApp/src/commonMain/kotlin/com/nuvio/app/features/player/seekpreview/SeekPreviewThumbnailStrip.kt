@@ -24,12 +24,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
@@ -119,11 +121,15 @@ internal fun SeekPreviewThumbnailStrip(
     val duration = durationMs.coerceAtLeast(1L)
     val fraction = (positionMs.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
     val offsetMs = session.offsetMs.toLong()
+    // On-device tracks fill in while playing; a new revision means frames may have sharpened.
+    val revision by (activeTrack?.revision ?: NoRevision).collectAsState()
+    val localStats = (activeTrack?.localStats ?: NoLocalStats).collectAsState().value
+        .takeIf { activeTrack?.localStats != null }
     var frames by remember(activeTrack) { mutableStateOf(SeekPreviewFrames()) }
-    // Conflate rapid scrub/nudge changes so only the latest pair triggers a lookup.
-    val requestFlow = remember(activeTrack) { MutableStateFlow(positionMs to offsetMs) }
-    LaunchedEffect(activeTrack, positionMs, offsetMs) {
-        requestFlow.value = positionMs to offsetMs
+    // Conflate rapid scrub/nudge changes so only the latest request triggers a lookup.
+    val requestFlow = remember(activeTrack) { MutableStateFlow(Triple(positionMs, offsetMs, revision)) }
+    LaunchedEffect(activeTrack, positionMs, offsetMs, revision) {
+        requestFlow.value = Triple(positionMs, offsetMs, revision)
     }
     LaunchedEffect(activeTrack, lingerVisible) {
         // Only the visible strip drives the preview cue, so a hidden one can't overwrite it.
@@ -134,9 +140,11 @@ internal fun SeekPreviewThumbnailStrip(
         var cachedCovering: SeekPreviewCue? = null
         var cachedPrefersSuccessor = false
         var cachedOffsetMs: Long? = null
-        requestFlow.collectLatest { (position, offset) ->
+        var cachedRevision: Int? = null
+        requestFlow.collectLatest { (position, offset, rev) ->
             val covering = cachedCovering
             if (offset == cachedOffsetMs &&
+                rev == cachedRevision &&
                 covering != null &&
                 covering.contains(position) &&
                 covering.prefersSuccessorFor(position) == cachedPrefersSuccessor
@@ -166,6 +174,7 @@ internal fun SeekPreviewThumbnailStrip(
             cachedCovering = coveringCue
             cachedPrefersSuccessor = prefersSuccessor
             cachedOffsetMs = offset
+            cachedRevision = rev
 
             val center = successor ?: coveringThumbnail
             val centerStartMs = center.cueStartMs - offset
@@ -258,6 +267,17 @@ internal fun SeekPreviewThumbnailStrip(
                         .background(Color.Black.copy(alpha = 0.55f))
                         .padding(horizontal = 6.dp, vertical = 2.dp),
                 )
+                if (localStats != null) {
+                    Text(
+                        text = localStats.debugLine(),
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                        color = Color.White.copy(alpha = 0.7f),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(Color.Black.copy(alpha = 0.45f))
+                            .padding(horizontal = 6.dp, vertical = 1.dp),
+                    )
+                }
                 if (showFrameLabel && frameTs != null) {
                     Text(
                         text = stringResource(Res.string.player_seek_preview_frame_at, formatScrubTime(frameTs)),
@@ -305,7 +325,8 @@ internal fun SeekPreviewFrameImage(
     alpha: Float = 1f,
 ) {
     if (thumbnail == null) return
-    Canvas(modifier = modifier) {
+    // A stand-in from a nearby moment is blurred so it reads as "loading", not as the frame.
+    Canvas(modifier = if (thumbnail.approximate) modifier.blur(6.dp) else modifier) {
         val dstW = size.width
         val dstH = size.height
         if (dstW <= 0f || dstH <= 0f) return@Canvas
@@ -350,4 +371,16 @@ internal fun formatScrubTime(millis: Long): String {
     val mm = minutes.toString().padStart(2, '0')
     val ss = seconds.toString().padStart(2, '0')
     return if (hours > 0) "$hours:$mm:$ss" else "$minutes:$ss"
+}
+
+private val NoRevision = MutableStateFlow(0)
+private val NoLocalStats = MutableStateFlow(LocalSeekPreviewStats())
+
+/** Debug readout for on-device previews: progress, data used and where frames came from. */
+private fun LocalSeekPreviewStats.debugLine(): String = buildString {
+    append("On device ").append(filled).append('/').append(total)
+    append(" · ").append(downloadedBytes / 1_000_000L).append(" MB")
+    if (fromBuffer > 0) append(" · ").append(fromBuffer).append(" buffer")
+    if (fromCache > 0) append(" · ").append(fromCache).append(" cached")
+    pausedReason?.let { append(" · ").append(it) }
 }

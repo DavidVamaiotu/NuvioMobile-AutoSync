@@ -16,5 +16,8 @@ internal actual fun createSeekrHttpClient(): HttpClient = HttpClient(OkHttp) {
     }
 }
 
+internal actual fun openLocalSeekPreviewTrack(cacheKey: String, durationMs: Long): SeekPreviewTrack? =
+    com.nuvio.app.features.player.seekpreview.local.LocalPreviewSources.open(cacheKey, durationMs)
+
 internal actual fun decodeSeekrSpriteSheet(bytes: ByteArray): ImageBitmap? =
     BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()

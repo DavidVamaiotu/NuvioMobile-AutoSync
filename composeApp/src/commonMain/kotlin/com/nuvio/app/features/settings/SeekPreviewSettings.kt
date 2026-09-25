@@ -24,6 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nuvio.app.core.ui.NuvioLoadingIndicator
+import com.nuvio.app.features.player.seekpreview.LocalSeekPreviewSettings
 import com.nuvio.app.features.player.seekpreview.SeekrClient
 import com.nuvio.app.features.player.seekpreview.SeekrKeyRepository
 import com.nuvio.app.isIos
@@ -31,6 +32,10 @@ import kotlinx.coroutines.launch
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.action_cancel
 import nuvio.composeapp.generated.resources.action_save
+import nuvio.composeapp.generated.resources.settings_seek_preview_local
+import nuvio.composeapp.generated.resources.settings_seek_preview_local_description
+import nuvio.composeapp.generated.resources.settings_seek_preview_local_mobile_data
+import nuvio.composeapp.generated.resources.settings_seek_preview_local_mobile_data_description
 import nuvio.composeapp.generated.resources.settings_seek_preview_section
 import nuvio.composeapp.generated.resources.settings_seekr_api_key
 import nuvio.composeapp.generated.resources.settings_seekr_api_key_builtin
@@ -44,6 +49,8 @@ import org.jetbrains.compose.resources.stringResource
 internal fun SeekPreviewSettingsSection(isTablet: Boolean) {
     if (isIos) return
     val userKey by SeekrKeyRepository.userKey.collectAsStateWithLifecycle()
+    val localEnabled by LocalSeekPreviewSettings.enabled.collectAsStateWithLifecycle()
+    val localMobileData by LocalSeekPreviewSettings.mobileData.collectAsStateWithLifecycle()
     var showDialog by remember { mutableStateOf(false) }
 
     SettingsSection(
@@ -51,6 +58,21 @@ internal fun SeekPreviewSettingsSection(isTablet: Boolean) {
         isTablet = isTablet,
     ) {
         SettingsGroup(isTablet = isTablet) {
+            SettingsSwitchRow(
+                title = stringResource(Res.string.settings_seek_preview_local),
+                description = stringResource(Res.string.settings_seek_preview_local_description),
+                checked = localEnabled,
+                isTablet = isTablet,
+                onCheckedChange = LocalSeekPreviewSettings::setEnabled,
+            )
+            SettingsSwitchRow(
+                title = stringResource(Res.string.settings_seek_preview_local_mobile_data),
+                description = stringResource(Res.string.settings_seek_preview_local_mobile_data_description),
+                checked = localMobileData,
+                enabled = localEnabled,
+                isTablet = isTablet,
+                onCheckedChange = LocalSeekPreviewSettings::setMobileData,
+            )
             SettingsNavigationRow(
                 title = stringResource(Res.string.settings_seekr_api_key),
                 description = if (userKey.isBlank()) {

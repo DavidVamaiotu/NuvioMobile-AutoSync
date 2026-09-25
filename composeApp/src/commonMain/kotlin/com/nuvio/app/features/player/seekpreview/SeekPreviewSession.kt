@@ -13,7 +13,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
  */
 @Stable
 internal class SeekPreviewSession {
-    var track by mutableStateOf<SeekrTrack?>(null)
+    var track by mutableStateOf<SeekPreviewTrack?>(null)
         private set
 
     /** The cue window (playback timebase) of the frame the preview is centred on. */
@@ -59,22 +59,39 @@ internal class SeekPreviewSession {
         val loadGeneration = ++generation
         // A new track describes a different release, so any sync dialled in for the previous
         // one is meaningless.
+        track?.close()
         track = null
         previewCue = null
         offsetMs = 0
         suggestedOffsetMs = 0L
         showSyncPanel = false
-        if (apiKey.isBlank() || durationMs <= 0L) return
+        if (durationMs <= 0L) return
+        // Thumbnails made from the playing stream always line up, so they win over Seekr.
+        if (LocalSeekPreviewSettings.enabled.value) {
+            val cacheKey = localSeekPreviewCacheKey(contentId, season, episode, durationMs)
+            val local = openLocalSeekPreviewTrack(cacheKey, durationMs)
+            if (local != null) {
+                if (loadGeneration != generation) {
+                    local.close()
+                    return
+                }
+                track = local
+                local.prefetch()
+                return
+            }
+        }
+        if (apiKey.isBlank()) return
         val content = seekrContentFor(contentId, contentType, season, episode) ?: return
         val loaded = SeekrClient(apiKey).loadTrack(content, durationMs) ?: return
         if (loadGeneration != generation) return
         track = loaded
         suggestedOffsetMs = if (loaded.sourceDurationMs > 0L) loaded.sourceDurationMs - durationMs else 0L
-        loaded.prefetchSheets()
+        loaded.prefetch()
     }
 
     fun clear() {
         generation++
+        track?.close()
         track = null
         previewCue = null
         offsetMs = 0
