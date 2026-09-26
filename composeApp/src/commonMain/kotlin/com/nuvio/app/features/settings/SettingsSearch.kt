@@ -49,6 +49,8 @@ import com.nuvio.app.isIos
 import com.nuvio.app.supportsPosterNavigationMotion
 import nuvio.composeapp.generated.resources.*
 import androidx.compose.material.icons.rounded.AutoAwesome
+import nuvio.composeapp.generated.resources.settings_autosync_bubble_toast
+import nuvio.composeapp.generated.resources.settings_autosync_bubble_toast_description
 import nuvio.composeapp.generated.resources.settings_nuvio_reshaped
 import nuvio.composeapp.generated.resources.settings_nuvio_reshaped_autosync_section
 import nuvio.composeapp.generated.resources.settings_nuvio_reshaped_description
@@ -543,6 +545,15 @@ internal fun settingsSearchEntries(
             key = "nuvio-reshaped-auto-sync",
             title = stringResource(Res.string.settings_playback_subtitle_auto_sync),
             description = stringResource(Res.string.settings_playback_subtitle_auto_sync_description),
+            pageLabel = nuvioReshapedPage,
+            section = stringResource(Res.string.settings_nuvio_reshaped_autosync_section),
+            icon = Icons.Rounded.AutoAwesome,
+        )
+        addRow(
+            page = SettingsPage.NuvioReshaped,
+            key = "nuvio-reshaped-autosync-bubble",
+            title = stringResource(Res.string.settings_autosync_bubble_toast),
+            description = stringResource(Res.string.settings_autosync_bubble_toast_description),
             pageLabel = nuvioReshapedPage,
             section = stringResource(Res.string.settings_nuvio_reshaped_autosync_section),
             icon = Icons.Rounded.AutoAwesome,

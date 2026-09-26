@@ -4,9 +4,10 @@ package com.nuvio.app.features.autosync
 
 import android.content.Context
 import android.util.Log
-import android.widget.Toast
 import androidx.media3.common.C
 import androidx.media3.exoplayer.ExoPlayer
+import com.nuvio.app.features.autosync.bubble.AutoSyncBubbleKind
+import com.nuvio.app.features.autosync.bubble.showAutoSyncMessage
 import com.nuvio.app.features.player.PlayerEngineController
 import com.nuvio.app.features.player.PlayerSubtitleUtils
 import com.nuvio.app.features.player.SidecarSubtitleController
@@ -55,9 +56,12 @@ internal class AutoSyncPlayerCoordinator(
     sourceAudioUrl: String? = null,
     dataSourceFactory: DataSource.Factory? = null,
 ) {
-    /** Shows an AutoSync toast in the app's language, resolving [message] off the call site. */
-    private fun showToast(message: suspend () -> String) {
-        scope.launch { Toast.makeText(context, message(), Toast.LENGTH_SHORT).show() }
+    /**
+     * Shows an AutoSync message in the app's language, resolving [message] off the call site: in
+     * the glass bubble when it is turned on, else as a toast. [kind] tells the bubble how it ends.
+     */
+    private fun showToast(kind: AutoSyncBubbleKind, message: suspend () -> String) {
+        scope.launch { showAutoSyncMessage(context, kind, message()) }
     }
 
     private var job: Job? = null
@@ -243,7 +247,7 @@ internal class AutoSyncPlayerCoordinator(
                             decision = "REFERENCE RETRY $outcome - current timing kept",
                         )
                     }
-                    showToast { getString(Res.string.autosync_toast_retry_none) }
+                    showToast(AutoSyncBubbleKind.Failure) { getString(Res.string.autosync_toast_retry_none) }
                     return@launch
                 }
 
@@ -264,7 +268,7 @@ internal class AutoSyncPlayerCoordinator(
                             decision = "REFERENCE RETRY unavailable - current timing kept",
                         )
                     }
-                    showToast { getString(Res.string.autosync_toast_retry_none) }
+                    showToast(AutoSyncBubbleKind.Failure) { getString(Res.string.autosync_toast_retry_none) }
                     return@launch
                 }
 
@@ -301,7 +305,7 @@ internal class AutoSyncPlayerCoordinator(
                             decision = "REFERENCE RETRY apply failed - current timing kept",
                         )
                     }
-                    showToast { getString(Res.string.autosync_toast_failed) }
+                    showToast(AutoSyncBubbleKind.Failure) { getString(Res.string.autosync_toast_failed) }
                     return@launch
                 }
 
@@ -332,7 +336,7 @@ internal class AutoSyncPlayerCoordinator(
                     )
                 }
                 AutoSyncSyncedSubtitle.mark(snapshot.subtitleUrl)
-                showToast { getString(Res.string.autosync_toast_retry_synced) }
+                showToast(AutoSyncBubbleKind.Success) { getString(Res.string.autosync_toast_retry_synced) }
             } catch (cancel: CancellationException) {
                 throw cancel
             } catch (error: Exception) {
@@ -352,7 +356,7 @@ internal class AutoSyncPlayerCoordinator(
                     )
                 }
                 if (operationToken == retryOperationToken) {
-                    showToast { getString(Res.string.autosync_toast_retry_failed) }
+                    showToast(AutoSyncBubbleKind.Failure) { getString(Res.string.autosync_toast_retry_failed) }
                 }
             } finally {
                 if (operationToken == retryOperationToken) {
@@ -385,13 +389,13 @@ internal class AutoSyncPlayerCoordinator(
             }
         }
 
-        showToast { getString(Res.string.autosync_toast_analyzing) }
+        showToast(AutoSyncBubbleKind.Working) { getString(Res.string.autosync_toast_analyzing) }
 
         val useLibass = getUseLibass()
         val subtitleHeaders = getSubtitleHeaders(url)
         if (!sidecar.canAttachAddonSubtitleViaSidecar(url, useLibass)) {
             fallbackAttach(url)
-            showToast { getString(Res.string.autosync_toast_failed_unsupported) }
+            showToast(AutoSyncBubbleKind.Failure) { getString(Res.string.autosync_toast_failed_unsupported) }
             return
         }
 
@@ -410,7 +414,7 @@ internal class AutoSyncPlayerCoordinator(
             )
         ) {
             fallbackAttach(url)
-            showToast { getString(Res.string.autosync_toast_failed) }
+            showToast(AutoSyncBubbleKind.Failure) { getString(Res.string.autosync_toast_failed) }
             return
         }
 
@@ -535,7 +539,7 @@ internal class AutoSyncPlayerCoordinator(
                         decision = "REJECT V2 - original sidecar timing kept",
                     )
                 }
-                showToast {
+                showToast(if (audioTakesOver) AutoSyncBubbleKind.Working else AutoSyncBubbleKind.Failure) {
                     if (audioTakesOver) {
                         getString(Res.string.autosync_toast_failed_audio_fallback)
                     } else {
@@ -606,7 +610,7 @@ internal class AutoSyncPlayerCoordinator(
                             },
                     )
                 }
-                showToast { getString(Res.string.autosync_toast_failed) }
+                showToast(AutoSyncBubbleKind.Failure) { getString(Res.string.autosync_toast_failed) }
                 return@launch
             }
 
@@ -665,7 +669,7 @@ internal class AutoSyncPlayerCoordinator(
                 invalidateRetryContext()
             }
 
-            showToast {
+            showToast(AutoSyncBubbleKind.Success) {
                 getString(
                     when {
                         chosenUrl != url -> Res.string.autosync_toast_synced_replaced
