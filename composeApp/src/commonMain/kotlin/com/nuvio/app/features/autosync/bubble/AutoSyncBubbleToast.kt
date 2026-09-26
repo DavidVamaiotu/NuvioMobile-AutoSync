@@ -50,6 +50,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -221,6 +222,8 @@ private fun AutoSyncBubble(message: AutoSyncBubbleMessage, modifier: Modifier) {
     val bounds = remember { BubbleWindowBounds() }
     val backdrop = AutoSyncBubbleBackdrop.sampler?.invoke(bounds, with(LocalDensity.current) { BackdropMargin.toPx() })
     val backdropPath = remember { Path() }
+    // About 16 copies a second while the words show; 5 once it has settled to just the droplet.
+    SideEffect { bounds.sampleIntervalMs = if (labelVisible || cardOpen) 60L else 200L }
     val innerPath = remember { Path() }
 
     Box(

@@ -23,8 +23,6 @@ import kotlin.coroutines.resume
 import kotlin.math.max
 import kotlin.math.roundToInt
 
-/** About 16 copies a second: smooth enough under a blur, light on the GPU. */
-private const val SAMPLE_INTERVAL_MS = 60L
 /** Protected (DRM) video can't be copied; stop trying after this many failures in a row. */
 private const val MAX_FAILURES = 8
 
@@ -49,7 +47,7 @@ internal fun rememberVideoBackdrop(bounds: BubbleWindowBounds, marginPx: Float):
         var lookups = 0
         val location = IntArray(2)
         while (isActive && failures < MAX_FAILURES) {
-            delay(SAMPLE_INTERVAL_MS)
+            delay(bounds.sampleIntervalMs)
             if (surface == null || !surface.isAttachedToWindow || lookups++ % 32 == 0) {
                 surface = findVideoSurface(view.rootView)
             }

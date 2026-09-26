@@ -12,6 +12,10 @@ internal class BubbleBackdropFrame(val image: ImageBitmap, val windowRect: Rect)
 internal class BubbleWindowBounds {
     @Volatile
     var rect: Rect? = null
+
+    /** How often to copy the video: often while words show, rarely once only the droplet is left. */
+    @Volatile
+    var sampleIntervalMs: Long = 60L
 }
 
 /**
