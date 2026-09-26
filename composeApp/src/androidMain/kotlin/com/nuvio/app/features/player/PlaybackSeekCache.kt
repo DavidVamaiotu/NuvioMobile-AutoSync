@@ -92,6 +92,14 @@ internal object PlaybackSeekCache {
         return minOf(exoBufferedMs + aheadMs, durationMs)
     }
 
+    /**
+     * Whether playback of [sourceUrl] is downloading right now, for the connection speed
+     * sampler: with the read-ahead on, that is its connection, not ExoPlayer's disk reads.
+     * Null when no read-ahead serves [sourceUrl], so ExoPlayer's own loading state applies.
+     */
+    fun isDownloading(sourceUrl: String): Boolean? =
+        session?.takeIf { it.key == sourceUrl && !it.isClosed }?.isDownloading
+
     /** Called when the player for [sourceUrl] is released: stops reading and deletes the file. */
     @Synchronized
     fun release(sourceUrl: String) {
@@ -130,6 +138,10 @@ private class ReadAheadSession(val key: String, private val file: File, private 
     private var closed = false
     private var filler: Thread? = null
     private var playerPosition = -1L
+
+    /** True while the connection is receiving data, false while it waits (full, ended, retry). */
+    @Volatile var isDownloading = false
+        private set
     var uri: Uri? = null
         private set
     var responseHeaders: Map<String, List<String>> = emptyMap()
@@ -226,6 +238,7 @@ private class ReadAheadSession(val key: String, private val file: File, private 
         while (true) {
             val space = lock.withLock {
                 while (!closed && myGeneration == generation && (ended || windowEnd - windowStart >= capacity)) {
+                    isDownloading = false
                     changed.await()
                 }
                 if (closed) return@withLock null
@@ -238,6 +251,7 @@ private class ReadAheadSession(val key: String, private val file: File, private 
                 }
                 minOf(CHUNK_BYTES.toLong(), capacity - (windowEnd - windowStart)).toInt()
             } ?: break
+            isDownloading = true
             try {
                 val open = source ?: openAt(position, myGeneration)?.also { source = it } ?: continue
                 val read = open.read(buffer, 0, space)
@@ -265,6 +279,7 @@ private class ReadAheadSession(val key: String, private val file: File, private 
             } catch (failure: IOException) {
                 source?.closeQuietly()
                 source = null
+                isDownloading = false
                 failures++
                 lock.withLock {
                     // Brief drops are retried quietly, like a slow network; repeated failures
@@ -278,6 +293,7 @@ private class ReadAheadSession(val key: String, private val file: File, private 
                 }
             }
         }
+        isDownloading = false
         source?.closeQuietly()
         disposeFile()
     }

@@ -969,7 +969,7 @@ private fun ExoPlayerSurface(
         while (isActive) {
             throughputSampler.onBytesTick(
                 bytes = networkBytesCounter.getAndSet(0L),
-                isFetching = exoPlayer.isLoading,
+                isFetching = PlaybackSeekCache.isDownloading(sourceUrl) ?: exoPlayer.isLoading, // Nuvio RS: read-ahead
             )
             delay(THROUGHPUT_TICK_MS)
         }
