@@ -88,7 +88,7 @@ private const val SUCCESS_HOLD_MS = 1_600L
 private const val FAILURE_HOLD_MS = 7_000L
 
 /**
- * AutoSync's glass bubble, at the top of the player. Draws nothing, and runs no animation, unless
+ * AutoSync's glass bubble, at the bottom centre of the player. Draws nothing, and runs no animation, unless
  * the setting is on and AutoSync has something to say. It only takes touches while its failure
  * card is open, so it never gets in the way of the player's own gestures.
  */
@@ -102,17 +102,17 @@ internal fun BoxScope.AutoSyncBubbleToastHost(controlsVisible: Boolean) {
     val message by AutoSyncBubbleToasts.current.collectAsState()
     val current = message
     if (!enabled || current == null) return
-    // Drop below the player's top bar while the controls are showing.
-    val top = animateDpAsState(
-        targetValue = if (controlsVisible) 76.dp else 18.dp,
+    // Rise above the player's seek bar and buttons while the controls are showing.
+    val lift = animateDpAsState(
+        targetValue = if (controlsVisible) 128.dp else 20.dp,
         animationSpec = spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessLow),
     )
     key(current.session) {
         AutoSyncBubble(
             message = current,
             modifier = Modifier
-                .align(Alignment.TopCenter)
-                .offset { IntOffset(0, top.value.roundToPx()) },
+                .align(Alignment.BottomCenter)
+                .offset { IntOffset(0, -lift.value.roundToPx()) },
         )
     }
 }
@@ -207,8 +207,8 @@ private fun AutoSyncBubble(message: AutoSyncBubbleMessage, modifier: Modifier) {
                 scaleX = scale
                 scaleY = scale
                 alpha = a.coerceIn(0f, 1f) * (1f - l)
-                translationY = (1f - a) * -28.dp.toPx() - l * 12.dp.toPx()
-                transformOrigin = TransformOrigin(0.5f, 0f)
+                translationY = (1f - a) * 28.dp.toPx() + l * 12.dp.toPx()
+                transformOrigin = TransformOrigin(0.5f, 1f)
             }
             .then(
                 if (cardOpen) {
