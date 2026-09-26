@@ -13,6 +13,7 @@ internal object AutoSyncBubbleToastsAndroid {
             load = { preferences.getBoolean(enabledKey, false) },
             save = { preferences.edit().putBoolean(enabledKey, it).apply() },
         )
+        AutoSyncBubbleBackdrop.sampler = { bounds, marginPx -> rememberVideoBackdrop(bounds, marginPx) }
     }
 }
 

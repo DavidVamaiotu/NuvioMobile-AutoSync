@@ -24,6 +24,20 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.graphics.BlurEffect
+import androidx.compose.ui.graphics.ClipOp
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntSize
+import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.heightIn
@@ -78,6 +92,12 @@ private val FailedRed = Color(0xFFFF453A)
 private val GlassBody = Color(0xFF2A2A2E)
 private val BubbleCorner = 23.dp
 private val OrbSize = 30.dp
+/** How much video around the bubble is copied, so the edges have something to bend in. */
+private val BackdropMargin = 12.dp
+private val BackdropBlur = 5.dp
+/** The glass edge: how wide it is, and how far beyond the bubble it reaches to bend light in. */
+private val RefractionBand = 6.dp
+private val RefractionReach = 8.dp
 private const val TWO_PI = (2.0 * PI).toFloat()
 
 /** How long the working bubble keeps its words before settling to just the droplet. */
@@ -198,9 +218,14 @@ private fun AutoSyncBubble(message: AutoSyncBubbleMessage, modifier: Modifier) {
         }
     }
 
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
+    val bounds = remember { BubbleWindowBounds() }
+    val backdrop = AutoSyncBubbleBackdrop.sampler?.invoke(bounds, with(LocalDensity.current) { BackdropMargin.toPx() })
+    val backdropPath = remember { Path() }
+    val innerPath = remember { Path() }
+
+    Box(
         modifier = modifier
+            .onGloballyPositioned { bounds.rect = it.boundsInWindow() }
             .graphicsLayer {
                 val a = appear.value
                 val l = leave.value
@@ -226,29 +251,80 @@ private fun AutoSyncBubble(message: AutoSyncBubbleMessage, modifier: Modifier) {
                 } else {
                     Modifier
                 },
-            )
-            .drawBehind {
+            ),
+    ) {
+        if (backdrop != null) {
+            // The video behind, softly blurred and bent at the edges like thick glass, clipped
+            // to the bubble's (flowing) outline.
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .drawWithContent {
+                        if (backdrop.value == null) return@drawWithContent
+                        buildLiquidOutline(
+                            path = backdropPath,
+                            width = size.width,
+                            height = size.height,
+                            corner = BubbleCorner.toPx().coerceAtMost(size.minDimension / 2f),
+                            amplitude = 0.6.dp.toPx() * (1f - settle.value),
+                            swell = 0.008f * sin(clock.floatValue * 2.1f) * (1f - settle.value),
+                            time = clock.floatValue,
+                        )
+                        clipPath(backdropPath) { this@drawWithContent.drawContent() }
+                    },
+            ) {
+                Spacer(
+                    Modifier
+                        .matchParentSize()
+                        .graphicsLayer {
+                            renderEffect = BlurEffect(BackdropBlur.toPx(), BackdropBlur.toPx(), TileMode.Clamp)
+                        }
+                        .drawBehind { drawRefractedBackdrop(backdrop.value, bounds.rect, innerPath) },
+                )
+            }
+        }
+        BubbleContent(
+            message = message,
+            labelVisible = labelVisible,
+            cardOpen = cardOpen,
+            modifier = Modifier.drawBehind {
                 drawLiquidGlass(
                     path = bubblePath,
                     time = clock.floatValue,
                     liquid = 1f - settle.value,
                     tint = tint.value,
                     tinted = tinted.value,
+                    overVideo = backdrop?.value != null,
                 )
-            }
-            .padding(horizontal = 8.dp, vertical = 8.dp),
+            },
+            droplet = {
+                drawDroplet(
+                    path = dropPath,
+                    kind = kindState.value,
+                    time = clock.floatValue,
+                    liquid = 1f - settle.value,
+                    tint = tint.value,
+                    tinted = tinted.value,
+                    mark = mark.value,
+                )
+            },
+        )
+    }
+}
+
+@Composable
+private fun BubbleContent(
+    message: AutoSyncBubbleMessage,
+    labelVisible: Boolean,
+    cardOpen: Boolean,
+    modifier: Modifier,
+    droplet: DrawScope.() -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier.padding(horizontal = 8.dp, vertical = 8.dp),
     ) {
-        Canvas(Modifier.size(OrbSize)) {
-            drawDroplet(
-                path = dropPath,
-                kind = kindState.value,
-                time = clock.floatValue,
-                liquid = 1f - settle.value,
-                tint = tint.value,
-                tinted = tinted.value,
-                mark = mark.value,
-            )
-        }
+        Canvas(Modifier.size(OrbSize), onDraw = droplet)
         AnimatedVisibility(
             visible = labelVisible,
             enter = fadeIn(tween(240, delayMillis = 80)) +
@@ -325,7 +401,14 @@ private fun AutoSyncBubbleKind.color(): Color = when (this) {
  * line and a soft shadow. While [liquid] is above zero the outline flows: slow waves travel around
  * its edge and the body gently swells and narrows, then it settles into a clean capsule.
  */
-private fun DrawScope.drawLiquidGlass(path: Path, time: Float, liquid: Float, tint: Color, tinted: Float) {
+private fun DrawScope.drawLiquidGlass(
+    path: Path,
+    time: Float,
+    liquid: Float,
+    tint: Color,
+    tinted: Float,
+    overVideo: Boolean,
+) {
     val corner = BubbleCorner.toPx().coerceAtMost(size.minDimension / 2f)
     val flowing = liquid > 0.002f
     if (flowing) {
@@ -365,7 +448,8 @@ private fun DrawScope.drawLiquidGlass(path: Path, time: Float, liquid: Float, ti
             shape(color = Color.Black.copy(alpha = 0.05f))
         }
     }
-    shape(color = GlassBody.copy(alpha = 0.55f))
+    // Over the blurred video the glass stays clear; without it the body carries the frost.
+    shape(color = GlassBody.copy(alpha = if (overVideo) 0.20f else 0.55f))
     if (tinted > 0f) {
         shape(
             brush = Brush.horizontalGradient(
@@ -378,9 +462,9 @@ private fun DrawScope.drawLiquidGlass(path: Path, time: Float, liquid: Float, ti
     // Frost, brighter at the top where the light comes from.
     shape(
         brush = Brush.verticalGradient(
-            0f to Color.White.copy(alpha = 0.22f),
-            0.5f to Color.White.copy(alpha = 0.12f),
-            1f to Color.White.copy(alpha = 0.14f),
+            0f to Color.White.copy(alpha = if (overVideo) 0.16f else 0.22f),
+            0.5f to Color.White.copy(alpha = if (overVideo) 0.07f else 0.12f),
+            1f to Color.White.copy(alpha = if (overVideo) 0.10f else 0.14f),
         ),
     )
     // Rim: bright on the upper left, a softer second highlight on the lower right.
@@ -405,6 +489,59 @@ private fun DrawScope.drawLiquidGlass(path: Path, time: Float, liquid: Float, ti
             cornerRadius = CornerRadius((corner - inset).coerceAtLeast(0f)),
             style = Stroke(width = 1.5.dp.toPx()),
         )
+    }
+}
+
+/**
+ * The copied video, drawn like light through a thick glass lens: very slightly magnified in the
+ * middle, and along the edge a band that shows the video from just beyond the bubble, squeezed
+ * in, the way a glass edge bends what is behind it. The blur on top softens the seam.
+ */
+private fun DrawScope.drawRefractedBackdrop(frame: BubbleBackdropFrame?, bubble: Rect?, innerPath: Path) {
+    frame ?: return
+    bubble ?: return
+    val image = frame.image
+    // Where the copy lies, in the bubble's own coordinates.
+    val left = frame.windowRect.left - bubble.left
+    val top = frame.windowRect.top - bubble.top
+    val right = frame.windowRect.right - bubble.left
+    val bottom = frame.windowRect.bottom - bubble.top
+    val cx = size.width / 2f
+    val cy = size.height / 2f
+
+    fun draw(scaleX: Float, scaleY: Float) {
+        val l = cx + (left - cx) * scaleX
+        val t = cy + (top - cy) * scaleY
+        val r = cx + (right - cx) * scaleX
+        val b = cy + (bottom - cy) * scaleY
+        drawImage(
+            image = image,
+            srcOffset = IntOffset.Zero,
+            srcSize = IntSize(image.width, image.height),
+            dstOffset = IntOffset(l.roundToInt(), t.roundToInt()),
+            dstSize = IntSize((r - l).roundToInt().coerceAtLeast(1), (b - t).roundToInt().coerceAtLeast(1)),
+            filterQuality = FilterQuality.Low,
+        )
+    }
+
+    draw(1.04f, 1.04f)
+    val band = RefractionBand.toPx()
+    val reach = RefractionReach.toPx()
+    if (size.width <= band * 2f || size.height <= band * 2f) return
+    innerPath.reset()
+    innerPath.addRoundRect(
+        RoundRect(
+            left = band,
+            top = band,
+            right = size.width - band,
+            bottom = size.height - band,
+            cornerRadius = CornerRadius(
+                (BubbleCorner.toPx().coerceAtMost(size.minDimension / 2f) - band).coerceAtLeast(0f),
+            ),
+        ),
+    )
+    clipPath(innerPath, clipOp = ClipOp.Difference) {
+        draw(1f / (1f + 2f * reach / size.width), 1f / (1f + 2f * reach / size.height))
     }
 }
 
