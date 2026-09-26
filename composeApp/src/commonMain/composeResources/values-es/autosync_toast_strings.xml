@@ -1,25 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- AutoSync toast messages. Generated; keep keys in sync across locales. -->
+<!-- AutoSync toasts and the "Auto synced" label. Keep keys in sync across locales. -->
 <resources>
     <string name="autosync_toast_analyzing">Auto Sync • Analizando…</string>
-    <string name="autosync_toast_unsupported_renderer">Auto Sync • Renderizador de subtítulos no compatible</string>
-    <string name="autosync_toast_load_failed">Auto Sync • No se pudo cargar el subtítulo</string>
-    <string name="autosync_toast_apply_failed">Auto Sync • Coincidencia encontrada, pero no se pudo aplicar la sincronización</string>
-    <string name="autosync_toast_analyze_failed">Auto Sync • No se pudo analizar el subtítulo</string>
-    <string name="autosync_toast_no_embedded_subtitles">Auto Sync • No se encontraron subtítulos integrados</string>
-    <string name="autosync_toast_no_reference">Auto Sync • No hay una pista de referencia utilizable</string>
-    <string name="autosync_toast_match_excellent">Auto Sync • Coincidencia excelente (%1$d%)</string>
-    <string name="autosync_toast_match_strong">Auto Sync • Coincidencia fuerte (%1$d%)</string>
-    <string name="autosync_toast_match_possible">Auto Sync • Coincidencia posible (%1$d%)</string>
-    <string name="autosync_toast_match_weak">Auto Sync • Coincidencia débil (%1$d%)</string>
-    <string name="autosync_toast_result_within_tolerance">sincronizado (dentro de la tolerancia de %1$d ms)</string>
-    <string name="autosync_toast_result_localized_ignored">diferencia de localización ignorada</string>
-    <string name="autosync_toast_result_replaced">subtítulo reemplazado</string>
-    <string name="autosync_toast_result_drift_corrected">desfase corregido</string>
-    <string name="autosync_toast_result_in_sync">ya sincronizado</string>
-    <string name="autosync_toast_result_kept">se mantuvo la sincronización original</string>
-    <string name="autosync_toast_retry_weaker">Auto Sync • Referencia alternativa más débil (%1$d%) • se mantuvo la sincronización actual</string>
+    <string name="autosync_toast_synced">Auto Sync • Subtítulos sincronizados</string>
+    <string name="autosync_toast_synced_replaced">Auto Sync • Se ha cambiado a un subtítulo que coincide mejor</string>
+    <string name="autosync_toast_in_sync">Auto Sync • Los subtítulos ya estaban sincronizados</string>
+    <string name="autosync_toast_failed">Auto Sync • Error de sincronización • no se han cambiado los tiempos del subtítulo</string>
+    <string name="autosync_toast_failed_no_reference">Auto Sync • No hay subtítulos incrustados para comparar • no se han cambiado los tiempos del subtítulo</string>
+    <string name="autosync_toast_failed_unsupported">Auto Sync • Formato de subtítulo no compatible • no se han cambiado los tiempos del subtítulo</string>
+    <string name="autosync_toast_failed_audio_fallback">Auto Sync • No se ha encontrado coincidencia • sincronizando con el audio…</string>
+    <string name="autosync_toast_retry_synced">Auto Sync • Sincronizado con otra referencia</string>
     <string name="autosync_toast_retry_none">Auto Sync • No se encontró una referencia mejor</string>
-    <string name="autosync_toast_retry_matched">Auto Sync • Nueva referencia coincidente (%1$d%)</string>
     <string name="autosync_toast_retry_failed">Auto Sync • Falló el reintento con otra referencia • se mantuvo la sincronización actual</string>
+    <string name="autosync_label_synced">Sincronizado automáticamente</string>
 </resources>

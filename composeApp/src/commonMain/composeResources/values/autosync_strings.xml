@@ -2,10 +2,10 @@
 <resources>
     <string name="settings_playback_subtitle_auto_sync">Auto Sync Subtitle</string>
     <string name="settings_playback_subtitle_auto_sync_description">Automatically sync the preferred add-on subtitle when playback starts. Requires a preferred subtitle language.</string>
-    <string name="settings_playback_auto_sync_mode_aggressive">Auto Sync Mode: Aggressive</string>
-    <string name="settings_playback_auto_sync_mode_aggressive_description">Takes longer and searches for a better subtitle match using stricter acceptance thresholds.</string>
-    <string name="settings_playback_auto_sync_mode_passive">Auto Sync Mode: Passive</string>
-    <string name="settings_playback_auto_sync_mode_passive_description">Faster, but accepts weaker subtitle matches sooner using lower acceptance thresholds.</string>
+    <string name="settings_playback_auto_sync_mode_aggressive">Auto Sync Search: Thorough</string>
+    <string name="settings_playback_auto_sync_mode_aggressive_description">Keeps comparing other subtitles and embedded tracks for a closer match before syncing. Only confident matches are ever applied.</string>
+    <string name="settings_playback_auto_sync_mode_passive">Auto Sync Search: Quick</string>
+    <string name="settings_playback_auto_sync_mode_passive_description">Uses the first strong match sooner. Only confident matches are ever applied, as with Thorough.</string>
     <string name="settings_playback_auto_sync_debug_logs">Debug Logs for Auto Sync</string>
     <string name="settings_playback_auto_sync_debug_logs_description">Keep verbose Auto Sync logs and copy the report to the clipboard after each run.</string>
     <string name="settings_playback_auto_sync_tolerance">Auto Sync Tolerance: %1$s</string>

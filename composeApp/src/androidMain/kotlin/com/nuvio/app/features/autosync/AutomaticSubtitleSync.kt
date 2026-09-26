@@ -21,7 +21,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
 import kotlin.math.exp
-import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
 /**
@@ -170,7 +169,6 @@ internal object AutomaticSubtitleSync {
         onReferenceReady: () -> Unit = {},
         onNoSubtitleTracks: () -> Unit = {},
         onAnalysisOutcome: ((AutoSyncAnalysisOutcome) -> Unit)? = null,
-        onMatchAssessment: ((AutoSyncMatchAssessment) -> Unit)? = null,
         sourceHeaders: Map<String, String> = emptyMap(),
         excludedReferenceKeys: Set<String> = emptySet(),
         requiredReferenceSource: AutoSyncReferenceSource? = null,
@@ -837,7 +835,6 @@ internal object AutomaticSubtitleSync {
             var peakPairWorkers = 0
             var bestFamily: CandidateTimingFamilyState? = null
             var bestMatch: TimelineRetimeMatch? = null
-            var bestObservedMatch: TimelineRetimeMatch? = null
 
             val pairComparator =
                 compareBy<PairHypothesis> {
@@ -1110,16 +1107,6 @@ internal object AutomaticSubtitleSync {
                         val match = evaluation.match
                         if (
                             match != null &&
-                            (
-                                bestObservedMatch == null ||
-                                    matchConfidencePercent(match) >
-                                    matchConfidencePercent(bestObservedMatch!!)
-                                )
-                        ) {
-                            bestObservedMatch = match
-                        }
-                        if (
-                            match != null &&
                             match.timeline.confident &&
                             isBetterMatch(
                                 match,
@@ -1144,6 +1131,10 @@ internal object AutomaticSubtitleSync {
                 return family to match
             }
 
+            // Early-stop rule only. Stopping here, or running out of work, both apply the best
+            // match that passed the retimer's own confidence gates (bestMatch below). The
+            // thorough (aggressive) checkpoint thresholds therefore make the search continue
+            // longer before settling; they never reject a match passive mode would apply.
             fun canStopForFamily(
                 family: CandidateTimingFamilyState,
                 match: TimelineRetimeMatch,
@@ -1179,13 +1170,6 @@ internal object AutomaticSubtitleSync {
                 val pairMatch = completed.evaluation.match
                 if (pairMatch != null) {
                     family.completedUsableAttempts++
-                    if (
-                        bestObservedMatch == null ||
-                        matchConfidencePercent(pairMatch) >
-                        matchConfidencePercent(bestObservedMatch!!)
-                    ) {
-                        bestObservedMatch = pairMatch
-                    }
                     if (isBetterMatch(pairMatch, family.best, sameTarget = true)) {
                         family.best = pairMatch
                         family.bestSchedulingScore = completed.hypothesis.schedulingScore
@@ -1412,9 +1396,6 @@ internal object AutomaticSubtitleSync {
                     markSubtitleLoadCancellation(selectedSubtitleUrl, source = "selected")
                     selectedSubtitleDeferred.cancel()
                 }
-                bestObservedMatch?.let { match ->
-                    onMatchAssessment?.invoke(matchAssessment(match))
-                }
                 AutoSyncDebugLog.section { "FINAL RECOMMENDATION" }
                 AutoSyncDebugLog.warn {
                     "REJECT no confident match found; original subtitle timing should be kept"
@@ -1470,7 +1451,6 @@ internal object AutomaticSubtitleSync {
                 subtitleHeaders = headersForCandidate(winningMember.candidate.url),
                 subtitleBody = winningMember.loaded.rawBody,
                 timeline = memberMatch.timeline,
-                assessment = matchAssessment(memberMatch),
                 reference = AutoSyncReferenceIdentity(
                     key = memberMatch.track.key,
                     language = memberMatch.track.language,
@@ -2322,34 +2302,6 @@ internal object AutomaticSubtitleSync {
             sdhPenalty
     }
 
-    private fun matchConfidencePercent(match: TimelineRetimeMatch): Int {
-        val result = match.timeline
-        val structuralQuality = directTimelineQualityScore(match).coerceIn(0.0, 1.0)
-        val activityQuality = result.activityScore.coerceIn(0.0, 1.0)
-        val marginQuality = (result.activityMargin / 0.05).coerceIn(0.0, 1.0)
-        return (
-            (
-                structuralQuality * 0.50 +
-                    activityQuality * 0.25 +
-                    marginQuality * 0.25
-                ) * 100.0
-            ).roundToInt().coerceIn(0, 100)
-    }
-
-    private fun matchAssessment(match: TimelineRetimeMatch): AutoSyncMatchAssessment {
-        val confidencePercent = matchConfidencePercent(match)
-        val strength = when {
-            confidencePercent >= 90 -> AutoSyncMatchStrength.EXCELLENT
-            confidencePercent >= 80 -> AutoSyncMatchStrength.STRONG
-            confidencePercent >= 65 -> AutoSyncMatchStrength.POSSIBLE
-            else -> AutoSyncMatchStrength.WEAK
-        }
-        return AutoSyncMatchAssessment(
-            confidencePercent = confidencePercent,
-            strength = strength,
-        )
-    }
-
     private fun isExceptionalMatch(match: TimelineRetimeMatch): Boolean {
         val result = match.timeline
         return result.confident &&
@@ -2402,7 +2354,6 @@ internal object AutomaticSubtitleSync {
             result.simpleGroupRatio >= ASYMMETRIC_CHECKPOINT_SIMPLE_RATIO &&
             result.longestTargetSkipRun <= ASYMMETRIC_CHECKPOINT_MAX_TARGET_SKIP_RUN
     }
-
 
     private fun buildTimelineRetimeResult(
         track: ReferenceTrack,
@@ -2555,18 +2506,6 @@ internal enum class AutoSyncAnalysisOutcome {
     NO_USABLE_REFERENCE,
 }
 
-internal enum class AutoSyncMatchStrength(val displayName: String) {
-    EXCELLENT("Excellent"),
-    STRONG("Strong"),
-    POSSIBLE("Possible"),
-    WEAK("Weak"),
-}
-
-internal data class AutoSyncMatchAssessment(
-    val confidencePercent: Int,
-    val strength: AutoSyncMatchStrength,
-)
-
 internal enum class AutoSyncReferenceSource {
     INDEXED,
     LIVE,
@@ -2598,7 +2537,6 @@ internal data class AutoSyncResolvedTimeline(
     val subtitleHeaders: Map<String, String>,
     val subtitleBody: String?,
     val timeline: AutoSyncTimelineRetimeResult,
-    val assessment: AutoSyncMatchAssessment,
     val reference: AutoSyncReferenceIdentity,
 )
 

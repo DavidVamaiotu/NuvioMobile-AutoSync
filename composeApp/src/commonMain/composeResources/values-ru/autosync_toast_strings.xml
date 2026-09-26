@@ -1,25 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- AutoSync toast messages. Generated; keep keys in sync across locales. -->
+<!-- AutoSync toasts and the "Auto synced" label. Keep keys in sync across locales. -->
 <resources>
     <string name="autosync_toast_analyzing">Auto Sync • Анализ…</string>
-    <string name="autosync_toast_unsupported_renderer">Auto Sync • Неподдерживаемый рендерер субтитров</string>
-    <string name="autosync_toast_load_failed">Auto Sync • Не удалось загрузить субтитры</string>
-    <string name="autosync_toast_apply_failed">Auto Sync • Совпадение найдено, но синхронизацию не удалось применить</string>
-    <string name="autosync_toast_analyze_failed">Auto Sync • Не удалось проанализировать субтитры</string>
-    <string name="autosync_toast_no_embedded_subtitles">Auto Sync • Встроенные субтитры не найдены</string>
-    <string name="autosync_toast_no_reference">Auto Sync • Нет подходящей эталонной дорожки</string>
-    <string name="autosync_toast_match_excellent">Auto Sync • Отличное совпадение (%1$d%)</string>
-    <string name="autosync_toast_match_strong">Auto Sync • Сильное совпадение (%1$d%)</string>
-    <string name="autosync_toast_match_possible">Auto Sync • Возможное совпадение (%1$d%)</string>
-    <string name="autosync_toast_match_weak">Auto Sync • Слабое совпадение (%1$d%)</string>
-    <string name="autosync_toast_result_within_tolerance">синхронизировано (в пределах допуска %1$d мс)</string>
-    <string name="autosync_toast_result_localized_ignored">различия локализации проигнорированы</string>
-    <string name="autosync_toast_result_replaced">субтитры заменены</string>
-    <string name="autosync_toast_result_drift_corrected">дрейф исправлен</string>
-    <string name="autosync_toast_result_in_sync">уже синхронизировано</string>
-    <string name="autosync_toast_result_kept">исходные тайминги сохранены</string>
-    <string name="autosync_toast_retry_weaker">Auto Sync • Альтернативный эталон слабее (%1$d%) • текущая синхронизация сохранена</string>
+    <string name="autosync_toast_synced">Auto Sync • Субтитры синхронизированы</string>
+    <string name="autosync_toast_synced_replaced">Auto Sync • Выбраны субтитры, которые подходят лучше</string>
+    <string name="autosync_toast_in_sync">Auto Sync • Субтитры уже синхронизированы</string>
+    <string name="autosync_toast_failed">Auto Sync • Не удалось синхронизировать • тайминг субтитров не изменён</string>
+    <string name="autosync_toast_failed_no_reference">Auto Sync • Нет встроенных субтитров для сравнения • тайминг субтитров не изменён</string>
+    <string name="autosync_toast_failed_unsupported">Auto Sync • Формат субтитров не поддерживается • тайминг субтитров не изменён</string>
+    <string name="autosync_toast_failed_audio_fallback">Auto Sync • Совпадение не найдено • синхронизация по звуку…</string>
+    <string name="autosync_toast_retry_synced">Auto Sync • Синхронизировано по другому эталону</string>
     <string name="autosync_toast_retry_none">Auto Sync • Лучший эталон не найден</string>
-    <string name="autosync_toast_retry_matched">Auto Sync • Новый эталон совпал (%1$d%)</string>
     <string name="autosync_toast_retry_failed">Auto Sync • Не удалось повторить с другим эталоном • текущая синхронизация сохранена</string>
+    <string name="autosync_label_synced">Синхронизировано автоматически</string>
 </resources>

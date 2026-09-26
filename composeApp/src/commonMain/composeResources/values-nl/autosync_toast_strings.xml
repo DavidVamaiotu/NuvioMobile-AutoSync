@@ -1,25 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- AutoSync toast messages. Generated; keep keys in sync across locales. -->
+<!-- AutoSync toasts and the "Auto synced" label. Keep keys in sync across locales. -->
 <resources>
     <string name="autosync_toast_analyzing">Auto Sync • Analyseren…</string>
-    <string name="autosync_toast_unsupported_renderer">Auto Sync • Niet-ondersteunde ondertitelweergave</string>
-    <string name="autosync_toast_load_failed">Auto Sync • Ondertitel kon niet worden geladen</string>
-    <string name="autosync_toast_apply_failed">Auto Sync • Overeenkomst gevonden, maar synchronisatie kon niet worden toegepast</string>
-    <string name="autosync_toast_analyze_failed">Auto Sync • Ondertitel kon niet worden geanalyseerd</string>
-    <string name="autosync_toast_no_embedded_subtitles">Auto Sync • Geen ingesloten ondertitels gevonden</string>
-    <string name="autosync_toast_no_reference">Auto Sync • Geen bruikbaar referentiespoor</string>
-    <string name="autosync_toast_match_excellent">Auto Sync • Uitstekende overeenkomst (%1$d%)</string>
-    <string name="autosync_toast_match_strong">Auto Sync • Sterke overeenkomst (%1$d%)</string>
-    <string name="autosync_toast_match_possible">Auto Sync • Mogelijke overeenkomst (%1$d%)</string>
-    <string name="autosync_toast_match_weak">Auto Sync • Zwakke overeenkomst (%1$d%)</string>
-    <string name="autosync_toast_result_within_tolerance">synchroon (binnen tolerantie van %1$d ms)</string>
-    <string name="autosync_toast_result_localized_ignored">lokalisatieverschil genegeerd</string>
-    <string name="autosync_toast_result_replaced">ondertitel vervangen</string>
-    <string name="autosync_toast_result_drift_corrected">drift gecorrigeerd</string>
-    <string name="autosync_toast_result_in_sync">al synchroon</string>
-    <string name="autosync_toast_result_kept">oorspronkelijke timing behouden</string>
-    <string name="autosync_toast_retry_weaker">Auto Sync • Alternatieve referentie zwakker (%1$d%) • huidige synchronisatie behouden</string>
+    <string name="autosync_toast_synced">Auto Sync • Ondertitels gesynchroniseerd</string>
+    <string name="autosync_toast_synced_replaced">Auto Sync • Overgeschakeld naar een beter passende ondertitel</string>
+    <string name="autosync_toast_in_sync">Auto Sync • Ondertitels zijn al synchroon</string>
+    <string name="autosync_toast_failed">Auto Sync • Synchronisatie mislukt • timing van de ondertitel ongewijzigd</string>
+    <string name="autosync_toast_failed_no_reference">Auto Sync • Geen ingesloten ondertitels om mee te vergelijken • timing van de ondertitel ongewijzigd</string>
+    <string name="autosync_toast_failed_unsupported">Auto Sync • Ondertitelformaat niet ondersteund • timing van de ondertitel ongewijzigd</string>
+    <string name="autosync_toast_failed_audio_fallback">Auto Sync • Geen match gevonden • synchroniseren op de audio…</string>
+    <string name="autosync_toast_retry_synced">Auto Sync • Gesynchroniseerd met een andere referentie</string>
     <string name="autosync_toast_retry_none">Auto Sync • Geen betere referentie gevonden</string>
-    <string name="autosync_toast_retry_matched">Auto Sync • Nieuwe referentie komt overeen (%1$d%)</string>
     <string name="autosync_toast_retry_failed">Auto Sync • Opnieuw proberen met andere referentie mislukt • huidige synchronisatie behouden</string>
+    <string name="autosync_label_synced">Automatisch gesynchroniseerd</string>
 </resources>

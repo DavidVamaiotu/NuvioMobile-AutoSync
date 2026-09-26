@@ -1,25 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- AutoSync toast messages. Generated; keep keys in sync across locales. -->
+<!-- AutoSync toasts and the "Auto synced" label. Keep keys in sync across locales. -->
 <resources>
     <string name="autosync_toast_analyzing">Auto Sync • Đang phân tích…</string>
-    <string name="autosync_toast_unsupported_renderer">Auto Sync • Trình hiển thị phụ đề không được hỗ trợ</string>
-    <string name="autosync_toast_load_failed">Auto Sync • Không thể tải phụ đề</string>
-    <string name="autosync_toast_apply_failed">Auto Sync • Đã tìm thấy khớp nhưng không thể áp dụng đồng bộ</string>
-    <string name="autosync_toast_analyze_failed">Auto Sync • Không thể phân tích phụ đề</string>
-    <string name="autosync_toast_no_embedded_subtitles">Auto Sync • Không tìm thấy phụ đề nhúng</string>
-    <string name="autosync_toast_no_reference">Auto Sync • Không có luồng tham chiếu phù hợp</string>
-    <string name="autosync_toast_match_excellent">Auto Sync • Khớp rất tốt (%1$d%)</string>
-    <string name="autosync_toast_match_strong">Auto Sync • Khớp mạnh (%1$d%)</string>
-    <string name="autosync_toast_match_possible">Auto Sync • Có thể khớp (%1$d%)</string>
-    <string name="autosync_toast_match_weak">Auto Sync • Khớp yếu (%1$d%)</string>
-    <string name="autosync_toast_result_within_tolerance">đã đồng bộ (trong dung sai %1$d ms)</string>
-    <string name="autosync_toast_result_localized_ignored">đã bỏ qua khác biệt bản địa hóa</string>
-    <string name="autosync_toast_result_replaced">đã thay phụ đề</string>
-    <string name="autosync_toast_result_drift_corrected">đã sửa độ trôi</string>
-    <string name="autosync_toast_result_in_sync">đã đồng bộ sẵn</string>
-    <string name="autosync_toast_result_kept">giữ nguyên thời gian gốc</string>
-    <string name="autosync_toast_retry_weaker">Auto Sync • Tham chiếu thay thế yếu hơn (%1$d%) • giữ nguyên đồng bộ hiện tại</string>
+    <string name="autosync_toast_synced">Auto Sync • Đã đồng bộ phụ đề</string>
+    <string name="autosync_toast_synced_replaced">Auto Sync • Đã chuyển sang phụ đề khớp hơn</string>
+    <string name="autosync_toast_in_sync">Auto Sync • Phụ đề đã đồng bộ sẵn</string>
+    <string name="autosync_toast_failed">Auto Sync • Đồng bộ thất bại • thời gian phụ đề không thay đổi</string>
+    <string name="autosync_toast_failed_no_reference">Auto Sync • Không có phụ đề nhúng để so sánh • thời gian phụ đề không thay đổi</string>
+    <string name="autosync_toast_failed_unsupported">Auto Sync • Định dạng phụ đề không được hỗ trợ • thời gian phụ đề không thay đổi</string>
+    <string name="autosync_toast_failed_audio_fallback">Auto Sync • Không tìm thấy kết quả khớp • đang đồng bộ theo âm thanh…</string>
+    <string name="autosync_toast_retry_synced">Auto Sync • Đã đồng bộ theo tham chiếu khác</string>
     <string name="autosync_toast_retry_none">Auto Sync • Không tìm thấy tham chiếu tốt hơn</string>
-    <string name="autosync_toast_retry_matched">Auto Sync • Tham chiếu mới đã khớp (%1$d%)</string>
     <string name="autosync_toast_retry_failed">Auto Sync • Thử lại với tham chiếu khác thất bại • giữ nguyên đồng bộ hiện tại</string>
+    <string name="autosync_label_synced">Đã tự động đồng bộ</string>
 </resources>

@@ -1,25 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- AutoSync toast messages. Generated; keep keys in sync across locales. -->
+<!-- AutoSync toasts and the "Auto synced" label. Keep keys in sync across locales. -->
 <resources>
     <string name="autosync_toast_analyzing">Auto Sync • 解析中…</string>
-    <string name="autosync_toast_unsupported_renderer">Auto Sync • 非対応の字幕レンダラー</string>
-    <string name="autosync_toast_load_failed">Auto Sync • 字幕を読み込めませんでした</string>
-    <string name="autosync_toast_apply_failed">Auto Sync • 一致が見つかりましたが、同期を適用できませんでした</string>
-    <string name="autosync_toast_analyze_failed">Auto Sync • 字幕を解析できませんでした</string>
-    <string name="autosync_toast_no_embedded_subtitles">Auto Sync • 埋め込み字幕が見つかりません</string>
-    <string name="autosync_toast_no_reference">Auto Sync • 使用できる参照トラックがありません</string>
-    <string name="autosync_toast_match_excellent">Auto Sync • 一致度: 最高 (%1$d%)</string>
-    <string name="autosync_toast_match_strong">Auto Sync • 一致度: 高 (%1$d%)</string>
-    <string name="autosync_toast_match_possible">Auto Sync • 一致の可能性あり (%1$d%)</string>
-    <string name="autosync_toast_match_weak">Auto Sync • 一致度: 低 (%1$d%)</string>
-    <string name="autosync_toast_result_within_tolerance">同期済み (許容範囲 %1$d ms 以内)</string>
-    <string name="autosync_toast_result_localized_ignored">ローカライズの差異を無視しました</string>
-    <string name="autosync_toast_result_replaced">字幕を置き換えました</string>
-    <string name="autosync_toast_result_drift_corrected">ずれを補正しました</string>
-    <string name="autosync_toast_result_in_sync">すでに同期済み</string>
-    <string name="autosync_toast_result_kept">元のタイミングを維持しました</string>
-    <string name="autosync_toast_retry_weaker">Auto Sync • 代替参照の一致度が低い (%1$d%) • 現在の同期を維持しました</string>
+    <string name="autosync_toast_synced">Auto Sync • 字幕を同期しました</string>
+    <string name="autosync_toast_synced_replaced">Auto Sync • より一致する字幕に切り替えました</string>
+    <string name="autosync_toast_in_sync">Auto Sync • 字幕はすでに同期しています</string>
+    <string name="autosync_toast_failed">Auto Sync • 同期に失敗しました • 字幕のタイミングは変更されていません</string>
+    <string name="autosync_toast_failed_no_reference">Auto Sync • 比較できる埋め込み字幕がありません • 字幕のタイミングは変更されていません</string>
+    <string name="autosync_toast_failed_unsupported">Auto Sync • 非対応の字幕形式です • 字幕のタイミングは変更されていません</string>
+    <string name="autosync_toast_failed_audio_fallback">Auto Sync • 一致が見つかりません • 代わりに音声に同期しています…</string>
+    <string name="autosync_toast_retry_synced">Auto Sync • 別の参照で同期しました</string>
     <string name="autosync_toast_retry_none">Auto Sync • より良い参照が見つかりません</string>
-    <string name="autosync_toast_retry_matched">Auto Sync • 新しい参照が一致しました (%1$d%)</string>
     <string name="autosync_toast_retry_failed">Auto Sync • 別の参照での再試行に失敗しました • 現在の同期を維持しました</string>
+    <string name="autosync_label_synced">自動同期済み</string>
 </resources>

@@ -17,6 +17,7 @@ import androidx.media3.extractor.text.SubtitleParser
 import androidx.media3.ui.SubtitleView
 import com.nuvio.app.R
 import com.nuvio.app.features.addons.httpGetTextWithHeaders
+import com.nuvio.app.features.autosync.AutoSyncSyncedSubtitle
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -77,6 +78,7 @@ internal class SidecarSubtitleController(
         sidecarSubtitleJob = null
         activeSidecarSubtitleKey = null
         activeSidecarGeneration = 0L
+        AutoSyncSyncedSubtitle.clear() // AutoSync hook
         sidecarTimedCues = emptyList()
         lastSidecarCueSignature = null
         if (clearView) {
@@ -101,6 +103,7 @@ internal class SidecarSubtitleController(
         sidecarSubtitleJob?.cancel()
         val generation = ++sidecarGenerationCounter
         activeSidecarGeneration = generation
+        AutoSyncSyncedSubtitle.clear() // AutoSync hook
         activeSidecarSubtitleKey = subtitleKey
         lastSidecarCueSignature = null
         sidecarTimedCues = emptyList()

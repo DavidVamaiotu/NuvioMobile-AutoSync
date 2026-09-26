@@ -16,6 +16,7 @@ import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.ExtractorsFactory
 import androidx.media3.extractor.text.CuesWithTiming
 import com.nuvio.app.features.addons.httpGetTextWithHeaders
+import com.nuvio.app.features.autosync.AutoSyncSyncedSubtitle
 import com.nuvio.app.features.player.AudioSyncSettings
 import com.nuvio.app.features.player.SidecarSubtitleController
 import com.nuvio.app.features.player.parseSidecarTimedCuesRobust
@@ -30,7 +31,6 @@ import kotlinx.coroutines.withContext
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.player_audio_sync_adjusted
 import nuvio.composeapp.generated.resources.player_audio_sync_estimated
-import nuvio.composeapp.generated.resources.player_audio_sync_listening
 import nuvio.composeapp.generated.resources.player_audio_sync_live_only
 import nuvio.composeapp.generated.resources.player_audio_sync_model_downloading
 import nuvio.composeapp.generated.resources.player_audio_sync_model_needs_wifi
@@ -66,7 +66,7 @@ internal class AudioSyncFallback(
         context = appContext,
         // Subtitles are retimed in place, so the user's delay simply adds on top.
         manualDelayMs = { 0 },
-        onStatus = ::toast,
+        onStatus = ::onStatus,
         requestSwitch = ::replaceSubtitle,
     )
 
@@ -156,9 +156,13 @@ internal class AudioSyncFallback(
     /**
      * AutoSync kept [url]'s original timing, shown by the sidecar: sync it to the audio instead.
      * Waits briefly for the sidecar's cues, as AutoSync does before applying its own result.
+     * Returns false when the fallback is off, so AutoSync reports the failure itself.
      */
-    fun takeOver(url: String) {
-        if (!AudioSyncSettings.fallbackEnabled.value || !controller.enabled) return disarm()
+    fun takeOver(url: String): Boolean {
+        if (!AudioSyncSettings.fallbackEnabled.value || !controller.enabled) {
+            disarm()
+            return false
+        }
         takeOverJob?.cancel()
         takeOverJob = scope.launch {
             var waitedMs = 0L
@@ -175,6 +179,7 @@ internal class AudioSyncFallback(
             SyncLog.i("AutoSync kept the original timing of $url; syncing it to the audio")
             controller.startSession(url, cues)
         }
+        return true
     }
 
     /** The user moved to another subtitle or track, or AutoSync starts over. */
@@ -184,6 +189,7 @@ internal class AudioSyncFallback(
         ticker?.cancel()
         ticker = null
         target.getAndSet(null)?.let { previous ->
+            AutoSyncSyncedSubtitle.clear()
             // Leave the subtitle on its original timing if it is still the one shown.
             sidecar.commitPreparedSidecarSubtitle(
                 expectedCurrentUrl = previous.url,
@@ -253,12 +259,24 @@ internal class AudioSyncFallback(
             )
             val generation = sidecar.currentGenerationFor(url)
             if (!committed || generation == null) return@launch
+            AutoSyncSyncedSubtitle.clear()
             target.set(Target(url, cues, generation))
             appliedModel = null
             onSubtitleReplaced(url)
             // The new session adopts the mapping the switch was decided with.
             controller.startSession(url, cues)
         }
+    }
+
+    /** Keeps the subtitle list's "Auto synced" chip in step with the audio sync's result. */
+    private fun onStatus(status: AudioSyncStatus) {
+        when (status) {
+            is AudioSyncStatus.Synced, is AudioSyncStatus.Adjusted ->
+                target.get()?.let { AutoSyncSyncedSubtitle.mark(it.url) }
+            AudioSyncStatus.Withdrawn -> AutoSyncSyncedSubtitle.clear()
+            else -> Unit
+        }
+        toast(status)
     }
 
     private fun toast(status: AudioSyncStatus) {
@@ -355,7 +373,7 @@ internal object AudioSyncTaps {
 }
 
 private suspend fun AudioSyncStatus.message(): String? = when (this) {
-    AudioSyncStatus.Listening -> getString(Res.string.player_audio_sync_listening)
+    AudioSyncStatus.Listening -> null // AutoSync's takeover toast already said so
     AudioSyncStatus.Withdrawn -> getString(Res.string.player_audio_sync_withdrawn)
     is AudioSyncStatus.ModelDownloading -> getString(Res.string.player_audio_sync_model_downloading, megabytes)
     is AudioSyncStatus.ModelNeedsWifi -> getString(Res.string.player_audio_sync_model_needs_wifi, megabytes)

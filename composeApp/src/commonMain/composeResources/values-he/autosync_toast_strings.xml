@@ -1,25 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- AutoSync toast messages. Generated; keep keys in sync across locales. -->
+<!-- AutoSync toasts and the "Auto synced" label. Keep keys in sync across locales. -->
 <resources>
     <string name="autosync_toast_analyzing">Auto Sync • מנתח…</string>
-    <string name="autosync_toast_unsupported_renderer">Auto Sync • מעבד כתוביות לא נתמך</string>
-    <string name="autosync_toast_load_failed">Auto Sync • לא ניתן לטעון את הכתוביות</string>
-    <string name="autosync_toast_apply_failed">Auto Sync • נמצאה התאמה, אך לא ניתן היה להחיל את הסנכרון</string>
-    <string name="autosync_toast_analyze_failed">Auto Sync • לא ניתן לנתח את הכתוביות</string>
-    <string name="autosync_toast_no_embedded_subtitles">Auto Sync • לא נמצאו כתוביות מוטמעות</string>
-    <string name="autosync_toast_no_reference">Auto Sync • אין רצועת ייחוס שמישה</string>
-    <string name="autosync_toast_match_excellent">Auto Sync • התאמה מצוינת (%1$d%)</string>
-    <string name="autosync_toast_match_strong">Auto Sync • התאמה חזקה (%1$d%)</string>
-    <string name="autosync_toast_match_possible">Auto Sync • התאמה אפשרית (%1$d%)</string>
-    <string name="autosync_toast_match_weak">Auto Sync • התאמה חלשה (%1$d%)</string>
-    <string name="autosync_toast_result_within_tolerance">מסונכרן (בטווח סבילות של %1$d ms)</string>
-    <string name="autosync_toast_result_localized_ignored">התעלמות מהבדל לוקליזציה</string>
-    <string name="autosync_toast_result_replaced">הכתוביות הוחלפו</string>
-    <string name="autosync_toast_result_drift_corrected">הסחיפה תוקנה</string>
-    <string name="autosync_toast_result_in_sync">כבר מסונכרן</string>
-    <string name="autosync_toast_result_kept">התזמון המקורי נשמר</string>
-    <string name="autosync_toast_retry_weaker">Auto Sync • ייחוס חלופי חלש יותר (%1$d%) • הסנכרון הנוכחי נשמר</string>
+    <string name="autosync_toast_synced">Auto Sync • הכתוביות סונכרנו</string>
+    <string name="autosync_toast_synced_replaced">Auto Sync • עבר לכתובית שמתאימה יותר</string>
+    <string name="autosync_toast_in_sync">Auto Sync • הכתוביות כבר מסונכרנות</string>
+    <string name="autosync_toast_failed">Auto Sync • הסנכרון נכשל • תזמון הכתוביות לא השתנה</string>
+    <string name="autosync_toast_failed_no_reference">Auto Sync • אין כתוביות מוטמעות להשוואה • תזמון הכתוביות לא השתנה</string>
+    <string name="autosync_toast_failed_unsupported">Auto Sync • פורמט הכתוביות אינו נתמך • תזמון הכתוביות לא השתנה</string>
+    <string name="autosync_toast_failed_audio_fallback">Auto Sync • לא נמצאה התאמה • מסנכרן לפי השמע…</string>
+    <string name="autosync_toast_retry_synced">Auto Sync • סונכרן לפי ייחוס אחר</string>
     <string name="autosync_toast_retry_none">Auto Sync • לא נמצא ייחוס טוב יותר</string>
-    <string name="autosync_toast_retry_matched">Auto Sync • ייחוס חדש הותאם (%1$d%)</string>
     <string name="autosync_toast_retry_failed">Auto Sync • ניסיון חוזר עם ייחוס אחר נכשל • הסנכרון הנוכחי נשמר</string>
+    <string name="autosync_label_synced">סונכרן אוטומטית</string>
 </resources>

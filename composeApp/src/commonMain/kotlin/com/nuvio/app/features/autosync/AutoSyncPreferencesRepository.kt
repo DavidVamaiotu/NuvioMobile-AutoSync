@@ -16,6 +16,7 @@ internal object AutoSyncPreferencesRepository {
     val preferredSubtitleAutoSyncOnStart: StateFlow<Boolean> =
         _preferredSubtitleAutoSyncOnStart.asStateFlow()
 
+    /** Thorough search: stop only on a stronger match; the applied match is gated the same. */
     private val _aggressiveMode = MutableStateFlow(true)
     val aggressiveMode: StateFlow<Boolean> = _aggressiveMode.asStateFlow()
 

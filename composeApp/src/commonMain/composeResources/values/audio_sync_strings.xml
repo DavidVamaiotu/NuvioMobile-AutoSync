@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="player_audio_sync_listening">AutoSync kept the original timing, syncing subtitles to the audio…</string>
     <string name="player_audio_sync_model_downloading">Downloading speech recognition model (%1$s MB) for faster subtitle sync…</string>
     <string name="player_audio_sync_model_needs_wifi">Connect to Wi-Fi once to download the %1$s MB speech model for faster subtitle sync</string>
     <string name="player_audio_sync_live_only">No look-ahead for %1$s audio on this device, syncing from live audio (slower)</string>

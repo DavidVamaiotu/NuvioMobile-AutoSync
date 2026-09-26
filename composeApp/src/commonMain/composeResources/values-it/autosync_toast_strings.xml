@@ -1,25 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- AutoSync toast messages. Generated; keep keys in sync across locales. -->
+<!-- AutoSync toasts and the "Auto synced" label. Keep keys in sync across locales. -->
 <resources>
     <string name="autosync_toast_analyzing">Auto Sync • Analisi in corso…</string>
-    <string name="autosync_toast_unsupported_renderer">Auto Sync • Renderer dei sottotitoli non supportato</string>
-    <string name="autosync_toast_load_failed">Auto Sync • Impossibile caricare il sottotitolo</string>
-    <string name="autosync_toast_apply_failed">Auto Sync • Corrispondenza trovata, ma impossibile applicare la sincronizzazione</string>
-    <string name="autosync_toast_analyze_failed">Auto Sync • Impossibile analizzare il sottotitolo</string>
-    <string name="autosync_toast_no_embedded_subtitles">Auto Sync • Nessun sottotitolo incorporato trovato</string>
-    <string name="autosync_toast_no_reference">Auto Sync • Nessuna traccia di riferimento utilizzabile</string>
-    <string name="autosync_toast_match_excellent">Auto Sync • Corrispondenza eccellente (%1$d%)</string>
-    <string name="autosync_toast_match_strong">Auto Sync • Corrispondenza forte (%1$d%)</string>
-    <string name="autosync_toast_match_possible">Auto Sync • Corrispondenza possibile (%1$d%)</string>
-    <string name="autosync_toast_match_weak">Auto Sync • Corrispondenza debole (%1$d%)</string>
-    <string name="autosync_toast_result_within_tolerance">sincronizzato (entro la tolleranza di %1$d ms)</string>
-    <string name="autosync_toast_result_localized_ignored">differenza di localizzazione ignorata</string>
-    <string name="autosync_toast_result_replaced">sottotitolo sostituito</string>
-    <string name="autosync_toast_result_drift_corrected">deriva corretta</string>
-    <string name="autosync_toast_result_in_sync">già sincronizzato</string>
-    <string name="autosync_toast_result_kept">tempi originali mantenuti</string>
-    <string name="autosync_toast_retry_weaker">Auto Sync • Riferimento alternativo più debole (%1$d%) • sincronizzazione attuale mantenuta</string>
+    <string name="autosync_toast_synced">Auto Sync • Sottotitoli sincronizzati</string>
+    <string name="autosync_toast_synced_replaced">Auto Sync • Passato a un sottotitolo più corrispondente</string>
+    <string name="autosync_toast_in_sync">Auto Sync • Sottotitoli già sincronizzati</string>
+    <string name="autosync_toast_failed">Auto Sync • Sincronizzazione non riuscita • tempi del sottotitolo invariati</string>
+    <string name="autosync_toast_failed_no_reference">Auto Sync • Nessun sottotitolo incorporato da confrontare • tempi del sottotitolo invariati</string>
+    <string name="autosync_toast_failed_unsupported">Auto Sync • Formato del sottotitolo non supportato • tempi del sottotitolo invariati</string>
+    <string name="autosync_toast_failed_audio_fallback">Auto Sync • Nessuna corrispondenza • sincronizzazione con l'audio…</string>
+    <string name="autosync_toast_retry_synced">Auto Sync • Sincronizzato con un altro riferimento</string>
     <string name="autosync_toast_retry_none">Auto Sync • Nessun riferimento migliore trovato</string>
-    <string name="autosync_toast_retry_matched">Auto Sync • Nuovo riferimento corrispondente (%1$d%)</string>
     <string name="autosync_toast_retry_failed">Auto Sync • Nuovo tentativo con un altro riferimento non riuscito • sincronizzazione attuale mantenuta</string>
+    <string name="autosync_label_synced">Sincronizzato automaticamente</string>
 </resources>

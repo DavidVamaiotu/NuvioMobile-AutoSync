@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import com.nuvio.app.core.ui.nuvio
 import com.nuvio.app.core.ui.withDuplicateSafeLazyKeys
 import com.nuvio.app.features.autosync.AutoSyncSubtitleModalSlot
+import com.nuvio.app.features.autosync.AutoSyncedChip
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.addon_title
 import nuvio.composeapp.generated.resources.compose_player_built_in
@@ -443,7 +444,13 @@ private fun SubtitleOptionRow(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            SubtitleSourceChip(label = sourceLabel, selected = selected)
+            Row( // AutoSync hook: room for the "Auto synced" chip beside the source
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                SubtitleSourceChip(label = sourceLabel, selected = selected)
+                (option as? SubtitleSelectionOption.Addon)?.let { AutoSyncedChip(it.subtitle.url, selected) } // AutoSync hook
+            }
             Text(
                 text = title,
                 color = if (selected) tokens.colors.onAccent else Color.White,
