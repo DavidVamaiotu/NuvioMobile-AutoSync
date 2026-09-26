@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.ImageBitmap
+import kotlin.concurrent.Volatile
 
 /** A small, soft copy of the video behind the bubble, and where it was taken from (window px). */
 internal class BubbleBackdropFrame(val image: ImageBitmap, val windowRect: Rect)
