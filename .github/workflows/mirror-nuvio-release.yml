@@ -1,6 +1,6 @@
 name: AutoSync Release
 
-# Release trigger: AutoSync bubble notifications, seek buffer read-ahead, connection speed fix
+# Release trigger: single-frame seek preview, read-ahead and playlist fixes, upstream sync
 
 
 on:
