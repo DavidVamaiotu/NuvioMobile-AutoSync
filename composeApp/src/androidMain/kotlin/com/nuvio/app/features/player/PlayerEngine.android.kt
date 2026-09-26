@@ -1838,7 +1838,10 @@ private fun ExoPlayer.snapshot(): PlayerPlaybackSnapshot {
         isEnded = playbackState == Player.STATE_ENDED,
         durationMs = duration.coerceAtLeast(0L),
         positionMs = currentPosition.coerceAtLeast(0L),
-        bufferedPositionMs = bufferedPosition.coerceAtLeast(0L),
+        bufferedPositionMs = PlaybackSeekCache.bufferedPositionMs( // Nuvio RS: disk read-ahead on the bar
+            bufferedPosition.coerceAtLeast(0L),
+            duration.coerceAtLeast(0L),
+        ),
         playbackSpeed = playbackParameters.speed,
         videoWidth = videoWidth,
         videoHeight = videoHeight,

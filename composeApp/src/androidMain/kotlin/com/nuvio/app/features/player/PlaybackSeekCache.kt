@@ -38,7 +38,7 @@ internal object PlaybackSeekCache {
     private const val MB = 1024L * 1024L
     private const val MIN_CAPACITY = 32L * MB
 
-    private var session: ReadAheadSession? = null
+    @Volatile private var session: ReadAheadSession? = null
 
     private fun cacheDir(context: Context) = File(context.applicationContext.cacheDir, DIR)
 
@@ -79,6 +79,19 @@ internal object PlaybackSeekCache {
     fun unwrap(factory: DataSource.Factory): DataSource.Factory =
         (factory as? ReadAheadDataSourceFactory)?.upstream ?: factory
 
+    /**
+     * [exoBufferedMs] extended by what the read-ahead holds beyond the player's buffer, converted
+     * to time with the file's average bitrate, so the seek bar shows it. An estimate: variable
+     * bitrate files can be a little off either way.
+     */
+    fun bufferedPositionMs(exoBufferedMs: Long, durationMs: Long): Long {
+        if (durationMs <= 0) return exoBufferedMs
+        val (aheadBytes, totalBytes) = session?.aheadOfPlayer() ?: return exoBufferedMs
+        if (aheadBytes <= 0 || totalBytes <= 0) return exoBufferedMs
+        val aheadMs = (aheadBytes.toDouble() / totalBytes * durationMs).toLong()
+        return minOf(exoBufferedMs + aheadMs, durationMs)
+    }
+
     /** Called when the player for [sourceUrl] is released: stops reading and deletes the file. */
     @Synchronized
     fun release(sourceUrl: String) {
@@ -116,6 +129,7 @@ private class ReadAheadSession(val key: String, private val file: File, private 
     private var contentLength = C.LENGTH_UNSET.toLong()
     private var closed = false
     private var filler: Thread? = null
+    private var playerPosition = -1L
     var uri: Uri? = null
         private set
     var responseHeaders: Map<String, List<String>> = emptyMap()
@@ -126,6 +140,13 @@ private class ReadAheadSession(val key: String, private val file: File, private 
     /** True when a read at [position] is (or is about to be) served from the ring. */
     fun covers(position: Long): Boolean = lock.withLock {
         !closed && started && position >= windowStart && position <= windowEnd + NEAR_BYTES
+    }
+
+    /** Bytes read ahead past where the player last read, and the stream length; null if unknown. */
+    fun aheadOfPlayer(): Pair<Long, Long>? = lock.withLock {
+        if (closed || !started || contentLength == C.LENGTH_UNSET.toLong()) return null
+        if (playerPosition < windowStart || playerPosition > windowEnd) return null
+        (windowEnd - playerPosition) to contentLength
     }
 
     /** Stream length, when the server told us. */
@@ -140,6 +161,7 @@ private class ReadAheadSession(val key: String, private val file: File, private 
         ended = contentLength != C.LENGTH_UNSET.toLong() && position >= contentLength
         error = null
         started = true
+        playerPosition = position
         changed.signalAll()
         if (filler == null) {
             filler = Thread(::fillLoop, "NuvioReadAhead").apply {
@@ -174,6 +196,7 @@ private class ReadAheadSession(val key: String, private val file: File, private 
         readFile(position, buffer, offset, available)
         lock.withLock {
             // Keep a little behind the player for re-reads; the rest of the ring is free again.
+            playerPosition = position + available
             val keepFrom = position + available - BACK_KEEP_BYTES
             if (keepFrom > windowStart) {
                 windowStart = minOf(keepFrom, windowEnd)
