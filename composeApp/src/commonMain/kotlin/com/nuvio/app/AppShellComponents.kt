@@ -220,7 +220,7 @@ internal fun AppLoadingContent(
                     .height(44.dp),
             )
             Spacer(modifier = Modifier.height(tokens.spacing.sectionGap))
-            NuvioLoadingIndicator(color = tokens.colors.accent)
+            NuvioLoadingIndicator()
         }
     }
 }

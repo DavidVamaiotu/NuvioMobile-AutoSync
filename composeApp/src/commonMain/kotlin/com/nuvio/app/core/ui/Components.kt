@@ -448,9 +448,7 @@ fun NuvioStatusModal(
                 modifier = Modifier.padding(tokens.spacing.dialogPadding),
             ) {
                 if (isBusy) {
-                    NuvioLoadingIndicator(
-                        color = tokens.colors.accent,
-                    )
+                    NuvioLoadingIndicator()
                     Spacer(modifier = Modifier.height(NuvioTokens.Space.s16))
                 }
                 Text(

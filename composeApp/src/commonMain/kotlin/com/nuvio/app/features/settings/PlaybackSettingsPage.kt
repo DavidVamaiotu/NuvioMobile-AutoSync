@@ -3372,7 +3372,6 @@ private fun IntroDbApiKeyDialog(
                         if (isVerifying) {
                             NuvioLoadingIndicator(
                                 modifier = Modifier.size(16.dp),
-                                color = MaterialTheme.colorScheme.primary
                             )
                         } else {
                             Text(stringResource(Res.string.action_save)) 

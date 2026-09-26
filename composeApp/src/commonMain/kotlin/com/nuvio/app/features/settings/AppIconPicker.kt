@@ -23,7 +23,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material3.BasicAlertDialog
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -47,6 +46,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.nuvio.app.core.ui.NuvioLoadingIndicator
 import com.nuvio.app.core.ui.NuvioModalBottomSheet
 import com.nuvio.app.core.ui.NuvioStatusModal
 import com.nuvio.app.core.ui.dismissNuvioBottomSheet
@@ -274,10 +274,9 @@ private fun AppIconChoice(
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             if (pending) {
-                                CircularProgressIndicator(
+                                NuvioLoadingIndicator(
                                     modifier = Modifier.size(14.dp),
                                     color = tokens.colors.onAccent,
-                                    strokeWidth = 2.dp,
                                 )
                             } else {
                                 Icon(
