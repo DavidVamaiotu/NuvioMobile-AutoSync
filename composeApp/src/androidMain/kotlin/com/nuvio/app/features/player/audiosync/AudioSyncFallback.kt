@@ -4,7 +4,6 @@ package com.nuvio.app.features.player.audiosync
 
 import android.content.Context
 import android.net.Uri
-import android.widget.Toast
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.Player
@@ -17,6 +16,8 @@ import androidx.media3.extractor.ExtractorsFactory
 import androidx.media3.extractor.text.CuesWithTiming
 import com.nuvio.app.features.addons.httpGetTextWithHeaders
 import com.nuvio.app.features.autosync.AutoSyncSyncedSubtitle
+import com.nuvio.app.features.autosync.bubble.AutoSyncBubbleKind
+import com.nuvio.app.features.autosync.bubble.showAutoSyncMessage
 import com.nuvio.app.features.player.AudioSyncSettings
 import com.nuvio.app.features.player.SidecarSubtitleController
 import com.nuvio.app.features.player.parseSidecarTimedCuesRobust
@@ -282,7 +283,7 @@ internal class AudioSyncFallback(
     private fun toast(status: AudioSyncStatus) {
         scope.launch {
             val message = status.message() ?: return@launch
-            Toast.makeText(appContext, message, Toast.LENGTH_SHORT).show()
+            showAutoSyncMessage(appContext, status.bubbleKind(), message)
         }
     }
 
@@ -387,6 +388,13 @@ private suspend fun AudioSyncStatus.message(): String? = when (this) {
         formatOffset(offsetMs),
     )
     is AudioSyncStatus.Adjusted -> getString(Res.string.player_audio_sync_adjusted, formatOffset(offsetMs))
+}
+
+/** How the AutoSync bubble shows [this]: the audio sync is still at it, done, or gave up. */
+private fun AudioSyncStatus.bubbleKind(): AutoSyncBubbleKind = when (this) {
+    is AudioSyncStatus.Synced, is AudioSyncStatus.Adjusted -> AutoSyncBubbleKind.Success
+    AudioSyncStatus.Withdrawn -> AutoSyncBubbleKind.Failure
+    else -> AutoSyncBubbleKind.Working
 }
 
 private fun formatOffset(offsetMs: Long): String {

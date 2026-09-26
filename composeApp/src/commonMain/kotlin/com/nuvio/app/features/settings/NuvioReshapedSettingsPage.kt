@@ -9,6 +9,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.nuvio.app.features.autosync.bubble.AutoSyncBubbleToasts
 import com.nuvio.app.features.player.PlayerSettingsRepository
 import com.nuvio.app.features.player.rememberSubtitleFontPicker
 import com.nuvio.app.features.streams.ConnectionSpeedEstimator
@@ -17,6 +18,8 @@ import com.nuvio.app.isIos
 import kotlin.math.roundToInt
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.compose_settings_page_streams
+import nuvio.composeapp.generated.resources.settings_autosync_bubble_toast
+import nuvio.composeapp.generated.resources.settings_autosync_bubble_toast_description
 import nuvio.composeapp.generated.resources.settings_nuvio_reshaped
 import nuvio.composeapp.generated.resources.settings_nuvio_reshaped_autosync_section
 import nuvio.composeapp.generated.resources.settings_nuvio_reshaped_description
@@ -68,6 +71,7 @@ internal fun LazyListScope.nuvioReshapedSettingsContent(isTablet: Boolean) {
                         enabled = !playerSettings.externalPlayerEnabled,
                         preferredSubtitleLanguage = playerSettings.preferredSubtitleLanguage,
                     )
+                    AutoSyncBubbleToastSettingsRow(isTablet = isTablet, enabled = !playerSettings.externalPlayerEnabled)
                 }
             }
         }
@@ -104,6 +108,21 @@ internal fun LazyListScope.nuvioReshapedSettingsContent(isTablet: Boolean) {
             }
         }
     }
+}
+
+@Composable
+private fun AutoSyncBubbleToastSettingsRow(isTablet: Boolean, enabled: Boolean) {
+    if (!AutoSyncBubbleToasts.isAvailable) return
+    val bubbleEnabled by AutoSyncBubbleToasts.enabled.collectAsStateWithLifecycle()
+    SettingsGroupDivider(isTablet = isTablet)
+    SettingsSwitchRow(
+        title = stringResource(Res.string.settings_autosync_bubble_toast),
+        description = stringResource(Res.string.settings_autosync_bubble_toast_description),
+        checked = bubbleEnabled,
+        enabled = enabled,
+        isTablet = isTablet,
+        onCheckedChange = AutoSyncBubbleToasts::setEnabled,
+    )
 }
 
 @Composable
