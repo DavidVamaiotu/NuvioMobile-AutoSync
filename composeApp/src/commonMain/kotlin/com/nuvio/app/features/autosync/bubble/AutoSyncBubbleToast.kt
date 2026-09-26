@@ -75,7 +75,7 @@ import kotlin.math.sin
 
 private val SyncedGreen = Color(0xFF30D158)
 private val FailedRed = Color(0xFFFF453A)
-private val GlassBody = Color(0xFF1C1C1E)
+private val GlassBody = Color(0xFF2A2A2E)
 private val BubbleCorner = 23.dp
 private val OrbSize = 30.dp
 private const val TWO_PI = (2.0 * PI).toFloat()
@@ -154,13 +154,13 @@ private fun AutoSyncBubble(message: AutoSyncBubbleMessage, modifier: Modifier) {
     }
 
     LaunchedEffect(Unit) {
-        appear.animateTo(1f, spring(dampingRatio = 0.62f, stiffness = 300f))
+        appear.animateTo(1f, spring(dampingRatio = 0.85f, stiffness = 260f))
     }
     // The liquid clock: only ticks while the bubble is flowing, then stops for good.
     LaunchedEffect(Unit) {
         val start = withFrameNanos { it }
         while (kindState.value == AutoSyncBubbleKind.Working || settle.value < 1f) {
-            withFrameNanos { clock.floatValue = (it - start) / 1_000_000_000f }
+            withFrameNanos { clock.floatValue = (it - start) / 1_000_000_000f * 0.6f }
         }
     }
     LaunchedEffect(message.id) {
@@ -176,7 +176,7 @@ private fun AutoSyncBubble(message: AutoSyncBubbleMessage, modifier: Modifier) {
             AutoSyncBubbleKind.Working -> Unit
             AutoSyncBubbleKind.Success -> {
                 labelVisible = true
-                settle.animateTo(1f, spring(dampingRatio = 0.55f, stiffness = 180f))
+                settle.animateTo(1f, spring(dampingRatio = 0.9f, stiffness = 200f))
                 mark.animateTo(1f, tween(360, easing = FastOutSlowInEasing))
                 delay(SUCCESS_HOLD_MS)
                 labelVisible = false
@@ -187,8 +187,8 @@ private fun AutoSyncBubble(message: AutoSyncBubbleMessage, modifier: Modifier) {
             }
             AutoSyncBubbleKind.Failure -> {
                 labelVisible = true
-                settle.animateTo(1f, spring(dampingRatio = 0.55f, stiffness = 180f))
-                launch { shake.animateTo(1f, tween(560)) }
+                settle.animateTo(1f, spring(dampingRatio = 0.9f, stiffness = 200f))
+                launch { shake.animateTo(1f, tween(480)) }
                 mark.animateTo(1f, tween(360, easing = FastOutSlowInEasing))
                 delay(160)
                 cardOpen = true
@@ -208,16 +208,16 @@ private fun AutoSyncBubble(message: AutoSyncBubbleMessage, modifier: Modifier) {
                 val liquid = 1f - settle.value
                 val t = clock.floatValue
                 // Melting away: a touch wider and shorter as it draws in, like a drop settling.
-                val squash = 0.10f * sin(m * PI.toFloat())
+                val squash = 0.04f * sin(m * PI.toFloat())
                 val scale = (0.72f + 0.28f * a) * (1f - 0.25f * l) * (1f - 0.5f * m)
                 scaleX = scale * (1f + squash)
                 scaleY = scale * (1f - squash)
                 alpha = a.coerceIn(0f, 1f) * (1f - l) * (1f - m)
                 // While it works, the whole bubble drifts a little, as if floating.
-                val wobble = sin(shake.value * PI.toFloat() * 4f) * (1f - shake.value) * 4.dp.toPx()
-                translationX = sin(t * 1.1f) * 2.dp.toPx() * liquid + wobble
+                val wobble = sin(shake.value * PI.toFloat() * 3f) * (1f - shake.value) * 2.dp.toPx()
+                translationX = sin(t * 1.1f) * 0.8.dp.toPx() * liquid + wobble
                 translationY = (1f - a) * 20.dp.toPx() + (l + m * 0.5f) * 10.dp.toPx() +
-                    sin(t * 1.6f + 0.8f) * 1.5.dp.toPx() * liquid
+                    sin(t * 1.6f + 0.8f) * 0.6.dp.toPx() * liquid
                 transformOrigin = TransformOrigin(0.5f, 0.6f)
             }
             .then(
@@ -334,8 +334,8 @@ private fun DrawScope.drawLiquidGlass(path: Path, time: Float, liquid: Float, ti
             width = size.width,
             height = size.height,
             corner = corner,
-            amplitude = 1.8.dp.toPx() * liquid,
-            swell = 0.03f * sin(time * 2.1f) * liquid,
+            amplitude = 0.6.dp.toPx() * liquid,
+            swell = 0.008f * sin(time * 2.1f) * liquid,
             time = time,
         )
     }
@@ -362,10 +362,10 @@ private fun DrawScope.drawLiquidGlass(path: Path, time: Float, liquid: Float, ti
     // Soft shadow: the same outline, nudged down, in three faint steps.
     for (step in 1..3) {
         translate(top = step * 1.2.dp.toPx()) {
-            shape(color = Color.Black.copy(alpha = 0.06f))
+            shape(color = Color.Black.copy(alpha = 0.05f))
         }
     }
-    shape(color = GlassBody.copy(alpha = 0.40f))
+    shape(color = GlassBody.copy(alpha = 0.55f))
     if (tinted > 0f) {
         shape(
             brush = Brush.horizontalGradient(
@@ -378,18 +378,18 @@ private fun DrawScope.drawLiquidGlass(path: Path, time: Float, liquid: Float, ti
     // Frost, brighter at the top where the light comes from.
     shape(
         brush = Brush.verticalGradient(
-            0f to Color.White.copy(alpha = 0.16f),
-            0.5f to Color.White.copy(alpha = 0.05f),
-            1f to Color.White.copy(alpha = 0.08f),
+            0f to Color.White.copy(alpha = 0.22f),
+            0.5f to Color.White.copy(alpha = 0.12f),
+            1f to Color.White.copy(alpha = 0.14f),
         ),
     )
     // Rim: bright on the upper left, a softer second highlight on the lower right.
     shape(
         brush = Brush.linearGradient(
-            0f to Color.White.copy(alpha = 0.75f),
-            0.3f to Color.White.copy(alpha = 0.12f),
-            0.7f to Color.White.copy(alpha = 0.06f),
-            1f to Color.White.copy(alpha = 0.40f),
+            0f to Color.White.copy(alpha = 0.60f),
+            0.3f to Color.White.copy(alpha = 0.14f),
+            0.7f to Color.White.copy(alpha = 0.08f),
+            1f to Color.White.copy(alpha = 0.32f),
             start = Offset.Zero,
             end = Offset(size.width, size.height),
         ),
@@ -494,10 +494,10 @@ private fun DrawScope.drawDroplet(
         val theta = (i % steps).toFloat() / steps * TWO_PI
         val r = radius * (
             1f + liquid * (
-                0.07f * sin(3f * theta + time * 2.1f) +
-                    0.05f * sin(2f * theta - time * 1.5f + 0.7f)
+                0.022f * sin(3f * theta + time * 2.1f) +
+                    0.014f * sin(2f * theta - time * 1.5f + 0.7f)
                 )
-            ) * (1f - 0.06f * liquid)
+            ) * (1f - 0.03f * liquid)
         val x = center.x + cos(theta) * r
         val y = center.y + sin(theta) * r
         if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
@@ -507,8 +507,8 @@ private fun DrawScope.drawDroplet(
     drawPath(
         path,
         Brush.radialGradient(
-            0f to Color.White.copy(alpha = 0.30f),
-            1f to Color.White.copy(alpha = 0.06f),
+            0f to Color.White.copy(alpha = 0.32f),
+            1f to Color.White.copy(alpha = 0.12f),
             center = center + Offset(-radius * 0.35f, -radius * 0.45f),
             radius = radius * 1.6f,
         ),
@@ -539,13 +539,13 @@ private fun DrawScope.drawDroplet(
     if (liquid > 0f) {
         val inner = radius * 0.62f
         drawArc(
-            color = Color.White.copy(alpha = 0.85f * liquid),
-            startAngle = time * 150f,
-            sweepAngle = 80f,
+            color = Color.White.copy(alpha = 0.7f * liquid),
+            startAngle = time * 170f,
+            sweepAngle = 70f,
             useCenter = false,
             topLeft = center - Offset(inner, inner),
             size = Size(inner * 2f, inner * 2f),
-            style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round),
+            style = Stroke(width = 1.6.dp.toPx(), cap = StrokeCap.Round),
         )
     }
 
