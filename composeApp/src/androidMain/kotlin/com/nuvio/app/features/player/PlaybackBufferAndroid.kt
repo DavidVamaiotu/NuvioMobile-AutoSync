@@ -40,7 +40,7 @@ internal object PlaybackBufferAndroid {
         val memoryInfo = ActivityManager.MemoryInfo()
         (context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)?.getMemoryInfo(memoryInfo)
         totalRamBytes = memoryInfo.totalMem
-        PlaybackSeekCache.cleanUpIfDisabled(context)
+        PlaybackSeekCache.cleanUp(context)
     }
 
     private fun budgetBytes(): Long? =

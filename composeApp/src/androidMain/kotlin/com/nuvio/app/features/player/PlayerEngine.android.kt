@@ -314,7 +314,7 @@ private fun ExoPlayerSurface(
         useYoutubeChunkedPlayback,
         externalSubtitles,
     ) {
-        PlaybackSeekCache.wrap( // Nuvio RS: disk seek cache
+        PlaybackSeekCache.wrap( // Nuvio RS: disk read-ahead
             context = context,
             sourceUrl = sourceUrl,
             cacheable = !useYoutubeChunkedPlayback && !isLoopbackPlaybackSource(sourceUrl),
@@ -521,7 +521,7 @@ private fun ExoPlayerSurface(
         onMimeTypeSelected = { selectedExternalSubtitleMimeType = it },
         onSubtitleDelayChanged = { subtitleDelayMs = it },
         sourceAudioUrl = sourceAudioUrl,
-        dataSourceFactory = dataSourceFactory,
+        dataSourceFactory = PlaybackSeekCache.unwrap(dataSourceFactory), // Nuvio RS: AutoSync reads bypass the read-ahead
     )
 
     fun syncPlayerViewKeepScreenOn() {
@@ -728,6 +728,7 @@ private fun ExoPlayerSurface(
             lifecycleOwner.lifecycle.removeObserver(observer)
             playerViewRef?.releaseLibassOverlay()
             exoPlayer.releaseWithAssSupportCompat()
+            PlaybackSeekCache.release(sourceUrl) // Nuvio RS: delete the read-ahead file
         }
     }
 

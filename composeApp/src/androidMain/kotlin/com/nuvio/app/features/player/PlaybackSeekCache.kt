@@ -3,41 +3,47 @@
 package com.nuvio.app.features.player
 
 import android.content.Context
+import android.net.Uri
 import android.util.Log
 import androidx.media3.common.C
-import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSource
-import androidx.media3.datasource.cache.Cache
-import androidx.media3.datasource.cache.CacheDataSource
-import androidx.media3.datasource.cache.CacheEvictor
-import androidx.media3.datasource.cache.CacheSpan
-import androidx.media3.datasource.cache.SimpleCache
+import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.TransferListener
 import java.io.File
-import java.util.TreeSet
+import java.io.IOException
+import java.io.InterruptedIOException
+import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /**
- * Disk seek cache for ExoPlayer, sized by [PlaybackBufferSettings].
+ * Disk read-ahead for ExoPlayer, sized by [PlaybackBufferSettings].
  *
- * ExoPlayer's own buffer lives on the Java heap, so it is capped well below the setting and only
- * keeps 30 s behind playback. Everything playback downloads is also written here, so seeking back
- * into anything already watched this session reads from disk instead of the network. It adds no
- * requests of its own: only what playback fetches anyway is stored.
+ * ExoPlayer's own buffer lives on the Java heap, so it is capped well below the setting. Here one
+ * connection reads the stream ahead of playback into a ring file of the chosen size and the
+ * player reads from that file, so seeks anywhere inside it need no network. Parts behind
+ * playback are overwritten: only what is coming up is kept.
  *
- * Only the stream now playing is kept: other streams are dropped when a new one starts, and the
- * whole folder is deleted at launch while the setting is on Nuvio's default.
+ * It stands in for the player's own connection rather than adding one. The player only reads
+ * directly for short reads elsewhere in the file (container indexes) and right after a seek
+ * outside the ring, until the read-ahead has moved there. The ring is a temporary file, deleted
+ * when playback ends and at every launch.
  */
 internal object PlaybackSeekCache {
     private const val TAG = "PlaybackSeekCache"
     private const val DIR = "seek_cache"
     private const val MB = 1024L * 1024L
+    private const val MIN_CAPACITY = 32L * MB
 
-    private var cache: SimpleCache? = null
+    private var session: ReadAheadSession? = null
 
     private fun cacheDir(context: Context) = File(context.applicationContext.cacheDir, DIR)
 
-    /** Called at launch: removes a leftover cache when the setting no longer uses one. */
-    fun cleanUpIfDisabled(context: Context) {
-        if (PlaybackBufferSettings.bufferMb.value > 0) return
+    /** Called at launch: nothing from an earlier run is kept. */
+    fun cleanUp(context: Context) {
         val dir = cacheDir(context)
         if (!dir.exists()) return
         Thread({ runCatching { dir.deleteRecursively() } }, "NuvioSeekCacheCleanup").apply {
@@ -46,88 +52,356 @@ internal object PlaybackSeekCache {
     }
 
     /**
-     * [upstream] with the disk cache in front of it, or [upstream] itself when the setting is on
-     * Nuvio's default or [cacheable] is false (local sources that are already on the device).
+     * [upstream] with the read-ahead in front of it for [sourceUrl], or [upstream] itself when
+     * the setting is on Nuvio's default or [cacheable] is false (sources already on the device).
      */
-    fun wrap(context: Context, sourceUrl: String, cacheable: Boolean, upstream: DataSource.Factory): DataSource.Factory {
-        if (!cacheable || PlaybackBufferSettings.bufferMb.value <= 0) return upstream
-        updateLimit(context)
-        val cache = obtain(context) ?: return upstream
-        dropOtherStreams(cache, keep = sourceUrl)
-        return CacheDataSource.Factory()
-            .setCache(cache)
-            .setUpstreamDataSourceFactory(upstream)
-            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
-    }
-
     @Synchronized
-    private fun obtain(context: Context): SimpleCache? {
-        cache?.let { return it }
-        return runCatching {
-            val app = context.applicationContext
-            SimpleCache(cacheDir(app), SizeEvictor { limitBytes }, StandaloneDatabaseProvider(app))
-        }.onFailure { Log.w(TAG, "seek cache unavailable", it) }
-            .getOrNull()
-            ?.also { cache = it }
-    }
-
-    /** The chosen size, but never more than half the free space on the device. */
-    private fun updateLimit(context: Context) {
+    fun wrap(context: Context, sourceUrl: String, cacheable: Boolean, upstream: DataSource.Factory): DataSource.Factory {
         val chosen = PlaybackBufferSettings.bufferMb.value.coerceAtLeast(0) * MB
-        val free = runCatching { context.applicationContext.cacheDir.usableSpace }.getOrDefault(0L)
-        limitBytes = if (free > 0) minOf(chosen, free / 2) else chosen
+        if (!cacheable || chosen <= 0) return upstream
+        val active = session?.takeIf { it.key == sourceUrl && !it.isClosed } ?: run {
+            session?.close()
+            session = null
+            val dir = cacheDir(context).apply { mkdirs() }
+            val free = runCatching { dir.usableSpace }.getOrDefault(0L)
+            val capacity = if (free > 0) minOf(chosen, free / 2) else chosen
+            if (capacity < MIN_CAPACITY) return upstream
+            runCatching { ReadAheadSession(sourceUrl, File(dir, "read_ahead.bin"), capacity) }
+                .onFailure { Log.w(TAG, "read-ahead unavailable", it) }
+                .getOrNull() ?: return upstream
+        }
+        active.upstreamFactory = upstream
+        session = active
+        return ReadAheadDataSourceFactory(active, upstream)
     }
 
-    @Volatile private var limitBytes = 0L
+    /** The factory without the read-ahead, for readers other than the player (they seek elsewhere). */
+    fun unwrap(factory: DataSource.Factory): DataSource.Factory =
+        (factory as? ReadAheadDataSourceFactory)?.upstream ?: factory
 
-    /** Removes what earlier streams left, off the main thread (it deletes files). */
-    private fun dropOtherStreams(cache: SimpleCache, keep: String) {
-        val stale = runCatching { cache.keys.filter { it != keep } }.getOrDefault(emptyList())
-        if (stale.isEmpty()) return
-        Thread({
-            stale.forEach { key -> runCatching { cache.removeResource(key) } }
-        }, "NuvioSeekCacheCleanup").apply { isDaemon = true }.start()
+    /** Called when the player for [sourceUrl] is released: stops reading and deletes the file. */
+    @Synchronized
+    fun release(sourceUrl: String) {
+        val current = session?.takeIf { it.key == sourceUrl } ?: return
+        current.close()
+        session = null
+    }
+}
+
+private class ReadAheadDataSourceFactory(
+    private val session: ReadAheadSession,
+    val upstream: DataSource.Factory,
+) : DataSource.Factory {
+    override fun createDataSource(): DataSource = ReadAheadDataSource(session, upstream.createDataSource())
+}
+
+/**
+ * The ring file and the one connection filling it. Valid bytes are the stream range
+ * [windowStart, windowEnd); stream position p lives at file offset p % capacity.
+ */
+private class ReadAheadSession(val key: String, private val file: File, private val capacity: Long) {
+    @Volatile var upstreamFactory: DataSource.Factory? = null
+
+    private val channel: FileChannel = RandomAccessFile(file, "rw").channel
+    private val lock = ReentrantLock()
+    private val changed = lock.newCondition()
+
+    // Guarded by lock.
+    private var windowStart = 0L
+    private var windowEnd = 0L
+    private var generation = 0
+    private var started = false
+    private var ended = false
+    private var error: IOException? = null
+    private var contentLength = C.LENGTH_UNSET.toLong()
+    private var closed = false
+    private var filler: Thread? = null
+    var uri: Uri? = null
+        private set
+    var responseHeaders: Map<String, List<String>> = emptyMap()
+        private set
+
+    val isClosed: Boolean get() = lock.withLock { closed }
+
+    /** True when a read at [position] is (or is about to be) served from the ring. */
+    fun covers(position: Long): Boolean = lock.withLock {
+        !closed && started && position >= windowStart && position <= windowEnd + NEAR_BYTES
     }
 
-    /** Least recently used first, against a limit read on each check so setting changes apply. */
-    private class SizeEvictor(private val limit: () -> Long) : CacheEvictor {
-        private val spans = TreeSet<CacheSpan> { a, b ->
-            when {
-                a.lastTouchTimestamp != b.lastTouchTimestamp -> a.lastTouchTimestamp.compareTo(b.lastTouchTimestamp)
-                else -> a.compareTo(b)
+    /** Stream length, when the server told us. */
+    fun length(): Long = lock.withLock { contentLength }
+
+    /** Moves the read-ahead to [position]; what was read ahead elsewhere is dropped. */
+    fun relocate(position: Long) = lock.withLock {
+        if (closed) return@withLock
+        generation++
+        windowStart = position
+        windowEnd = position
+        ended = contentLength != C.LENGTH_UNSET.toLong() && position >= contentLength
+        error = null
+        started = true
+        changed.signalAll()
+        if (filler == null) {
+            filler = Thread(::fillLoop, "NuvioReadAhead").apply {
+                isDaemon = true
+                start()
             }
         }
-        private var size = 0L
+    }
 
-        override fun requiresCacheSpanTouches() = true
-
-        override fun onCacheInitialized() = Unit
-
-        override fun onStartFile(cache: Cache, key: String, position: Long, length: Long) {
-            if (length != C.LENGTH_UNSET.toLong()) evict(cache, length)
+    /**
+     * Reads from the ring at [position], waiting for the connection when it is not there yet.
+     * Returns [C.RESULT_END_OF_INPUT] at the end of the stream.
+     */
+    fun read(position: Long, buffer: ByteArray, offset: Int, length: Int): Int {
+        val available = lock.withLock {
+            while (!closed && position >= windowStart && position >= windowEnd && !ended && error == null) {
+                try {
+                    changed.await()
+                } catch (interrupted: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw InterruptedIOException()
+                }
+            }
+            if (closed) throw IOException("read-ahead closed")
+            if (position < windowStart) throw IOException("read-ahead moved")
+            if (position >= windowEnd) {
+                if (ended) return C.RESULT_END_OF_INPUT
+                throw error ?: IOException("read-ahead failed")
+            }
+            minOf(length.toLong(), windowEnd - position).toInt()
         }
-
-        override fun onSpanAdded(cache: Cache, span: CacheSpan) {
-            spans.add(span)
-            size += span.length
-            evict(cache, 0)
-        }
-
-        override fun onSpanRemoved(cache: Cache, span: CacheSpan) {
-            spans.remove(span)
-            size -= span.length
-        }
-
-        override fun onSpanTouched(cache: Cache, oldSpan: CacheSpan, newSpan: CacheSpan) {
-            onSpanRemoved(cache, oldSpan)
-            onSpanAdded(cache, newSpan)
-        }
-
-        private fun evict(cache: Cache, needed: Long) {
-            val max = limit()
-            while (size + needed > max && spans.isNotEmpty()) {
-                cache.removeSpan(spans.first())
+        readFile(position, buffer, offset, available)
+        lock.withLock {
+            // Keep a little behind the player for re-reads; the rest of the ring is free again.
+            val keepFrom = position + available - BACK_KEEP_BYTES
+            if (keepFrom > windowStart) {
+                windowStart = minOf(keepFrom, windowEnd)
+                changed.signalAll()
             }
         }
+        return available
     }
+
+    fun close() {
+        val hadFiller = lock.withLock {
+            if (closed) return
+            closed = true
+            changed.signalAll()
+            filler != null
+        }
+        // The filler deletes the file itself once its connection is closed.
+        if (!hadFiller) disposeFile()
+    }
+
+    private fun fillLoop() {
+        val buffer = ByteArray(CHUNK_BYTES)
+        var source: DataSource? = null
+        var myGeneration = -1
+        var position = 0L
+        var failures = 0
+        while (true) {
+            val space = lock.withLock {
+                while (!closed && myGeneration == generation && (ended || windowEnd - windowStart >= capacity)) {
+                    changed.await()
+                }
+                if (closed) return@withLock null
+                if (myGeneration != generation) {
+                    myGeneration = generation
+                    position = windowEnd
+                    failures = 0
+                    source?.closeQuietly()
+                    source = null
+                }
+                minOf(CHUNK_BYTES.toLong(), capacity - (windowEnd - windowStart)).toInt()
+            } ?: break
+            try {
+                val open = source ?: openAt(position, myGeneration)?.also { source = it } ?: continue
+                val read = open.read(buffer, 0, space)
+                if (read == C.RESULT_END_OF_INPUT) {
+                    open.closeQuietly()
+                    source = null
+                    lock.withLock {
+                        if (myGeneration == generation) {
+                            contentLength = windowEnd
+                            ended = true
+                            changed.signalAll()
+                        }
+                    }
+                    continue
+                }
+                writeFile(position, buffer, read)
+                position += read
+                failures = 0
+                lock.withLock {
+                    if (myGeneration == generation) {
+                        windowEnd = position
+                        changed.signalAll()
+                    }
+                }
+            } catch (failure: IOException) {
+                source?.closeQuietly()
+                source = null
+                failures++
+                lock.withLock {
+                    // Brief drops are retried quietly, like a slow network; repeated failures
+                    // reach the player so its own error handling (and error screen) applies.
+                    if (myGeneration == generation && failures >= SURFACE_AFTER_FAILURES) {
+                        error = failure
+                        changed.signalAll()
+                    }
+                    val waitMs = minOf(RETRY_BASE_MS shl minOf(failures - 1, 3), RETRY_MAX_MS)
+                    if (!closed && myGeneration == generation) changed.await(waitMs, TimeUnit.MILLISECONDS)
+                }
+            }
+        }
+        source?.closeQuietly()
+        disposeFile()
+    }
+
+    /** Opens the connection at [position]; null when the read-ahead moved meanwhile. */
+    private fun openAt(position: Long, forGeneration: Int): DataSource? {
+        val factory = upstreamFactory ?: throw IOException("no upstream")
+        val source = factory.createDataSource()
+        val opened = source.open(DataSpec.Builder().setUri(key).setPosition(position).build())
+        lock.withLock {
+            if (forGeneration != generation || closed) {
+                source.closeQuietly()
+                return null
+            }
+            if (opened != C.LENGTH_UNSET.toLong()) contentLength = position + opened
+            uri = source.uri
+            responseHeaders = source.responseHeaders
+            error = null
+        }
+        return source
+    }
+
+    private fun writeFile(position: Long, buffer: ByteArray, length: Int) {
+        var done = 0
+        while (done < length) {
+            var at = (position + done) % capacity
+            val part = minOf((length - done).toLong(), capacity - at).toInt()
+            val bytes = ByteBuffer.wrap(buffer, done, part)
+            while (bytes.hasRemaining()) at += channel.write(bytes, at)
+            done += part
+        }
+    }
+
+    private fun readFile(position: Long, buffer: ByteArray, offset: Int, length: Int) {
+        var done = 0
+        while (done < length) {
+            var at = (position + done) % capacity
+            val part = minOf((length - done).toLong(), capacity - at).toInt()
+            val bytes = ByteBuffer.wrap(buffer, offset + done, part)
+            while (bytes.hasRemaining()) {
+                val read = channel.read(bytes, at)
+                if (read < 0) throw IOException("read-ahead file truncated")
+                at += read
+            }
+            done += part
+        }
+    }
+
+    private fun disposeFile() {
+        runCatching { channel.close() }
+        runCatching { file.delete() }
+    }
+
+    private companion object {
+        const val CHUNK_BYTES = 256 * 1024
+        const val NEAR_BYTES = 4L * 1024 * 1024
+        const val BACK_KEEP_BYTES = 8L * 1024 * 1024
+        const val SURFACE_AFTER_FAILURES = 3
+        const val RETRY_BASE_MS = 1_000L
+        const val RETRY_MAX_MS = 8_000L
+    }
+}
+
+/**
+ * The player's data source: reads of the playing stream come from the ring when it covers them.
+ * Anywhere else (a container index at the end of the file, a seek outside the ring) it reads
+ * directly, and after [RELOCATE_AFTER_BYTES] of such reads it moves the read-ahead there.
+ */
+private class ReadAheadDataSource(
+    private val session: ReadAheadSession,
+    private val direct: DataSource,
+) : DataSource {
+    private var fromRing = false
+    private var directOpen = false
+    private var isStream = false
+    private var position = 0L
+    private var remaining = C.LENGTH_UNSET.toLong()
+    private var directBytes = 0L
+
+    override fun addTransferListener(transferListener: TransferListener) {
+        direct.addTransferListener(transferListener)
+    }
+
+    override fun open(dataSpec: DataSpec): Long {
+        isStream = dataSpec.uri.toString() == session.key
+        position = dataSpec.position
+        remaining = dataSpec.length
+        directBytes = 0L
+        if (isStream && session.covers(position)) {
+            fromRing = true
+            val length = session.length()
+            return when {
+                remaining != C.LENGTH_UNSET.toLong() -> remaining
+                length != C.LENGTH_UNSET.toLong() -> (length - position).coerceAtLeast(0L)
+                else -> C.LENGTH_UNSET.toLong()
+            }
+        }
+        fromRing = false
+        directOpen = true
+        return direct.open(dataSpec)
+    }
+
+    override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+        if (length == 0) return 0
+        if (remaining == 0L) return C.RESULT_END_OF_INPUT
+        val wanted = if (remaining == C.LENGTH_UNSET.toLong()) length else minOf(length.toLong(), remaining).toInt()
+        val read = if (fromRing) {
+            session.read(position, buffer, offset, wanted)
+        } else {
+            direct.read(buffer, offset, wanted)
+        }
+        if (read == C.RESULT_END_OF_INPUT) return read
+        position += read
+        if (remaining != C.LENGTH_UNSET.toLong()) remaining -= read
+        if (!fromRing && isStream) {
+            directBytes += read
+            // A long open-ended read is playback, not an index lookup: move the read-ahead here.
+            if (directBytes >= RELOCATE_AFTER_BYTES && remaining == C.LENGTH_UNSET.toLong()) {
+                session.relocate(position)
+                if (session.covers(position)) {
+                    directOpen = false
+                    direct.closeQuietly()
+                    fromRing = true
+                }
+            }
+        }
+        return read
+    }
+
+    override fun getUri(): Uri? = if (fromRing) session.uri ?: Uri.parse(session.key) else direct.uri
+
+    override fun getResponseHeaders(): Map<String, List<String>> =
+        if (fromRing) session.responseHeaders else direct.responseHeaders
+
+    override fun close() {
+        fromRing = false
+        if (directOpen) {
+            directOpen = false
+            direct.close()
+        }
+    }
+
+    private companion object {
+        const val RELOCATE_AFTER_BYTES = 2L * 1024 * 1024
+    }
+}
+
+private fun DataSource.closeQuietly() {
+    runCatching { close() }
 }
