@@ -27,10 +27,9 @@ import kotlin.concurrent.withLock
  * player reads from that file, so seeks anywhere inside it need no network. Parts behind
  * playback are overwritten: only what is coming up is kept.
  *
- * It stands in for the player's own connection rather than adding one. The player only reads
- * directly for short reads elsewhere in the file (container indexes) and right after a seek
- * outside the ring, until the read-ahead has moved there. The ring is a temporary file, deleted
- * when playback ends and at every launch.
+ * It stands in for the player's own connection rather than adding one: a seek outside the ring
+ * moves the read-ahead there, so the stream never has more than one connection. The ring is a
+ * temporary file, deleted when playback ends and at every launch.
  */
 internal object PlaybackSeekCache {
     private const val TAG = "PlaybackSeekCache"
@@ -138,6 +137,7 @@ private class ReadAheadSession(val key: String, private val file: File, private 
     private var closed = false
     private var filler: Thread? = null
     private var playerPosition = -1L
+    private var retryNow = false
 
     /** True while the connection is receiving data, false while it waits (full, ended, retry). */
     @Volatile var isDownloading = false
@@ -149,9 +149,25 @@ private class ReadAheadSession(val key: String, private val file: File, private 
 
     val isClosed: Boolean get() = lock.withLock { closed }
 
-    /** True when a read at [position] is (or is about to be) served from the ring. */
-    fun covers(position: Long): Boolean = lock.withLock {
-        !closed && started && position >= windowStart && position <= windowEnd + NEAR_BYTES
+    /**
+     * Prepares the ring for a player read at [position]: inside (or just past) it, the read waits
+     * for the connection; anywhere else the read-ahead moves there. A connection error the
+     * player is retrying after is retried at once. False once closed.
+     */
+    fun serve(position: Long): Boolean {
+        lock.withLock {
+            if (closed) return false
+            if (started && position >= windowStart && position <= windowEnd + NEAR_BYTES) {
+                if (error != null) {
+                    error = null
+                    retryNow = true
+                    changed.signalAll()
+                }
+                return true
+            }
+        }
+        relocate(position)
+        return !isClosed
     }
 
     /** Bytes read ahead past where the player last read, and the stream length; null if unknown. */
@@ -289,7 +305,11 @@ private class ReadAheadSession(val key: String, private val file: File, private 
                         changed.signalAll()
                     }
                     val waitMs = minOf(RETRY_BASE_MS shl minOf(failures - 1, 3), RETRY_MAX_MS)
-                    if (!closed && myGeneration == generation) changed.await(waitMs, TimeUnit.MILLISECONDS)
+                    var leftNs = TimeUnit.MILLISECONDS.toNanos(waitMs)
+                    while (!closed && myGeneration == generation && !retryNow && leftNs > 0) {
+                        leftNs = changed.awaitNanos(leftNs)
+                    }
+                    retryNow = false
                 }
             }
         }
@@ -358,9 +378,11 @@ private class ReadAheadSession(val key: String, private val file: File, private 
 }
 
 /**
- * The player's data source: reads of the playing stream come from the ring when it covers them.
- * Anywhere else (a container index at the end of the file, a seek outside the ring) it reads
- * directly, and after [RELOCATE_AFTER_BYTES] of such reads it moves the read-ahead there.
+ * The player's data source. Every read of the playing stream comes from the ring: an open
+ * outside it (a seek, or a container index at the end of the file) moves the read-ahead there
+ * first, so the stream only ever has the read-ahead's one connection. A second connection next
+ * to it was refused by some debrid hosts. Other URLs (subtitles, a separate audio track) read
+ * directly.
  */
 private class ReadAheadDataSource(
     private val session: ReadAheadSession,
@@ -368,21 +390,17 @@ private class ReadAheadDataSource(
 ) : DataSource {
     private var fromRing = false
     private var directOpen = false
-    private var isStream = false
     private var position = 0L
     private var remaining = C.LENGTH_UNSET.toLong()
-    private var directBytes = 0L
 
     override fun addTransferListener(transferListener: TransferListener) {
         direct.addTransferListener(transferListener)
     }
 
     override fun open(dataSpec: DataSpec): Long {
-        isStream = dataSpec.uri.toString() == session.key
         position = dataSpec.position
         remaining = dataSpec.length
-        directBytes = 0L
-        if (isStream && session.covers(position)) {
+        if (dataSpec.uri.toString() == session.key && session.serve(position)) {
             fromRing = true
             val length = session.length()
             return when {
@@ -408,18 +426,6 @@ private class ReadAheadDataSource(
         if (read == C.RESULT_END_OF_INPUT) return read
         position += read
         if (remaining != C.LENGTH_UNSET.toLong()) remaining -= read
-        if (!fromRing && isStream) {
-            directBytes += read
-            // A long open-ended read is playback, not an index lookup: move the read-ahead here.
-            if (directBytes >= RELOCATE_AFTER_BYTES && remaining == C.LENGTH_UNSET.toLong()) {
-                session.relocate(position)
-                if (session.covers(position)) {
-                    directOpen = false
-                    direct.closeQuietly()
-                    fromRing = true
-                }
-            }
-        }
         return read
     }
 
@@ -434,10 +440,6 @@ private class ReadAheadDataSource(
             directOpen = false
             direct.close()
         }
-    }
-
-    private companion object {
-        const val RELOCATE_AFTER_BYTES = 2L * 1024 * 1024
     }
 }
 
