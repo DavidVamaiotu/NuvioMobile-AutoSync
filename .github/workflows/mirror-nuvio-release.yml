@@ -1,6 +1,6 @@
 name: AutoSync Release
 
-# Release trigger: AutoSync secondary language, on-device seek previews, pill menu, subtitle fonts, seek buffer
+# Release trigger: AutoSync bubble notifications, seek buffer read-ahead, connection speed fix
 
 
 on:
