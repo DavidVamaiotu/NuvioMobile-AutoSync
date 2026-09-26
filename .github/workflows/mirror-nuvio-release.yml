@@ -1,6 +1,6 @@
 name: AutoSync Release
 
-# Release trigger: audio subtitle sync as the AutoSync fallback
+# Release trigger: plain AutoSync toasts, "Auto synced" label, search setting
 
 
 on:
