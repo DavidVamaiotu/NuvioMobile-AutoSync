@@ -35,9 +35,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
 
 /** Frame width as a share of the width available, so it grows with the screen. */
-private const val FrameWidthFraction = 0.3f
-private val MinFrameWidth = 208.dp
-private val MaxFrameWidth = 420.dp
+private const val FrameWidthFraction = 0.25f
+private val MinFrameWidth = 200.dp
+private val MaxFrameWidth = 360.dp
 private const val FrameAspect = 16f / 9f
 private const val LingerAfterScrubMs = 1500L
 
