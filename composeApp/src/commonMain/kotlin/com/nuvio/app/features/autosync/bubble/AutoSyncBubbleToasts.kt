@@ -21,12 +21,12 @@ internal data class AutoSyncBubbleMessage(
 )
 
 /**
- * The optional glass bubble that replaces AutoSync's plain toasts. Off by default; persistence
+ * The optional glass bubble that replaces AutoSync's plain toasts. On by default; persistence
  * is installed by the platform, and without it (or without a player on screen to draw it)
  * [post] returns false so the caller shows its plain toast instead.
  */
 internal object AutoSyncBubbleToasts {
-    private val _enabled = MutableStateFlow(false)
+    private val _enabled = MutableStateFlow(true)
     val enabled: StateFlow<Boolean> = _enabled.asStateFlow()
 
     private val _current = MutableStateFlow<AutoSyncBubbleMessage?>(null)

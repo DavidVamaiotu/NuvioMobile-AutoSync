@@ -10,7 +10,7 @@ internal object AutoSyncBubbleToastsAndroid {
     fun initialize(context: Context) {
         val preferences = context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
         AutoSyncBubbleToasts.installPersistence(
-            load = { preferences.getBoolean(enabledKey, false) },
+            load = { preferences.getBoolean(enabledKey, true) },
             save = { preferences.edit().putBoolean(enabledKey, it).apply() },
         )
         AutoSyncBubbleBackdrop.sampler = { bounds, marginPx -> rememberVideoBackdrop(bounds, marginPx) }
