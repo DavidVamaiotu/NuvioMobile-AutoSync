@@ -314,14 +314,19 @@ private fun ExoPlayerSurface(
         useYoutubeChunkedPlayback,
         externalSubtitles,
     ) {
-        PlatformPlaybackDataSourceFactory.create(
+        PlaybackSeekCache.wrap( // Nuvio RS: disk seek cache
             context = context,
-            defaultRequestHeaders = sanitizedSourceHeaders,
-            defaultResponseHeaders = sanitizedSourceResponseHeaders,
-            useYoutubeChunkedPlayback = useYoutubeChunkedPlayback,
-            useLongReadTimeout = isLoopbackPlaybackSource(sourceUrl),
-            externalSubtitles = externalSubtitles,
-        ).countingNetworkBytes(networkBytesCounter)
+            sourceUrl = sourceUrl,
+            cacheable = !useYoutubeChunkedPlayback && !isLoopbackPlaybackSource(sourceUrl),
+            upstream = PlatformPlaybackDataSourceFactory.create(
+                context = context,
+                defaultRequestHeaders = sanitizedSourceHeaders,
+                defaultResponseHeaders = sanitizedSourceResponseHeaders,
+                useYoutubeChunkedPlayback = useYoutubeChunkedPlayback,
+                useLongReadTimeout = isLoopbackPlaybackSource(sourceUrl),
+                externalSubtitles = externalSubtitles,
+            ).countingNetworkBytes(networkBytesCounter),
+        )
     }
     val throughputSampler = remember(sourceUrl) { PlaybackThroughputSampler(sourceUrl) }
     DisposableEffect(throughputSampler) {

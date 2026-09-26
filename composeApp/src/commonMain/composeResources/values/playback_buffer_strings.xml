@@ -6,5 +6,5 @@
     <string name="settings_playback_buffer_default">Nuvio default</string>
     <string name="settings_playback_buffer_value_mb">%1$d MB</string>
     <string name="settings_playback_buffer_value_gb">%1$d GB</string>
-    <string name="settings_playback_buffer_description">How much of the film is kept in memory, so jumps inside it are instant. Bigger reads further ahead and uses more RAM; it is capped to what this device can hold. Tap to change; applies from the next playback.</string>
+    <string name="settings_playback_buffer_description">How much of the film is kept for instant seeks. ExoPlayer also saves what it downloads to disk up to this size, so jumping back is instant too; libmpv keeps it all in memory. Capped to what this device can hold. Tap to change; applies from the next playback.</string>
 </resources>
