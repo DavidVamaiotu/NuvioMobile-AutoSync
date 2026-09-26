@@ -1,6 +1,6 @@
 name: AutoSync Release
 
-# Release trigger: plain AutoSync toasts, "Auto synced" label, search setting
+# Release trigger: AutoSync secondary language, on-device seek previews, pill menu, subtitle fonts, seek buffer
 
 
 on:
@@ -175,13 +175,19 @@ jobs:
               echo
             fi
             if [[ -n "$PREVIOUS_TAG" ]] && git rev-parse --verify --quiet "$PREVIOUS_TAG^{commit}" >/dev/null; then
+              # Every fork commit since the last release, including those merged in from feature
+              # branches, but none of official Nuvio's (they are reachable from its release).
               CHANGES="$(
-                git log --reverse --no-merges --first-parent --pretty=format:'%s' "$PREVIOUS_TAG..HEAD" -- . ':(exclude).github/workflows/**' ':(exclude).github/autosync-release-notes.md' |
+                git log --reverse --no-merges --pretty=format:'%s' "$PREVIOUS_TAG..HEAD" \
+                  "^refs/tags/nuvio-$UPSTREAM_TAG" "^refs/remotes/upstream/cmp-rewrite" \
+                  -- . ':(exclude).github/workflows/**' ':(exclude).github/autosync-release-notes.md' |
                   grep -Ev '^(Trigger AutoSync release|Release .*autosync|Sync Nuvio )' || true
               )"
             else
               CHANGES="$(
-                git log -20 --reverse --no-merges --first-parent --pretty=format:'%s' -- . ':(exclude).github/workflows/**' ':(exclude).github/autosync-release-notes.md' |
+                git log -20 --reverse --no-merges --pretty=format:'%s' HEAD \
+                  "^refs/tags/nuvio-$UPSTREAM_TAG" "^refs/remotes/upstream/cmp-rewrite" \
+                  -- . ':(exclude).github/workflows/**' ':(exclude).github/autosync-release-notes.md' |
                   grep -Ev '^(Trigger AutoSync release|Release .*autosync|Sync Nuvio )' || true
               )"
             fi
