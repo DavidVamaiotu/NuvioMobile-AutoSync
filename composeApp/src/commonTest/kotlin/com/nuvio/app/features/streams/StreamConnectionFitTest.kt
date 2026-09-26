@@ -38,20 +38,20 @@ class StreamConnectionFitTest {
     }
 
     @Test
-    fun `largest stream that fits comes first, not the smallest`() {
-        // ~95 Mbps connection, 120 min movie: the 1 GB file must not beat the 5 GB one.
+    fun `addon order is kept when every stream fits`() {
+        // ~95 Mbps connection, 120 min movie: nothing is too heavy, so nothing moves.
         val fit = StreamConnectionFit(runtimeMinutes = 120, connectionMbps = 95.0)
-        val oneGb = stream(name = "1gb", sizeBytes = 1 * gb)
-        val fiveGb = stream(name = "5gb", sizeBytes = 5 * gb)
-        val remux = stream(name = "remux", sizeBytes = 126 * gb) // 140 Mbps, too much
+        val streams = listOf(
+            stream(name = "1gb", sizeBytes = 1 * gb),
+            stream(name = "unknown", sizeBytes = null),
+            stream(name = "5gb", sizeBytes = 5 * gb),
+        )
 
-        val ordered = fit.apply(listOf(oneGb, remux, fiveGb))
-
-        assertEquals(listOf("5gb", "1gb", "remux"), ordered.map { it.name })
+        assertSame(streams, fit.apply(streams))
     }
 
     @Test
-    fun `fitting streams by bitrate, then unknown, then exceeding in original order`() {
+    fun `only heavy streams move, and both parts keep their order`() {
         // 30 Mbps connection, 120 min runtime: anything above 20 Mbps average is demoted.
         val fit = StreamConnectionFit(runtimeMinutes = 120, connectionMbps = 30.0)
         val remux = stream(name = "remux", sizeBytes = 60 * gb) // 66.7 Mbps
@@ -60,17 +60,59 @@ class StreamConnectionFitTest {
         val unknown = stream(name = "unknown", sizeBytes = null)
         val small = stream(name = "small", sizeBytes = 2 * gb)
 
-        val ordered = fit.apply(listOf(remux, uhd, hd, unknown, small))
+        val ordered = fit.apply(listOf(remux, hd, uhd, unknown, small))
 
-        assertEquals(listOf("hd", "small", "unknown", "remux", "uhd"), ordered.map { it.name })
+        assertEquals(listOf("hd", "unknown", "small", "remux", "uhd"), ordered.map { it.name })
     }
 
     @Test
-    fun `order is untouched when it already matches or everything exceeds the connection`() {
-        val streams = listOf(stream(name = "a", sizeBytes = 9 * gb), stream(name = "b", sizeBytes = 4 * gb))
+    fun `stream exactly at the headroom limit still fits`() {
+        // 9 GB over 120 min = 10 Mbps; 10 x 1.5 = 15 Mbps.
+        val fit = StreamConnectionFit(runtimeMinutes = 120, connectionMbps = 15.0)
+        val streams = listOf(stream(name = "edge", sizeBytes = 9 * gb), stream(name = "small", sizeBytes = 1 * gb))
 
-        assertSame(streams, StreamConnectionFit(runtimeMinutes = 120, connectionMbps = 100.0).apply(streams))
+        assertSame(streams, fit.apply(streams))
+    }
+
+    @Test
+    fun `order is untouched when heavy streams are already last or everything is heavy`() {
+        val streams = listOf(stream(name = "a", sizeBytes = 9 * gb), stream(name = "b", sizeBytes = 40 * gb))
+
+        assertSame(streams, StreamConnectionFit(runtimeMinutes = 120, connectionMbps = 20.0).apply(streams))
         assertSame(streams, StreamConnectionFit(runtimeMinutes = 120, connectionMbps = 2.0).apply(streams))
+    }
+
+    @Test
+    fun `partition is idempotent and keeps duplicates`() {
+        val fit = StreamConnectionFit(runtimeMinutes = 120, connectionMbps = 30.0)
+        val heavy = stream(name = "heavy", sizeBytes = 60 * gb)
+        val light = stream(name = "light", sizeBytes = 2 * gb)
+
+        val once = fit.apply(listOf(heavy, light, heavy, light))
+
+        assertEquals(listOf("light", "light", "heavy", "heavy"), once.map { it.name })
+        assertSame(once, fit.apply(once))
+    }
+
+    @Test
+    fun `plugin merges give the same result whether or not the list was already ordered`() {
+        // Plugin completions merge new results into the displayed list, then sort by label and
+        // partition again. A stable partition makes that equal to partitioning the raw merge.
+        val fit = StreamConnectionFit(runtimeMinutes = 120, connectionMbps = 30.0)
+        val first = listOf(
+            stream(name = "a-heavy", sizeBytes = 60 * gb),
+            stream(name = "b-light", sizeBytes = 2 * gb),
+        )
+        val second = listOf(
+            stream(name = "a-light", sizeBytes = 1 * gb),
+            stream(name = "b-heavy", sizeBytes = 50 * gb),
+        )
+        val byName = compareBy<StreamItem> { it.name }
+
+        val incremental = fit.apply((fit.apply(first) + second).sortedWith(byName))
+        val direct = fit.apply((first + second).sortedWith(byName))
+
+        assertEquals(direct.map { it.name }, incremental.map { it.name })
     }
 
     @Test

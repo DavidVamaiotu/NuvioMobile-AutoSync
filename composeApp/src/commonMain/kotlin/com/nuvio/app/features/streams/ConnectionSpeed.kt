@@ -1,9 +1,14 @@
 package com.nuvio.app.features.streams
 
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlin.concurrent.Volatile
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 
@@ -14,8 +19,14 @@ internal enum class NetworkKind {
     OTHER,
 }
 
-/** The current default network, or null when offline or unknown. Cheap enough to call on the stream-load path. */
+/** The current default network, or null when offline or unknown. A memory read, kept current by a platform callback. */
 internal expect fun currentNetworkKind(): NetworkKind?
+
+/**
+ * Changes whenever the default network changes (a different Wi-Fi, Wi-Fi to mobile, offline).
+ * A measurement that spans a change describes neither network, so it is dropped.
+ */
+internal expect fun currentNetworkGeneration(): Int
 
 internal expect object ConnectionSpeedStorage {
     fun load(): String?
@@ -36,41 +47,54 @@ internal data class ConnectionSpeedSample(
  * list loads, so reading the estimate is a memory lookup.
  */
 internal object ConnectionSpeedEstimator {
-    private const val MAX_SAMPLES_PER_NETWORK = 6
+    private const val MAX_SAMPLES_PER_NETWORK = 3
     private const val MIN_SAMPLES = 2
-    private const val MAX_SAMPLE_AGE_MS = 21L * 24 * 60 * 60 * 1000
+    private const val MAX_SAMPLE_AGE_MS = 14L * 24 * 60 * 60 * 1000
 
     private val json = Json { ignoreUnknownKeys = true }
-    private var cachedSamples: List<ConnectionSpeedSample>? = null
+    @Volatile private var cachedSamples: List<ConnectionSpeedSample>? = null
+
+    private val _revision = MutableStateFlow(0)
+
+    /** Bumped on every recorded sample, so the settings status can refresh while it is shown. */
+    val revision: StateFlow<Int> = _revision.asStateFlow()
 
     fun estimateMbps(): Double? {
         val network = currentNetworkKind() ?: return null
         return estimateMbps(loadedSamples(), network, epochMs())
     }
 
-    fun record(mbps: Double) {
-        val network = currentNetworkKind() ?: return
+    /** Records a sample for [network], the network it was measured on (not necessarily the current one). */
+    fun record(network: NetworkKind, mbps: Double) {
+        if (!mbps.isValidThroughput()) return
         val updated = appendSample(loadedSamples(), ConnectionSpeedSample(network, mbps, epochMs()))
         cachedSamples = updated
         ConnectionSpeedStorage.save(json.encodeToString(updated))
+        _revision.update { it + 1 }
     }
 
     /**
-     * The best recent sample. Each sample is capped by whichever server delivered it, so the
-     * fastest one is the tightest lower bound on the connection itself; one slow host must not
-     * make every other source look unplayable. At least two samples are required so a single
-     * session never drives ranking on its own.
+     * The best of the last few samples. Each sample is capped by whichever server delivered it,
+     * so the fastest one is the tightest lower bound on the connection itself; one slow host
+     * must not make every other source look unplayable. Only the most recent samples count, so
+     * a connection that really got slower takes over within a few playbacks. At least two
+     * samples are required so a single session never drives ranking on its own.
      */
     internal fun estimateMbps(
         samples: List<ConnectionSpeedSample>,
         network: NetworkKind,
         nowMs: Long,
     ): Double? {
-        val recent = samples.filter { sample ->
-            sample.network == network && nowMs - sample.recordedAtMs in 0..MAX_SAMPLE_AGE_MS
+        var count = 0
+        var best = 0.0
+        for (index in samples.indices.reversed()) {
+            val sample = samples[index]
+            if (sample.network != network) continue
+            if (nowMs - sample.recordedAtMs !in 0..MAX_SAMPLE_AGE_MS || !sample.mbps.isValidThroughput()) continue
+            if (sample.mbps > best) best = sample.mbps
+            if (++count == MAX_SAMPLES_PER_NETWORK) break
         }
-        if (recent.size < MIN_SAMPLES) return null
-        return recent.maxOf { it.mbps }
+        return best.takeIf { count >= MIN_SAMPLES }
     }
 
     internal fun appendSample(
@@ -87,6 +111,11 @@ internal object ConnectionSpeedEstimator {
         }.getOrDefault(emptyList()).also { cachedSamples = it }
 }
 
+private const val MIN_VALID_MBPS = 0.2
+private const val MAX_VALID_MBPS = 1_000.0
+
+internal fun Double.isValidThroughput(): Boolean = isFinite() && this in MIN_VALID_MBPS..MAX_VALID_MBPS
+
 /**
  * Measures sustained download throughput over one playback session and reports it once.
  *
@@ -94,16 +123,26 @@ internal object ConnectionSpeedEstimator {
  * downloading once their buffer is full, and they also wait on connection setup, redirects and
  * seeks (resume position, file index) without receiving anything; counting either would make a
  * fast connection look slow. A genuinely slow link still delivers data on every tick.
+ *
+ * The first second of transfer is skipped: it is mostly TCP/TLS slow start and reads low on
+ * fast lines. The sample is tied to the network it was measured on and dropped if the
+ * default network changed during the measurement. Adds no requests and no polling of its own:
+ * it runs on the player's existing progress tick.
  */
 internal class PlaybackThroughputSampler(
     sourceUrl: String,
     private val timeSource: TimeSource = TimeSource.Monotonic,
-    private val onSample: (Double) -> Unit = ConnectionSpeedEstimator::record,
+    private val networkKind: () -> NetworkKind? = ::currentNetworkKind,
+    private val networkGeneration: () -> Int = ::currentNetworkGeneration,
+    private val onSample: (NetworkKind, Double) -> Unit = ConnectionSpeedEstimator::record,
 ) {
     private val isEligible = sourceUrl.isInternetPlaybackSource()
     private var lastTick: TimeMark? = null
+    private var warmupMs = 0L
     private var activeBytes = 0L
     private var activeMs = 0L
+    private var measuredNetwork: NetworkKind? = null
+    private var measuredGeneration = 0
     private var isFinished = false
 
     /** [bytes] is the number of bytes received since the previous tick. */
@@ -119,9 +158,11 @@ internal class PlaybackThroughputSampler(
     fun finish() {
         if (isFinished) return
         isFinished = true
+        val network = measuredNetwork ?: return
         if (activeMs < MIN_WINDOW_MS) return
         if (activeBytes < MIN_WINDOW_BYTES && activeMs < SLOW_WINDOW_MS) return
-        onSample(activeBytes * 8.0 / activeMs / 1000.0)
+        if (networkGeneration() != measuredGeneration) return
+        onSample(network, activeBytes * 8.0 / activeMs / 1000.0)
     }
 
     private inline fun tick(isFetching: Boolean, bytesFor: (elapsedMs: Long) -> Long) {
@@ -131,18 +172,27 @@ internal class PlaybackThroughputSampler(
         val elapsedMs = previous?.elapsedNow()?.inWholeMilliseconds ?: return
         // A long gap means the app was suspended; the interval says nothing about the network.
         if (!isFetching || elapsedMs <= 0 || elapsedMs > MAX_TICK_GAP_MS) return
-        val bytes = bytesFor(elapsedMs).coerceAtLeast(0L)
-        if (bytes == 0L) return
+        val bytes = bytesFor(elapsedMs)
+        if (bytes <= 0L) return
+        if (warmupMs < WARMUP_MS) {
+            if (warmupMs == 0L) {
+                measuredNetwork = networkKind() ?: run { isFinished = true; return }
+                measuredGeneration = networkGeneration()
+            }
+            warmupMs += elapsedMs
+            return
+        }
         activeBytes += bytes
         activeMs += elapsedMs
         if (activeMs >= MAX_WINDOW_MS) finish()
     }
 
     private companion object {
+        const val WARMUP_MS = 1_000L
         const val MIN_WINDOW_MS = 3_000L
         const val MIN_WINDOW_BYTES = 8L * 1024 * 1024
         const val SLOW_WINDOW_MS = 10_000L
-        const val MAX_WINDOW_MS = 30_000L
+        const val MAX_WINDOW_MS = 10_000L
         const val MAX_TICK_GAP_MS = 2_000L
     }
 }

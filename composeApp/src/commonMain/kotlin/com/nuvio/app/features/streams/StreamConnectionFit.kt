@@ -5,36 +5,57 @@ import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.features.details.parseRuntimeMinutes
 
 /**
- * Orders each list around what the current connection can sustain: streams that fit come first,
- * highest bitrate first, so the top is the best quality that plays smoothly rather than the
- * smallest file. Streams whose bitrate can't be known (no size or runtime) follow in their
- * original order, and streams that exceed the connection go last, also in original order.
+ * Moves streams likely too heavy for the current connection to the bottom of each list and
+ * leaves everything else exactly where the addon (or the user's sort) put it. Streams whose
+ * bitrate can't be known stay in place: missing metadata is not evidence of a heavy stream.
  * Built once per stream load from a snapshot, so the order never shifts while a list is open.
  */
 internal class StreamConnectionFit(
     private val runtimeMinutes: Int,
     private val connectionMbps: Double,
 ) {
+    /** Streams whose average bitrate is above this can't sustain playback with headroom. */
+    private val maxBitrateMbps = connectionMbps / BITRATE_HEADROOM
+
     fun apply(group: AddonStreamGroup): AddonStreamGroup {
         val streams = apply(group.streams)
         return if (streams === group.streams) group else group.copy(streams = streams)
     }
 
+    /**
+     * Stable partition: kept streams in their order, then heavy streams in their order. Returns
+     * the same list when nothing needs to move, which is the common case, so unchanged groups
+     * keep their identity and their rows don't recompose.
+     */
     fun apply(streams: List<StreamItem>): List<StreamItem> {
         if (streams.size < 2) return streams
-        val fitting = mutableListOf<Pair<StreamItem, Double>>()
-        val unknown = mutableListOf<StreamItem>()
-        val exceeding = mutableListOf<StreamItem>()
-        for (stream in streams) {
-            val bitrateMbps = stream.averageBitrateMbps(runtimeMinutes)
-            when {
-                bitrateMbps == null -> unknown += stream
-                bitrateMbps * BITRATE_HEADROOM > connectionMbps -> exceeding += stream
-                else -> fitting += stream to bitrateMbps
+        var firstHeavy = -1
+        var mustMove = false
+        for (index in streams.indices) {
+            if (isHeavy(streams[index])) {
+                if (firstHeavy < 0) firstHeavy = index
+            } else if (firstHeavy >= 0) {
+                mustMove = true
+                break
             }
         }
-        val ordered = fitting.sortedByDescending { it.second }.map { it.first } + unknown + exceeding
-        return if (ordered == streams) streams else ordered
+        if (!mustMove) return streams
+
+        val ordered = ArrayList<StreamItem>(streams.size)
+        val heavy = ArrayList<StreamItem>(streams.size - firstHeavy)
+        for (index in 0 until firstHeavy) ordered += streams[index]
+        heavy += streams[firstHeavy]
+        for (index in firstHeavy + 1 until streams.size) {
+            val stream = streams[index]
+            if (isHeavy(stream)) heavy += stream else ordered += stream
+        }
+        ordered.addAll(heavy)
+        return ordered
+    }
+
+    private fun isHeavy(stream: StreamItem): Boolean {
+        val bitrateMbps = stream.averageBitrateMbps(runtimeMinutes) ?: return false
+        return bitrateMbps > maxBitrateMbps
     }
 
     companion object {

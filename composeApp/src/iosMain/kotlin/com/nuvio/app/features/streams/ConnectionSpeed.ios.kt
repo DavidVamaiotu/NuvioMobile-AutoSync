@@ -1,6 +1,7 @@
 package com.nuvio.app.features.streams
 
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlin.concurrent.Volatile
 import platform.Foundation.NSUserDefaults
 import platform.Network.nw_interface_type_cellular
 import platform.Network.nw_interface_type_wifi
@@ -27,10 +28,19 @@ internal actual object ConnectionSpeedStorage {
 
 internal actual fun currentNetworkKind(): NetworkKind? = NetworkPathObserver.currentKind
 
+internal actual fun currentNetworkGeneration(): Int = NetworkPathObserver.generation
+
 /** Tracks the default network path. Started at app launch because the first update arrives asynchronously. */
 @OptIn(ExperimentalForeignApi::class)
 internal object NetworkPathObserver {
-    var currentKind: NetworkKind? = null
+    @Volatile var currentKind: NetworkKind? = null
+        private set
+
+    /**
+     * Bumped on every path update after the first. The path doesn't identify a particular
+     * Wi-Fi network, so any reported change is treated as a possible switch.
+     */
+    @Volatile var generation = 0
         private set
 
     private var isStarted = false
@@ -39,7 +49,10 @@ internal object NetworkPathObserver {
         if (isStarted) return
         isStarted = true
         val monitor = nw_path_monitor_create()
+        var isFirstUpdate = true
         nw_path_monitor_set_update_handler(monitor) { path ->
+            if (!isFirstUpdate) generation++
+            isFirstUpdate = false
             currentKind = when {
                 nw_path_get_status(path) != nw_path_status_satisfied -> null
                 nw_path_uses_interface_type(path, nw_interface_type_wifi) ||

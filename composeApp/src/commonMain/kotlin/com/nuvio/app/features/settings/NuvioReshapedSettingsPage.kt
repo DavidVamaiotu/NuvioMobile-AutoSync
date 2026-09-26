@@ -164,7 +164,8 @@ private fun SubtitleFontSettingsSection(isTablet: Boolean) {
 
 @Composable
 private fun connectionFitStatus(): String {
-    val connectionMbps = remember { ConnectionSpeedEstimator.estimateMbps() }
+    val revision by ConnectionSpeedEstimator.revision.collectAsStateWithLifecycle()
+    val connectionMbps = remember(revision) { ConnectionSpeedEstimator.estimateMbps() }
     return if (connectionMbps == null) {
         stringResource(Res.string.settings_stream_connection_fit_learning)
     } else {
