@@ -17,8 +17,10 @@ import kotlin.math.roundToInt
  * One codec is kept and reused with `flush()` between frames: creating a video decoder costs
  * far more than decoding one keyframe. It runs in ByteBuffer mode (no Surface, no GL) and the
  * frame is downscaled straight from its YUV planes, so the full-size picture is never converted
- * to RGB. Hardware decoders are tried first; when playback already holds every hardware
- * instance, a software decoder takes over. All calls are serialised.
+ * to RGB. Software decoders are tried first so previews never hold a hardware instance that
+ * playback may need when it recreates its own decoder (PiP, track or resolution changes); a
+ * hardware one is only used when no software decoder handles the format. All calls are
+ * serialised.
  */
 internal class KeyframeThumbnailDecoder(
     private val targetWidth: Int = THUMB_WIDTH,
@@ -207,7 +209,7 @@ internal class KeyframeThumbnailDecoder(
         val infos = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
             .filter { info -> !info.isEncoder && info.supportedTypes.any { it.equals(mime, ignoreCase = true) } }
         val (software, hardware) = infos.partition { it.isSoftwareOnlyCompat() }
-        return (hardware + software).map { it.name }
+        return (software + hardware).map { it.name }
     }
 
     private fun MediaCodecInfo.isSoftwareOnlyCompat(): Boolean =

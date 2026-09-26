@@ -57,7 +57,7 @@ internal object PlaybackSeekCache {
     @Synchronized
     fun wrap(context: Context, sourceUrl: String, cacheable: Boolean, upstream: DataSource.Factory): DataSource.Factory {
         val chosen = PlaybackBufferSettings.bufferMb.value.coerceAtLeast(0) * MB
-        if (!cacheable || chosen <= 0) return upstream
+        if (!cacheable || chosen <= 0 || looksAdaptive(sourceUrl)) return upstream
         val active = session?.takeIf { it.key == sourceUrl && !it.isClosed } ?: run {
             session?.close()
             session = null
@@ -72,6 +72,14 @@ internal object PlaybackSeekCache {
         active.upstreamFactory = upstream
         session = active
         return ReadAheadDataSourceFactory(active, upstream)
+    }
+
+    /** HLS/DASH playlists are re-read for updates and small anyway; they are left alone. */
+    private fun looksAdaptive(url: String): Boolean {
+        val lower = url.lowercase()
+        val path = lower.substringBefore('?').substringBefore('#')
+        return path.endsWith(".m3u8") || path.endsWith(".m3u") || path.endsWith(".mpd") ||
+            path.contains(".ism") || lower.contains("m3u8") || lower.contains("format=mpd")
     }
 
     /** The factory without the read-ahead, for readers other than the player (they seek elsewhere). */
@@ -138,6 +146,8 @@ private class ReadAheadSession(val key: String, private val file: File, private 
     private var filler: Thread? = null
     private var playerPosition = -1L
     private var retryNow = false
+    /** Set when the server says the stream is an HLS/DASH playlist: later reads go direct. */
+    private var adaptive = false
 
     /** True while the connection is receiving data, false while it waits (full, ended, retry). */
     @Volatile var isDownloading = false
@@ -156,7 +166,7 @@ private class ReadAheadSession(val key: String, private val file: File, private 
      */
     fun serve(position: Long): Boolean {
         lock.withLock {
-            if (closed) return false
+            if (closed || adaptive) return false
             if (started && position >= windowStart && position <= windowEnd + NEAR_BYTES) {
                 if (error != null) {
                     error = null
@@ -283,7 +293,14 @@ private class ReadAheadSession(val key: String, private val file: File, private 
                     }
                     continue
                 }
-                writeFile(position, buffer, read)
+                try {
+                    writeFile(position, buffer, read)
+                } catch (diskFailure: IOException) {
+                    // Storage full or gone: stop, and the player falls back to reading directly.
+                    Log.w("PlaybackSeekCache", "read-ahead file unwritable", diskFailure)
+                    close()
+                    continue
+                }
                 position += read
                 failures = 0
                 lock.withLock {
@@ -331,6 +348,10 @@ private class ReadAheadSession(val key: String, private val file: File, private 
             if (opened != C.LENGTH_UNSET.toLong()) contentLength = position + opened
             uri = source.uri
             responseHeaders = source.responseHeaders
+            val contentType = responseHeaders.entries
+                .firstOrNull { it.key.equals("Content-Type", ignoreCase = true) }
+                ?.value?.firstOrNull()?.lowercase().orEmpty()
+            if ("mpegurl" in contentType || "dash+xml" in contentType) adaptive = true
             error = null
         }
         return source
